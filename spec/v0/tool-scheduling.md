@@ -46,11 +46,13 @@ model-provided tool-call order. Serial calls may commit and checkpoint one at a
 time. Parallel batches must commit and checkpoint atomically after every call in
 the batch has completed.
 
-`checkpoint` events represent durable resume points and must not expose a state
-that would require re-running a tool result that the runtime has already
-observed as completed but not yet committed. If a timeout or other runtime limit
-interrupts a parallel batch, the checkpoint state remains at the last fully
-committed batch boundary.
+`checkpoint` events represent durable resume points. For a parallel batch, tool
+results are not durable until every call in the batch completes and the batch is
+committed in model-provided order. If a timeout or other runtime limit interrupts
+a parallel batch, the checkpoint state remains at the last fully committed batch
+boundary. Hosts may have observed `tool_completed` events for uncommitted calls,
+but resume is allowed to rerun those calls because parallel eligibility requires
+tools to be read-only and idempotent.
 
 ## Errors
 

@@ -10,18 +10,26 @@ from inspect import isawaitable, iscoroutinefunction
 from time import monotonic, time
 from typing import Any, TypeVar, cast
 
-from agent_runtime.errors import AgentError
+from agent_runtime.errors import AgentError, ModelProviderError
 from agent_runtime.events import AgentEvent, EventEmitter, EventTypes
 from agent_runtime.hooks import RuntimeHook
 from agent_runtime.limits import LoopLimits
 from agent_runtime.messages import (
     ContentPart,
     Message,
-    ModelResponse,
     ToolCall,
     content_parts_summary,
 )
-from agent_runtime.models import ModelClient, ModelRequest
+from agent_runtime.models import (
+    ModelClient,
+    ModelOptions,
+    ModelRequest,
+    ModelResponse,
+    ModelStreamAccumulator,
+    ResponseFormat,
+    ToolChoice,
+    stream_event_to_delta_payload,
+)
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.scheduler import ToolBatch, ToolScheduler, ToolStarted
 from agent_runtime.snapshot import RunSnapshot
@@ -74,11 +82,23 @@ class RunControlState:
 class AgentLoop:
     """Lightweight state-machine-driven agent loop."""
 
-    __slots__ = ("_hooks", "_limits", "_model", "_tool_scheduler", "_tools")
+    __slots__ = (
+        "_hooks",
+        "_limits",
+        "_model",
+        "_model_options",
+        "_response_format",
+        "_tool_choice",
+        "_tool_scheduler",
+        "_tools",
+    )
 
     _hooks: tuple[RuntimeHook, ...]
     _limits: LoopLimits
     _model: ModelClient
+    _model_options: ModelOptions
+    _response_format: ResponseFormat | None
+    _tool_choice: ToolChoice
     _tool_scheduler: ToolScheduler
     _tools: ToolRegistry
 
@@ -88,12 +108,20 @@ class AgentLoop:
         model: ModelClient,
         tools: Sequence[Tool] | ToolRegistry | None = None,
         limits: LoopLimits | None = None,
+        model_options: ModelOptions | None = None,
+        tool_choice: ToolChoice | None = None,
+        response_format: ResponseFormat | None = None,
         hooks: Sequence[RuntimeHook] | None = None,
     ) -> None:
         self._model = model
         self._tools = tools if isinstance(tools, ToolRegistry) else ToolRegistry(tools)
         self._limits = limits or LoopLimits()
         self._limits.validate()
+        self._model_options = ModelOptions.from_dict((model_options or ModelOptions()).to_dict())
+        self._tool_choice = ToolChoice.from_dict((tool_choice or ToolChoice()).to_dict())
+        self._response_format = (
+            None if response_format is None else ResponseFormat.from_dict(response_format.to_dict())
+        )
         scheduler_parallelism = (
             1 if self._limits.stop_on_tool_error else (self._limits.max_parallel_tool_calls)
         )
@@ -107,18 +135,20 @@ class AgentLoop:
         messages: Sequence[Message],
         *,
         context: RuntimeContext | None = None,
+        stream: bool = False,
     ) -> AgentResult:
         state = AgentState(status=AgentStatus.PLANNING, messages=list(messages))
-        return await self.run_state(state, context=context)
+        return await self.run_state(state, context=context, stream=stream)
 
     async def run_events(
         self,
         messages: Sequence[Message],
         *,
         context: RuntimeContext | None = None,
+        stream: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         state = AgentState(status=AgentStatus.PLANNING, messages=list(messages))
-        async for event in self.run_state_events(state, context=context):
+        async for event in self.run_state_events(state, context=context, stream=stream):
             yield event
 
     async def run_state(
@@ -126,10 +156,13 @@ class AgentLoop:
         state: AgentState,
         *,
         context: RuntimeContext | None = None,
+        stream: bool = False,
     ) -> AgentResult:
         runtime_context, control = self._prepare_run(context)
         working_state = AgentState.from_dict(state.to_dict())
-        async for _event in self._run_state_events(working_state, runtime_context, control):
+        async for _event in self._run_state_events(
+            working_state, runtime_context, control, stream=stream
+        ):
             pass
         runtime_context.sequence = control.sequence
         return self._result(working_state, runtime_context, control)
@@ -139,22 +172,34 @@ class AgentLoop:
         state: AgentState,
         *,
         context: RuntimeContext | None = None,
+        stream: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         runtime_context, control = self._prepare_run(context)
         working_state = AgentState.from_dict(state.to_dict())
-        async for event in self._run_state_events(working_state, runtime_context, control):
+        async for event in self._run_state_events(
+            working_state, runtime_context, control, stream=stream
+        ):
             yield event
         runtime_context.sequence = control.sequence
 
-    async def run_snapshot(self, snapshot: RunSnapshot) -> AgentResult:
-        return await self.run_state(snapshot.state, context=snapshot.context)
+    async def run_snapshot(self, snapshot: RunSnapshot, *, stream: bool = False) -> AgentResult:
+        return await self.run_state(snapshot.state, context=snapshot.context, stream=stream)
 
-    async def run_snapshot_events(self, snapshot: RunSnapshot) -> AsyncIterator[AgentEvent]:
-        async for event in self.run_state_events(snapshot.state, context=snapshot.context):
+    async def run_snapshot_events(
+        self, snapshot: RunSnapshot, *, stream: bool = False
+    ) -> AsyncIterator[AgentEvent]:
+        async for event in self.run_state_events(
+            snapshot.state, context=snapshot.context, stream=stream
+        ):
             yield event
 
     async def _run_state_events(
-        self, state: AgentState, context: RuntimeContext, control: RunControlState
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        stream: bool,
     ) -> AsyncIterator[AgentEvent]:
         try:
             for event in await self._events(
@@ -165,7 +210,7 @@ class AgentLoop:
             ):
                 yield event
 
-            async for event in self._drive(state, context, control):
+            async for event in self._drive(state, context, control, stream=stream):
                 yield event
 
             if state.status is AgentStatus.COMPLETED:
@@ -238,7 +283,12 @@ class AgentLoop:
             yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.snapshot()})
 
     async def _drive(
-        self, state: AgentState, context: RuntimeContext, control: RunControlState
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        stream: bool,
     ) -> AsyncIterator[AgentEvent]:
         while not state.is_terminal:
             reason = self._timeout_reason(control)
@@ -248,7 +298,7 @@ class AgentLoop:
                 return
 
             if state.status is AgentStatus.PLANNING:
-                async for event in self._planning_step(state, context, control):
+                async for event in self._planning_step(state, context, control, stream=stream):
                     yield event
                 continue
 
@@ -268,7 +318,12 @@ class AgentLoop:
             return
 
     async def _planning_step(
-        self, state: AgentState, context: RuntimeContext, control: RunControlState
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        stream: bool,
     ) -> AsyncIterator[AgentEvent]:
         reason = self._limits.iteration_reason(state)
         if reason is not None:
@@ -286,21 +341,44 @@ class AgentLoop:
             yield event
 
         request = await self._before_model(
-            ModelRequest(messages=tuple(state.messages), tools=self._tools.specs()),
+            ModelRequest(
+                messages=tuple(state.messages),
+                tools=self._tools.specs(),
+                options=self._model_options,
+                tool_choice=self._tool_choice,
+                response_format=self._response_format,
+            ),
             context,
             control,
         )
         try:
-            response = await self._await_with_timeout(
-                self._model.complete(request, context),
-                control,
-            )
+            if stream and hasattr(self._model, "stream"):
+                response_holder: list[ModelResponse] = []
+                async for event in self._stream_model(request, context, control, response_holder):
+                    yield event
+                response = response_holder[0]
+            else:
+                response = await self._await_with_timeout(
+                    self._model.complete(request, context),
+                    control,
+                )
             response = await self._after_model(
                 ModelResponse.from_dict(response.to_dict()), context, control
             )
             assistant_message = response.to_assistant_message()
         except RuntimeTimeoutError:
             for event in await self._limit(state, context, control, "timeout_seconds"):
+                yield event
+            return
+        except ModelProviderError as exc:
+            state.extra = dict(state.extra) | {"model_error": exc.info.to_dict()}
+            for event in await self._transition(
+                state,
+                AgentStatus.FAILED,
+                context,
+                control,
+                error=exc.info.message,
+            ):
                 yield event
             return
         except AgentError as exc:
@@ -355,6 +433,39 @@ class AgentLoop:
             yield event
         for event in await self._checkpoint_events(state, context, control):
             yield event
+
+    async def _stream_model(
+        self,
+        request: ModelRequest,
+        context: RuntimeContext,
+        control: RunControlState,
+        response_holder: list[ModelResponse],
+    ) -> AsyncIterator[AgentEvent]:
+        stream_method = cast(Any, self._model).stream
+        iterator = stream_method(request, context).__aiter__()
+        accumulator = ModelStreamAccumulator()
+        completed_response: ModelResponse | None = None
+
+        while True:
+            try:
+                stream_event = await self._anext_with_timeout(iterator, control)
+            except StopAsyncIteration:
+                break
+            response = accumulator.apply(stream_event)
+            if response is not None:
+                completed_response = response
+            payload = stream_event_to_delta_payload(stream_event)
+            if payload is None:
+                continue
+            for event in await self._events(
+                context,
+                control,
+                EventTypes.MODEL_DELTA,
+                payload,
+            ):
+                yield event
+
+        response_holder.append(completed_response or accumulator.response())
 
     async def _tool_step(
         self, state: AgentState, context: RuntimeContext, control: RunControlState
@@ -538,6 +649,40 @@ class AgentLoop:
         if not done:
             task.add_done_callback(self._consume_background_task_exception)
             task.cancel()
+            raise RuntimeTimeoutError
+        return await task
+
+    async def _anext_with_timeout(self, iterator: AsyncIterator[T], control: RunControlState) -> T:
+        remaining = control.remaining_seconds()
+        task = asyncio.ensure_future(anext(iterator))
+        if remaining is None:
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                task.add_done_callback(self._consume_background_task_exception)
+                task.cancel()
+                raise
+
+        if remaining <= 0:
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            raise RuntimeTimeoutError
+
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=remaining)
+        except asyncio.CancelledError:
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            raise
+        if not done:
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            aclose = getattr(iterator, "aclose", None)
+            if callable(aclose):
+                with suppress(BaseException):
+                    close_result = aclose()
+                    if isawaitable(close_result):
+                        await cast(Awaitable[object], close_result)
             raise RuntimeTimeoutError
         return await task
 

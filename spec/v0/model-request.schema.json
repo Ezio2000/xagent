@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-runtime.local/spec/v0/model-request.schema.json",
+  "title": "Agent Runtime Model Request",
+  "type": "object",
+  "required": ["messages", "tools", "options", "tool_choice"],
+  "properties": {
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "messages.schema.json"
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "$ref": "tools.schema.json"
+      }
+    },
+    "options": {
+      "type": "object",
+      "properties": {
+        "model": { "type": ["string", "null"], "minLength": 1 },
+        "temperature": { "type": ["number", "null"], "minimum": 0 },
+        "top_p": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "max_output_tokens": { "type": ["integer", "null"], "minimum": 1 },
+        "stop_sequences": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "seed": { "type": ["integer", "null"] },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "tool_choice": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["auto", "none", "required", "tool"]
+        },
+        "name": { "type": ["string", "null"], "minLength": 1 },
+        "allow_parallel_tool_calls": { "type": ["boolean", "null"] },
+        "metadata": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": { "const": "tool" }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 }
+            }
+          },
+          "else": {
+            "properties": {
+              "name": { "type": "null" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "response_format": {
+      "type": ["object", "null"],
+      "required": ["type", "strict"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["text", "json_object", "json_schema"]
+        },
+        "json_schema": { "type": ["object", "null"] },
+        "strict": { "type": "boolean" },
+        "metadata": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "json_schema" }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["json_schema"],
+            "properties": {
+              "json_schema": { "type": "object" }
+            }
+          },
+          "else": {
+            "properties": {
+              "json_schema": { "type": "null" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

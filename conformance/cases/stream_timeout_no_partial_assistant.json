@@ -1,0 +1,34 @@
+{
+  "name": "stream_timeout_no_partial_assistant",
+  "limits": {
+    "timeout_seconds": 0.02
+  },
+  "model_steps": [],
+  "stream_model_steps": [
+    {
+      "events": [
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "partial"
+        },
+        {
+          "type": "sleep",
+          "seconds": 1
+        }
+      ]
+    }
+  ],
+  "expected_status": "limit_exceeded",
+  "expected_tool_calls": 0,
+  "expected_model_deltas": [
+    {
+      "kind": "text_delta",
+      "index": 0,
+      "text_delta": "partial",
+      "part_type": "text"
+    }
+  ],
+  "expected_message_roles": ["user"],
+  "forbidden_checkpoint_message_roles": [["user", "assistant"]]
+}

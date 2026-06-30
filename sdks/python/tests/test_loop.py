@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import time as time_module
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from time import monotonic
 from time import time as wall_time
 from typing import Any
@@ -19,12 +19,18 @@ from agent_runtime import (
     EventTypes,
     LoopLimits,
     Message,
+    ModelContentDelta,
+    ModelErrorInfo,
+    ModelOptions,
+    ModelProviderError,
     ModelRequest,
     ModelResponse,
+    ModelToolCallDelta,
     RunSnapshot,
     RuntimeContext,
     RuntimeHook,
     ToolCall,
+    ToolChoice,
     ToolResult,
     ToolSpec,
 )
@@ -42,6 +48,93 @@ class ScriptedModel:
         response = self._steps[self.calls]
         self.calls += 1
         return response
+
+
+class RequestCapturingModel:
+    def __init__(self) -> None:
+        self.request: ModelRequest | None = None
+
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = context
+        self.request = request
+        return ModelResponse.text("done")
+
+
+class StreamingTextModel:
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise AssertionError("stream path should not call complete")
+
+    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
+        _ = request, context
+        yield ModelContentDelta(index=0, text_delta="hel")
+        yield ModelContentDelta(index=0, text_delta="lo")
+
+
+class StreamingToolModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise AssertionError("stream path should not call complete")
+
+    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
+        _ = context
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelToolCallDelta(index=0, id="call-1", name="echo")
+            yield ModelToolCallDelta(index=0, arguments_delta='{"text":')
+            yield ModelToolCallDelta(index=0, arguments_delta='"hello"}')
+            return
+        assert request.messages[-1].role == "tool"
+        yield ModelContentDelta(index=0, text_delta="done")
+
+
+class SlowStreamingModel:
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise AssertionError("stream path should not call complete")
+
+    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
+        _ = request, context
+        yield ModelContentDelta(index=0, text_delta="partial")
+        await asyncio.sleep(1)
+
+
+class ProviderErrorModel:
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise ModelProviderError(
+            ModelErrorInfo(
+                message="provider unavailable",
+                provider="test-provider",
+                code="rate_limit",
+                status_code=429,
+                retryable=True,
+                request_id="req-1",
+            )
+        )
+
+
+class StreamingProviderErrorModel:
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise AssertionError("stream path should not call complete")
+
+    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
+        _ = request, context
+        yield ModelContentDelta(index=0, text_delta="partial")
+        raise ModelProviderError(
+            ModelErrorInfo(
+                message="provider unavailable",
+                provider="test-provider",
+                code="rate_limit",
+                status_code=429,
+                retryable=True,
+                request_id="req-1",
+            )
+        )
 
 
 class RecordingTool:
@@ -368,12 +461,139 @@ class BadToolResultExtraHook(RuntimeHook):
         return result
 
 
-async def collect_events(agent: AgentLoop, messages: Sequence[Message]) -> list[AgentEvent]:
-    return [event async for event in agent.run_events(messages)]
+async def collect_events(
+    agent: AgentLoop, messages: Sequence[Message], *, stream: bool = False
+) -> list[AgentEvent]:
+    return [event async for event in agent.run_events(messages, stream=stream)]
 
 
 def parts_text(parts: Sequence[Any]) -> str:
     return "".join(part.text or "" for part in parts)
+
+
+@pytest.mark.asyncio
+async def test_model_request_includes_standard_options_and_tool_choice() -> None:
+    model = RequestCapturingModel()
+
+    result = await AgentLoop(
+        model=model,
+        model_options=ModelOptions(model="test-model", temperature=0.1),
+        tool_choice=ToolChoice(mode="none", allow_parallel_tool_calls=False),
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert model.request is not None
+    assert model.request.options.model == "test-model"
+    assert model.request.options.temperature == 0.1
+    assert model.request.tool_choice.mode == "none"
+    assert model.request.tool_choice.allow_parallel_tool_calls is False
+
+
+@pytest.mark.asyncio
+async def test_streaming_text_deltas_are_observable_but_commit_atomically() -> None:
+    events = await collect_events(
+        AgentLoop(model=StreamingTextModel()),
+        [Message.user_text("stream")],
+        stream=True,
+    )
+    event_types = [event.type for event in events]
+    deltas = [event.data for event in events if event.type == EventTypes.MODEL_DELTA]
+    final_snapshot = RunSnapshot.from_dict(
+        [event for event in events if event.type == EventTypes.CHECKPOINT][-1].data
+    )
+
+    assert [delta["text_delta"] for delta in deltas] == ["hel", "lo"]
+    assert event_types.index(EventTypes.MODEL_DELTA) < event_types.index(EventTypes.MODEL_COMPLETED)
+    assert final_snapshot.state.status is AgentStatus.COMPLETED
+    assert final_snapshot.state.messages[-1].text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_executes_only_after_model_completed() -> None:
+    tool = EchoTool()
+    events = await collect_events(
+        AgentLoop(model=StreamingToolModel(), tools=[tool]),
+        [Message.user_text("stream tool")],
+        stream=True,
+    )
+    event_types = [event.type for event in events]
+    tool_started_index = event_types.index(EventTypes.TOOL_STARTED)
+    first_model_completed_index = event_types.index(EventTypes.MODEL_COMPLETED)
+    result = RunSnapshot.from_dict(
+        [event for event in events if event.type == EventTypes.CHECKPOINT][-1].data
+    )
+
+    assert first_model_completed_index < tool_started_index
+    assert result.state.status is AgentStatus.COMPLETED
+    assert [message.text for message in result.state.messages if message.role == "tool"] == [
+        "hello"
+    ]
+    assert result.state.final_parts[0].text == "done"
+
+
+@pytest.mark.asyncio
+async def test_stream_timeout_discards_partial_assistant_message() -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=SlowStreamingModel(),
+            limits=LoopLimits(timeout_seconds=0.02),
+        ),
+        [Message.user_text("stream slow")],
+        stream=True,
+    )
+    checkpoints = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+
+    assert any(event.type == EventTypes.MODEL_DELTA for event in events)
+    assert checkpoints[-1].state.status is AgentStatus.LIMIT_EXCEEDED
+    assert checkpoints[-1].state.error == "timeout_seconds"
+    assert [message.role for message in checkpoints[-1].state.messages] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_stream_flag_falls_back_to_complete_for_non_streaming_model() -> None:
+    events = await collect_events(
+        AgentLoop(model=ScriptedModel([ModelResponse.text("done")])),
+        [Message.user_text("stream flag")],
+        stream=True,
+    )
+
+    assert EventTypes.MODEL_DELTA not in [event.type for event in events]
+    assert events[-1].data["state"]["status"] == AgentStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_model_provider_error_is_structured_in_failed_checkpoint() -> None:
+    result = await AgentLoop(model=ProviderErrorModel()).run([Message.user_text("fail")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == "provider unavailable"
+    assert result.state is not None
+    assert result.state.extra["model_error"]["provider"] == "test-provider"
+    assert result.state.extra["model_error"]["code"] == "rate_limit"
+    assert result.state.extra["model_error"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_stream_provider_error_discards_partial_assistant_message() -> None:
+    events = await collect_events(
+        AgentLoop(model=StreamingProviderErrorModel()),
+        [Message.user_text("stream fail")],
+        stream=True,
+    )
+    checkpoints = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+    event_types = [event.type for event in events]
+
+    assert EventTypes.MODEL_DELTA in event_types
+    assert EventTypes.MODEL_COMPLETED not in event_types
+    assert checkpoints[-1].state.status is AgentStatus.FAILED
+    assert checkpoints[-1].state.error == "provider unavailable"
+    assert [message.role for message in checkpoints[-1].state.messages] == ["user"]
+    assert checkpoints[-1].state.extra["model_error"]["provider"] == "test-provider"
+    assert checkpoints[-1].state.extra["model_error"]["retryable"] is True
 
 
 @pytest.mark.asyncio

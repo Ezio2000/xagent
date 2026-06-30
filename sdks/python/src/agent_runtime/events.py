@@ -23,6 +23,7 @@ class EventTypes:
     RUN_STARTED = "run_started"
     STATE_CHANGED = "state_changed"
     MODEL_STARTED = "model_started"
+    MODEL_DELTA = "model_delta"
     MODEL_COMPLETED = "model_completed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"

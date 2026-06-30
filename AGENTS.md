@@ -2,56 +2,67 @@
 
 ## Project Structure & Module Organization
 
-This repository is a model-neutral agent loop runtime organized for multiple
-language SDKs. Cross-language contracts live in `spec/v0`, including schemas
-and state-machine notes. Portable behavior cases live in `conformance/cases`.
-Design notes are in `docs`. The reference implementation is the Python SDK in
-`sdks/python`, with source under `src/agent_runtime` and tests under `tests`.
-Runnable examples live in `examples/python`. `sdks/typescript` and `sdks/go`
-are reserved for future SDKs.
+This repository is a model-neutral agent loop runtime designed for multiple
+language SDKs. Cross-language contracts live in `spec/v0`; portable behavior
+fixtures live in `conformance/cases`; design notes live in `docs`. The current
+reference SDK is Python under `sdks/python`, with package code in
+`sdks/python/src/agent_runtime` and tests in `sdks/python/tests`. Runnable Python
+examples live in `examples/python`. `sdks/typescript` and `sdks/go` are reserved
+for future SDKs.
 
 ## Build, Test, and Development Commands
 
-Use `uv` for Python work. Run commands from `sdks/python`:
+Use `uv` for Python work and run commands from `sdks/python`:
 
 ```bash
-uv sync                         # install project and dev dependencies
-uv run pytest -q -p no:cacheprovider
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
+uv sync                                      # install dependencies
+uv run pytest -q -p no:cacheprovider        # run tests
+uv run ruff check .                         # lint
+uv run ruff format --check .                # check formatting
+uv run pyright                              # type-check
 uv run python ../../examples/python/basic_tool_loop.py
 ```
 
-If JSON schemas or conformance cases change, parse all JSON files before
-handoff.
+When editing JSON specs or conformance cases, parse all changed contracts:
+
+```bash
+uv run python - <<'PY'
+import json
+from pathlib import Path
+for root in ["../../spec/v0", "../../conformance/cases"]:
+    for path in sorted(Path(root).glob("*.json")):
+        json.loads(path.read_text())
+print("json ok")
+PY
+```
 
 ## Coding Style & Naming Conventions
 
-Python targets 3.11 and uses strict Pyright. Ruff enforces imports, bugbear,
+Python targets 3.11+ with strict Pyright. Ruff enforces imports, bugbear,
 modernization, simplification, and `E/F` rules with a 100-character line limit.
-Use 4-space indentation. Keep public runtime types explicit and model-neutral.
-Prefer clear module names such as `loop.py`, `scheduler.py`, `messages.py`, and
-`tools.py`. Tests should name the behavior being protected.
+Use 4-space indentation and explicit, model-neutral public types. Keep module
+names direct, for example `loop.py`, `models.py`, `messages.py`, `scheduler.py`,
+and `tools.py`.
 
 ## Testing Guidelines
 
-Use `pytest` and `pytest-asyncio`. Put Python tests in `sdks/python/tests` using
-`test_*.py` files and `test_<behavior>` functions. Add conformance cases for
-behavior that all SDKs must share. Core checkpoint, resume, timeout, tool
-scheduling, and event-order changes require focused regression tests.
+Use `pytest` and `pytest-asyncio`. Test files should be named `test_*.py`, and
+test functions should describe the behavior being protected. Add Python
+regression tests for narrow runtime changes and conformance cases for behavior
+all SDKs must share. Core changes to checkpointing, resume, limits, streaming,
+tool scheduling, or event order require focused tests.
 
 ## Commit & Pull Request Guidelines
 
-This repository has no commit history yet. Use concise imperative commits such
-as `Add parallel tool scheduling conformance case`. Pull requests should include
-a short problem statement, implementation summary, validation commands run, and
-links to any related issues. For behavior changes, mention updated spec,
-conformance, and docs.
+Recent commits use concise imperative summaries, for example `Update repository
+metadata`. Keep commits focused. Pull requests should include the problem,
+implementation summary, validation commands run, and related issues. For
+contract changes, call out updated `spec/v0`, conformance cases, and docs.
 
 ## Agent-Specific Instructions
 
 This project has no historical compatibility burden. Prefer clean breaking
-refactors over compatibility shims or legacy aliases. Use sub-agent CRs for
-bounded review, and report findings as `Must-Fix`, `Should-Fix`, and
-`Looks Good`. Fix credible `Must-Fix` items before handoff.
+refactors over shims or legacy aliases. Keep provider adapters, persistence,
+approval flows, plugins, and UI integrations outside core. Use sub-agent CRs for
+bounded review; report `Must-Fix`, `Should-Fix`, and `Looks Good`, and fix
+credible `Must-Fix` items before handoff.

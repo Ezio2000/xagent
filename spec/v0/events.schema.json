@@ -26,5 +26,88 @@
       "type": "string"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "model_delta" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/model_delta_data" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "model_delta_data": {
+      "oneOf": [
+        { "$ref": "#/$defs/text_delta" },
+        { "$ref": "#/$defs/tool_call_delta" },
+        { "$ref": "#/$defs/reasoning_delta" },
+        { "$ref": "#/$defs/usage_delta" }
+      ]
+    },
+    "text_delta": {
+      "type": "object",
+      "required": ["kind", "index", "text_delta", "part_type"],
+      "properties": {
+        "kind": { "const": "text_delta" },
+        "index": { "type": "integer", "minimum": 0 },
+        "text_delta": { "type": "string" },
+        "part_type": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "tool_call_delta": {
+      "type": "object",
+      "required": ["kind", "index"],
+      "properties": {
+        "kind": { "const": "tool_call_delta" },
+        "index": { "type": "integer", "minimum": 0 },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "arguments_delta": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "reasoning_delta": {
+      "type": "object",
+      "required": ["kind", "index", "text_delta"],
+      "properties": {
+        "kind": { "const": "reasoning_delta" },
+        "index": { "type": "integer", "minimum": 0 },
+        "text_delta": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "usage_delta": {
+      "type": "object",
+      "required": ["kind", "usage"],
+      "properties": {
+        "kind": { "const": "usage_delta" },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "total_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "reasoning_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "cache_read_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "cache_write_tokens": { "type": ["integer", "null"], "minimum": 0 },
+            "metadata": { "type": "object" }
+          },
+          "additionalProperties": true
+        },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": true
+    }
+  },
   "additionalProperties": true
 }

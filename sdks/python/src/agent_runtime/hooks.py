@@ -6,8 +6,8 @@ from collections.abc import Awaitable
 from typing import TypeAlias, TypeVar
 
 from agent_runtime.events import AgentEvent, EventEmitter
-from agent_runtime.messages import ModelResponse, ToolCall
-from agent_runtime.models import ModelRequest
+from agent_runtime.messages import ToolCall
+from agent_runtime.models import ModelRequest, ModelResponse
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.state import AgentState, AgentStatus
 from agent_runtime.tools import ToolResult

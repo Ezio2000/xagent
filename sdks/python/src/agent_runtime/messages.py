@@ -1,4 +1,4 @@
-"""Message and model response protocol types."""
+"""Message and content protocol types."""
 
 from __future__ import annotations
 
@@ -415,94 +415,6 @@ class Message:
                 "message",
             )
         )
-        return data
-
-
-@dataclass(slots=True)
-class ModelResponse:
-    """Normalized model response returned by model adapters."""
-
-    parts: list[ContentPart] = field(default_factory=_empty_parts)
-    tool_calls: list[ToolCall] = field(default_factory=_empty_tool_calls)
-    finish_reason: str | None = None
-    metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
-    extra: Mapping[str, Any] = field(default_factory=_empty_mapping)
-
-    def __post_init__(self) -> None:
-        self.parts = [ContentPart.from_dict(part.to_dict()) for part in self.parts]
-        self.tool_calls = [ToolCall.from_dict(call.to_dict()) for call in self.tool_calls]
-        self.metadata = _copy_mapping(self.metadata)
-        self.extra = _copy_extra(
-            self.extra,
-            {"parts", "tool_calls", "finish_reason", "metadata"},
-            "model response",
-        )
-
-    @classmethod
-    def text(cls, text: str, tool_calls: Sequence[ToolCall] | None = None) -> ModelResponse:
-        return cls(parts=[ContentPart.text_part(text)], tool_calls=list(tool_calls or ()))
-
-    @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> ModelResponse:
-        known = {"parts", "tool_calls", "finish_reason", "metadata"}
-        return cls(
-            parts=[
-                ContentPart.from_dict(_expect_mapping(part, "model response part"))
-                for part in cast(Sequence[object], value.get("parts") or ())
-            ],
-            tool_calls=[
-                ToolCall.from_dict(_expect_mapping(call, "model response tool call"))
-                for call in cast(Sequence[object], value.get("tool_calls") or ())
-            ],
-            finish_reason=cast(str | None, value.get("finish_reason")),
-            metadata=_expect_mapping(value.get("metadata") or {}, "model response metadata"),
-            extra={key: deepcopy(item) for key, item in value.items() if key not in known},
-        )
-
-    @property
-    def has_tool_calls(self) -> bool:
-        return bool(self.tool_calls)
-
-    @property
-    def text_content(self) -> str:
-        return "".join(part.text or "" for part in self.parts if part.type == "text")
-
-    def to_assistant_message(self) -> Message:
-        metadata = _copy_mapping(self.metadata)
-        if self.finish_reason is not None:
-            metadata["finish_reason"] = self.finish_reason
-        return Message.assistant(
-            self.parts,
-            self.tool_calls,
-            metadata=metadata,
-            extra=self.extra,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "parts": [part.to_dict() for part in self.parts],
-            "tool_calls": [call.to_dict() for call in self.tool_calls],
-        }
-        if self.finish_reason is not None:
-            data["finish_reason"] = self.finish_reason
-        if self.metadata:
-            data["metadata"] = _copy_mapping(self.metadata)
-        data.update(
-            _copy_extra(
-                self.extra,
-                {"parts", "tool_calls", "finish_reason", "metadata"},
-                "model response",
-            )
-        )
-        return data
-
-    def summary(self) -> dict[str, Any]:
-        data = content_parts_summary(self.parts) | {
-            "tool_call_count": len(self.tool_calls),
-            "has_tool_calls": bool(self.tool_calls),
-        }
-        if self.finish_reason is not None:
-            data["finish_reason"] = self.finish_reason
         return data
 
 

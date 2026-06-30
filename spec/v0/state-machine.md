@@ -18,6 +18,11 @@ When all tool observations are appended, the runtime returns to `planning`.
 When the model returns no tool calls, the runtime completes with the model
 content parts as the final answer.
 
+When model streaming is enabled, SDKs may emit `model_delta` events between
+`model_started` and `model_completed`. These events are live progress only. The
+state machine must not append assistant messages or checkpoint streamed partial
+content until the complete `ModelResponse` is available.
+
 The runtime must stop with `limit_exceeded` when any configured limit is
 exceeded.
 
@@ -38,3 +43,5 @@ For terminal failures and limits, SDKs should emit `state_changed`, then
 
 Tool scheduling semantics, including simple parallel execution, are specified in
 `tool-scheduling.md`.
+
+Model streaming semantics are specified in `model-stream.md`.

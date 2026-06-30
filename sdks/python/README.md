@@ -20,10 +20,13 @@ from agent_runtime import (
     ContentPart,
     LoopLimits,
     Message,
+    ModelOptions,
     ModelResponse,
+    ResponseFormat,
     RuntimeContext,
     RuntimeHook,
     RunSnapshot,
+    ToolChoice,
     ToolResult,
     ToolSpec,
 )
@@ -32,6 +35,19 @@ agent = AgentLoop(model=model_client, tools=[tool])
 result = await agent.run(
     [Message.user_text("Use the tool if needed")],
     context=RuntimeContext(run_id="run-1", metadata={"tenant": "acme"}),
+)
+```
+
+`AgentLoop` accepts provider-neutral model controls. Provider adapters translate
+these values to their concrete API shape:
+
+```python
+agent = AgentLoop(
+    model=model_client,
+    tools=[tool],
+    model_options=ModelOptions(model="provider-model", temperature=0.2),
+    tool_choice=ToolChoice(mode="auto", allow_parallel_tool_calls=True),
+    response_format=ResponseFormat(type="json_object"),
 )
 ```
 
@@ -95,6 +111,21 @@ class ProgressHook(RuntimeHook):
         if event.type == "model_started":
             emitter.emit("custom_progress", {"phase": "model"})
 ```
+
+If a model adapter implements `stream(request, context)`, callers can enable
+live model deltas. The method must return an async iterator directly, usually
+because it is an async generator.
+
+```python
+async for event in agent.run_events(messages, stream=True):
+    if event.type == "model_delta":
+        render(event.data)
+    if event.type == "checkpoint":
+        save(event.data)
+```
+
+`model_delta` is for live rendering only. Durable resume state is still carried
+only by `checkpoint` events after the complete model response is available.
 
 `RunSnapshot.to_dict()` is the durable checkpoint boundary. It contains
 `AgentState` plus `RuntimeContext`; context timestamps are wall-clock epoch
