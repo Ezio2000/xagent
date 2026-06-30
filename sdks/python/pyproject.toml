@@ -9,7 +9,7 @@ authors = [{ name = "agent-runtime contributors" }]
 dependencies = []
 
 [project.urls]
-Repository = "https://example.invalid/agent-runtime"
+Repository = "https://github.com/Ezio2000/agent-runtime"
 
 [build-system]
 requires = ["hatchling"]
@@ -41,4 +41,3 @@ testpaths = ["tests"]
 include = ["src", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
-
