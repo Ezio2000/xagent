@@ -7,6 +7,7 @@
         {
           "id": "call-1",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "a"
           }
@@ -19,6 +20,7 @@
         {
           "id": "call-2",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "b"
           }
@@ -26,7 +28,12 @@
       ]
     },
     {
-      "parts": [{ "type": "text", "text": "a b" }],
+      "parts": [
+        {
+          "type": "text",
+          "text": "a b"
+        }
+      ],
       "tool_calls": []
     }
   ],

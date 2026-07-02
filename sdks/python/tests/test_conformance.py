@@ -378,17 +378,17 @@ INVALID_MESSAGE_SCHEMA_PAYLOADS: list[dict[str, Any]] = [
     {
         "role": "user",
         "parts": [],
-        "tool_calls": [{"id": "call-1", "name": "tool", "arguments": {}}],
+        "tool_calls": [{"id": "call-1", "name": "tool", "mode": "execute", "arguments": {}}],
     },
     {
         "role": "assistant",
         "parts": [],
-        "tool_calls": [{"id": "", "name": "tool", "arguments": {}}],
+        "tool_calls": [{"id": "", "name": "tool", "mode": "execute", "arguments": {}}],
     },
     {
         "role": "assistant",
         "parts": [],
-        "tool_calls": [{"id": "call-1", "name": "", "arguments": {}}],
+        "tool_calls": [{"id": "call-1", "name": "", "mode": "execute", "arguments": {}}],
     },
 ]
 
@@ -403,8 +403,8 @@ def test_message_schema_rejects_runtime_invalid_payloads(payload: dict[str, Any]
 
 def test_tool_call_ids_are_portably_unique_beyond_json_schema() -> None:
     duplicate_calls: list[dict[str, Any]] = [
-        {"id": "call-1", "name": "tool", "arguments": {}},
-        {"id": "call-1", "name": "tool", "arguments": {}},
+        {"id": "call-1", "name": "tool", "mode": "execute", "arguments": {}},
+        {"id": "call-1", "name": "tool", "mode": "execute", "arguments": {}},
     ]
     message: dict[str, Any] = {"role": "assistant", "parts": [], "tool_calls": duplicate_calls}
     response: dict[str, Any] = {"parts": [], "tool_calls": duplicate_calls}
@@ -432,6 +432,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
         {
             "id": "call-1",
             "name": "wait",
+            "mode": "execute",
             "batch_id": "tool-batch-1",
             "parallel": False,
             "index": 0,
@@ -439,6 +440,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                 "part_count": 1,
                 "part_types": ["text"],
                 "text_length": 7,
+                "result_kind": "observation",
                 "is_error": False,
                 "metadata": {},
                 "pause": pause,
@@ -472,6 +474,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                 {
                     "id": "call-1",
                     "name": "wait",
+                    "mode": "execute",
                     "arguments": {},
                     "batch_id": "tool-batch-1",
                     "parallel": False,
@@ -485,6 +488,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                 {
                     "id": "call-1",
                     "name": "wait",
+                    "mode": "execute",
                     "batch_id": "tool-batch-1",
                     "parallel": False,
                     "index": 0,
@@ -492,6 +496,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                         "part_count": 1,
                         "part_types": ["text"],
                         "text_length": 7,
+                        "result_kind": "observation",
                         "is_error": False,
                         "metadata": {},
                         "pause": pause,
@@ -533,6 +538,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                                     {
                                         "id": "call-1",
                                         "name": "wait",
+                                        "mode": "execute",
                                         "arguments": {},
                                     }
                                 ],
@@ -655,6 +661,270 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
         )
 
 
+def test_tool_result_schemas_reject_known_mode_result_kind_mismatch() -> None:
+    event = AgentEvent(
+        EventTypes.TOOL_COMPLETED,
+        {
+            "id": "call-1",
+            "name": "tool",
+            "mode": "accept",
+            "batch_id": "tool-batch-1",
+            "parallel": False,
+            "index": 0,
+            "result": {
+                "part_count": 1,
+                "part_types": ["text"],
+                "text_length": 2,
+                "result_kind": "observation",
+                "is_error": False,
+                "metadata": {},
+                "pause": None,
+            },
+        },
+        run_id="run-1",
+        sequence=1,
+    ).to_dict()
+    trace_payload: dict[str, Any] = {
+        "id": "call-1",
+        "name": "tool",
+        "mode": "accept",
+        "batch_id": "tool-batch-1",
+        "parallel": False,
+        "index": 0,
+        "result": {
+            "part_count": 1,
+            "part_types": ["text"],
+            "text_length": 2,
+            "result_kind": "observation",
+            "is_error": False,
+            "metadata_keys": [],
+            "pause": None,
+        },
+    }
+    trace: dict[str, Any] = {
+        "run_id": "run-1",
+        "steps": [
+            {
+                "step_id": 1,
+                "kind": "tool_result",
+                "before_status": "executing_tools",
+                "after_status": "executing_tools",
+                "references": {},
+                "payload": trace_payload,
+                "schema_version": "v0",
+            }
+        ],
+        "metadata": {"metadata_keys": []},
+        "schema_version": "v0",
+    }
+
+    with pytest.raises(AssertionError, match="acceptance"):
+        assert_matches_schema("tool_completed event", EVENT_SCHEMA_VALIDATOR, event)
+    with pytest.raises(AssertionError, match="acceptance"):
+        assert_matches_schema("tool_result trace", RUN_TRACE_SCHEMA_VALIDATOR, trace)
+
+
+def test_tool_result_schemas_allow_accept_mode_rejection() -> None:
+    event = AgentEvent(
+        EventTypes.TOOL_COMPLETED,
+        {
+            "id": "call-1",
+            "name": "tool",
+            "mode": "accept",
+            "batch_id": "tool-batch-1",
+            "parallel": False,
+            "index": 0,
+            "result": {
+                "part_count": 1,
+                "part_types": ["text"],
+                "text_length": 8,
+                "result_kind": "rejection",
+                "is_error": True,
+                "metadata": {},
+                "pause": None,
+            },
+        },
+        run_id="run-1",
+        sequence=1,
+    ).to_dict()
+    trace: dict[str, Any] = {
+        "run_id": "run-1",
+        "steps": [
+            {
+                "step_id": 1,
+                "kind": "tool_result",
+                "before_status": "executing_tools",
+                "after_status": "executing_tools",
+                "references": {},
+                "payload": {
+                    "id": "call-1",
+                    "name": "tool",
+                    "mode": "accept",
+                    "batch_id": "tool-batch-1",
+                    "parallel": False,
+                    "index": 0,
+                    "result": {
+                        "part_count": 1,
+                        "part_types": ["text"],
+                        "text_length": 8,
+                        "result_kind": "rejection",
+                        "is_error": True,
+                        "metadata_keys": [],
+                        "pause": None,
+                    },
+                },
+                "schema_version": "v0",
+            }
+        ],
+        "metadata": {"metadata_keys": []},
+        "schema_version": "v0",
+    }
+
+    assert_matches_schema("accept rejection tool_completed event", EVENT_SCHEMA_VALIDATOR, event)
+    assert_matches_schema("accept rejection tool_result trace", RUN_TRACE_SCHEMA_VALIDATOR, trace)
+
+
+def test_tool_result_schemas_allow_extension_mode_result_kind() -> None:
+    event = AgentEvent(
+        EventTypes.TOOL_COMPLETED,
+        {
+            "id": "call-1",
+            "name": "tool",
+            "mode": "handoff",
+            "batch_id": "tool-batch-1",
+            "parallel": False,
+            "index": 0,
+            "result": {
+                "part_count": 1,
+                "part_types": ["text"],
+                "text_length": 2,
+                "result_kind": "handoff",
+                "is_error": False,
+                "metadata": {},
+                "pause": None,
+                "correlation_id": "job-1",
+            },
+        },
+        run_id="run-1",
+        sequence=1,
+    ).to_dict()
+    trace_payload: dict[str, Any] = {
+        "id": "call-1",
+        "name": "tool",
+        "mode": "handoff",
+        "batch_id": "tool-batch-1",
+        "parallel": False,
+        "index": 0,
+        "result": {
+            "part_count": 1,
+            "part_types": ["text"],
+            "text_length": 2,
+            "result_kind": "handoff",
+            "is_error": False,
+            "metadata_keys": [],
+            "pause": None,
+            "correlation_id": "job-1",
+        },
+    }
+    trace: dict[str, Any] = {
+        "run_id": "run-1",
+        "steps": [
+            {
+                "step_id": 1,
+                "kind": "tool_result",
+                "before_status": "executing_tools",
+                "after_status": "executing_tools",
+                "references": {},
+                "payload": trace_payload,
+                "schema_version": "v0",
+            }
+        ],
+        "metadata": {"metadata_keys": []},
+        "schema_version": "v0",
+    }
+
+    assert_matches_schema("extension tool_completed event", EVENT_SCHEMA_VALIDATOR, event)
+    assert_matches_schema("extension tool_result trace", RUN_TRACE_SCHEMA_VALIDATOR, trace)
+
+
+@pytest.mark.parametrize("reserved_kind", ["observation", "acceptance", "rejection"])
+def test_tool_result_schemas_reject_extension_mode_reserved_result_kind(
+    reserved_kind: str,
+) -> None:
+    event_result: dict[str, Any] = {
+        "part_count": 1,
+        "part_types": ["text"],
+        "text_length": 2,
+        "result_kind": reserved_kind,
+        "is_error": False,
+        "metadata": {},
+        "pause": None,
+    }
+    trace_result: dict[str, Any] = {
+        "part_count": 1,
+        "part_types": ["text"],
+        "text_length": 2,
+        "result_kind": reserved_kind,
+        "is_error": False,
+        "metadata_keys": [],
+        "pause": None,
+    }
+    if reserved_kind == "acceptance":
+        event_result["correlation_id"] = "job-1"
+        trace_result["correlation_id"] = "job-1"
+    if reserved_kind == "rejection":
+        event_result["is_error"] = True
+        trace_result["is_error"] = True
+
+    event = AgentEvent(
+        EventTypes.TOOL_COMPLETED,
+        {
+            "id": "call-1",
+            "name": "tool",
+            "mode": "handoff",
+            "batch_id": "tool-batch-1",
+            "parallel": False,
+            "index": 0,
+            "result": event_result,
+        },
+        run_id="run-1",
+        sequence=1,
+    ).to_dict()
+    trace: dict[str, Any] = {
+        "run_id": "run-1",
+        "steps": [
+            {
+                "step_id": 1,
+                "kind": "tool_result",
+                "before_status": "executing_tools",
+                "after_status": "executing_tools",
+                "references": {},
+                "payload": {
+                    "id": "call-1",
+                    "name": "tool",
+                    "mode": "handoff",
+                    "batch_id": "tool-batch-1",
+                    "parallel": False,
+                    "index": 0,
+                    "result": trace_result,
+                },
+                "schema_version": "v0",
+            }
+        ],
+        "metadata": {"metadata_keys": []},
+        "schema_version": "v0",
+    }
+
+    with pytest.raises(AssertionError, match="schema violation"):
+        assert_matches_schema(
+            "extension reserved tool_completed event", EVENT_SCHEMA_VALIDATOR, event
+        )
+    with pytest.raises(AssertionError, match="schema violation"):
+        assert_matches_schema(
+            "extension reserved tool_result trace", RUN_TRACE_SCHEMA_VALIDATOR, trace
+        )
+
+
 def test_resume_input_schema_rejects_invalid_cross_field_combinations() -> None:
     def payload(
         status: str,
@@ -709,7 +979,12 @@ def test_resume_input_schema_rejects_invalid_cross_field_combinations() -> None:
         },
         append_messages=[{"role": "user", "parts": [{"type": "text", "text": "callback"}]}],
     )
-    pending_call: dict[str, Any] = {"id": "call-1", "name": "echo", "arguments": {}}
+    pending_call: dict[str, Any] = {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "arguments": {},
+    }
     planning_pending = payload("planning", pending_tool_calls=[pending_call])
     executing_without_pending = payload("executing_tools")
     paused_planning_pending = payload(

@@ -3,7 +3,7 @@
 The v0.1 state machine has six states:
 
 - `planning`: call the model and ask it for either a final answer or tool calls.
-- `executing_tools`: execute requested tool calls and append observations.
+- `executing_tools`: execute or accept requested tool calls and append outputs.
 - `paused`: invocation-terminal state with a resumable `pause` payload.
 - `completed`: terminal state with a final answer.
 - `failed`: terminal state for unrecoverable runtime failures.
@@ -40,10 +40,24 @@ after a full parallel tool batch commit. Interrupting model generation may stop 
 stream or model call early, but any partial `model_delta` output remains live UI
 progress only and is not appended as an assistant message.
 
+Tool calls carry an open non-empty `mode` string. Core runtimes recognize
+`execute` and `accept`: execute-mode calls append a `ToolObservation`, and
+accept-mode calls append either a `ToolAcceptance` acknowledgement or a
+`ToolRejection` error result. Accept mode completes immediately from the
+runtime's perspective. Any later external result enters through conversation
+insertion, not by reopening the original tool call.
+
+Conversation insertion is a separate planning-time input path. If external
+input is inserted while a model call is in flight, the runtime cancels that
+model call, appends an `external` message, emits `conversation_inserted`,
+checkpoints, and asks the model to plan again. It is not a pause and does not
+depend on a tool call.
+
 Every status change emits `state_changed`, including transitions to `paused` and
 terminal transitions, and then emits `checkpoint` with the current
 `RunSnapshot`. The loop also emits `checkpoint` after committing a model response
-to history and after committing tool observations to history. Serial tools
+to history, after committing conversation inserts, and after committing tool
+outputs to history. Serial tools
 commit one result at a time. Parallel tool batches commit and checkpoint
 atomically after every call in the batch has completed.
 If a boundary pause is applied at a model-response boundary, the checkpoint for

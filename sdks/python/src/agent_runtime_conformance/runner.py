@@ -16,7 +16,7 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
-from agent_runtime.control import PauseController, PauseRequest
+from agent_runtime.control import ConversationInsert, PauseRequest, RunController
 from agent_runtime.events import AgentEvent, EventTypes
 from agent_runtime.limits import LoopLimits
 from agent_runtime.loop import AgentLoop, AgentResult
@@ -31,7 +31,15 @@ from agent_runtime.resume import PauseSelector, ResumeInput
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentStatus
-from agent_runtime.tools import Tool, ToolResult, ToolSpec
+from agent_runtime.tools import (
+    Tool,
+    ToolAcceptance,
+    ToolExecutionContext,
+    ToolInvocation,
+    ToolObservation,
+    ToolRejection,
+    ToolSpec,
+)
 from agent_runtime.trace import RunTrace, replay_trace
 
 CASE_KEYS = {
@@ -40,6 +48,8 @@ CASE_KEYS = {
     "limits",
     "pause_request",
     "pause_request_timing",
+    "conversation_insert",
+    "conversation_insert_timing",
     "model_steps",
     "resume_model_steps",
     "resume_append_messages",
@@ -62,6 +72,8 @@ CASE_KEYS = {
     "expected_pending_tool_call_ids",
     "expected_pause",
     "expected_model_deltas",
+    "expected_event_types",
+    "expected_trace_kinds",
     "forbidden_event_types",
     "forbidden_checkpoint_statuses",
     "forbidden_checkpoint_tool_counts",
@@ -91,6 +103,7 @@ STREAM_EVENT_KEYS = {
     "id",
     "name",
     "arguments_delta",
+    "mode",
     "seconds",
 }
 LIMIT_KEYS = {
@@ -107,6 +120,8 @@ REQUIRED_SCHEMA_FILES = {
     "resume-input.schema.json",
     "messages.schema.json",
     "model-response.schema.json",
+    "tools.schema.json",
+    "tool-result.schema.json",
     "limits.schema.json",
 }
 STREAM_EVENT_REQUIRED_KEYS: dict[str, set[str]] = {
@@ -144,15 +159,18 @@ class ScriptedModel:
         self,
         steps: Sequence[ModelResponse],
         *,
-        pause_controller: PauseController | None = None,
+        controller: RunController | None = None,
         pause_request_on_call: PauseRequest | None = None,
         pause_request_on_stream_event: PauseRequest | None = None,
+        conversation_insert_on_call: ConversationInsert | None = None,
     ) -> None:
         self._steps = list(steps)
-        self._pause_controller = pause_controller
+        self._controller = controller
         self._pause_request_on_call = pause_request_on_call
         self._pause_request_on_stream_event = pause_request_on_stream_event
+        self._conversation_insert_on_call = conversation_insert_on_call
         self._pause_requested = False
+        self._conversation_inserted = False
         self.calls = 0
 
     async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
@@ -161,13 +179,19 @@ class ScriptedModel:
             raise AssertionError("scripted model exhausted")
         response = self._steps[self.calls]
         self.calls += 1
+        self._apply_conversation_insert_once(self._conversation_insert_on_call)
         self._apply_pause_once(self._pause_request_on_call)
         return response
 
     def _apply_pause_once(self, request: PauseRequest | None) -> None:
-        if self._pause_controller is not None and request is not None and not self._pause_requested:
+        if self._controller is not None and request is not None and not self._pause_requested:
             self._pause_requested = True
-            apply_pause_request(self._pause_controller, request)
+            apply_pause_request(self._controller, request)
+
+    def _apply_conversation_insert_once(self, insert: ConversationInsert | None) -> None:
+        if self._controller is not None and insert is not None and not self._conversation_inserted:
+            self._conversation_inserted = True
+            self._controller.insert(insert)
 
 
 class StreamedCaseModel(ScriptedModel):
@@ -176,15 +200,17 @@ class StreamedCaseModel(ScriptedModel):
         steps: Sequence[ModelResponse],
         stream_steps: Sequence[dict[str, Any]],
         *,
-        pause_controller: PauseController | None = None,
+        controller: RunController | None = None,
         pause_request_on_call: PauseRequest | None = None,
         pause_request_on_stream_event: PauseRequest | None = None,
+        conversation_insert_on_call: ConversationInsert | None = None,
     ) -> None:
         super().__init__(
             steps,
-            pause_controller=pause_controller,
+            controller=controller,
             pause_request_on_call=pause_request_on_call,
             pause_request_on_stream_event=pause_request_on_stream_event,
+            conversation_insert_on_call=conversation_insert_on_call,
         )
         self._stream_steps = list(stream_steps)
         self.stream_calls = 0
@@ -196,6 +222,7 @@ class StreamedCaseModel(ScriptedModel):
 
         step = self._stream_steps[self.stream_calls]
         self.stream_calls += 1
+        self._apply_conversation_insert_once(self._conversation_insert_on_call)
         self._apply_pause_once(self._pause_request_on_call)
         for raw_event in cast(list[dict[str, Any]], step.get("events") or []):
             event_type = expect_case_str(raw_event["type"], "stream event type")
@@ -210,6 +237,7 @@ class StreamedCaseModel(ScriptedModel):
                     index=expect_case_int(raw_event["index"], "stream event index"),
                     id=expect_case_optional_str(raw_event.get("id"), "stream event id"),
                     name=expect_case_optional_str(raw_event.get("name"), "stream event name"),
+                    mode=expect_case_optional_str(raw_event.get("mode"), "stream event mode"),
                     arguments_delta=expect_case_optional_str(
                         raw_event.get("arguments_delta"), "stream event arguments_delta"
                     ),
@@ -231,9 +259,31 @@ class EchoTool:
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        return ToolResult.text(str(arguments.get("text", "")))
+        return ToolObservation.text(str(invocation.arguments.get("text", "")))
+
+
+class AcceptTool:
+    spec = ToolSpec(
+        name="accept",
+        description="Accept an external operation.",
+        input_schema={"type": "object", "properties": {}},
+        modes=("accept",),
+    )
+
+    async def accept(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolAcceptance | ToolRejection:
+        _ = context
+        if invocation.arguments.get("reject") is True:
+            return ToolRejection.text(str(invocation.arguments.get("text", "rejected")))
+        return ToolAcceptance.text(
+            str(invocation.arguments.get("text", "accepted")),
+            correlation_id=str(invocation.arguments.get("correlation_id", invocation.id)),
+        )
 
 
 class FailTool:
@@ -243,8 +293,10 @@ class FailTool:
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
-        _ = arguments, context
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = invocation, context
         raise RuntimeError("tool failed")
 
 
@@ -256,10 +308,12 @@ class DelayedEchoTool:
         annotations={"parallel_safe": True, "read_only": True, "idempotent": True},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        await asyncio.sleep(float(arguments.get("delay", 0)))
-        return ToolResult.text(str(arguments.get("text", "")))
+        await asyncio.sleep(float(invocation.arguments.get("delay", 0)))
+        return ToolObservation.text(str(invocation.arguments.get("text", "")))
 
 
 class WaitTool:
@@ -269,12 +323,14 @@ class WaitTool:
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        return ToolResult.waiting(
-            str(arguments.get("text", "external wait started")),
-            wait_id=str(arguments["wait_id"]),
-            reason=str(arguments.get("reason", "external_wait")),
+        return ToolObservation.waiting(
+            str(invocation.arguments.get("text", "external wait started")),
+            wait_id=str(invocation.arguments["wait_id"]),
+            reason=str(invocation.arguments.get("reason", "external_wait")),
         )
 
 
@@ -286,13 +342,15 @@ class ParallelWaitTool:
         annotations={"parallel_safe": True, "read_only": True, "idempotent": True},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        await asyncio.sleep(float(arguments.get("delay", 0)))
-        return ToolResult.waiting(
-            str(arguments.get("text", "external wait started")),
-            wait_id=str(arguments["wait_id"]),
-            reason=str(arguments.get("reason", "external_wait")),
+        await asyncio.sleep(float(invocation.arguments.get("delay", 0)))
+        return ToolObservation.waiting(
+            str(invocation.arguments.get("text", "external wait started")),
+            wait_id=str(invocation.arguments["wait_id"]),
+            reason=str(invocation.arguments.get("reason", "external_wait")),
         )
 
 
@@ -394,6 +452,15 @@ class ConformanceRunner:
                 expect_case_str(case["expected_resume_error"], f"{name}.expected_resume_error")
         if case.get("pause_request_timing") not in {None, "during_model_call", "stream_event"}:
             raise ValueError(f"{name} has invalid pause_request_timing")
+        if case.get("conversation_insert_timing") not in {None, "during_model_call"}:
+            raise ValueError(f"{name} has invalid conversation_insert_timing")
+        if "conversation_insert" in case:
+            raw_insert = case["conversation_insert"]
+            if not isinstance(raw_insert, dict):
+                raise TypeError(f"{name}.conversation_insert must be an object")
+            ConversationInsert.from_dict(cast(Mapping[str, Any], raw_insert))
+            if case.get("conversation_insert_timing") != "during_model_call":
+                raise ValueError(f"{name}.conversation_insert requires conversation_insert_timing")
         if "limits" in case:
             raw_limits = case["limits"]
             if not isinstance(raw_limits, dict):
@@ -470,6 +537,11 @@ class ConformanceRunner:
                     item.get("total_tool_calls"),
                     f"{name}.forbidden_checkpoint_status_tool_counts[{index}].total_tool_calls",
                 )
+        for key in ("expected_event_types", "expected_trace_kinds", "forbidden_event_types"):
+            if key in case:
+                for item in expect_case_list_of_strings(case[key], f"{name}.{key}"):
+                    if not item:
+                        raise ValueError(f"{name}.{key} items must not be empty")
 
     def _validate_stream_event(
         self, name: str, step_index: int, event_index: int, event: dict[str, Any]
@@ -493,7 +565,7 @@ class ConformanceRunner:
             expect_case_str(event["part_type"], f"{label}.part_type")
         if "seconds" in event:
             expect_case_number(event["seconds"], f"{label}.seconds")
-        for optional_key in ("id", "name", "arguments_delta"):
+        for optional_key in ("id", "name", "mode", "arguments_delta"):
             if optional_key in event:
                 expect_case_optional_str(event[optional_key], f"{label}.{optional_key}")
 
@@ -552,8 +624,8 @@ class ConformanceRunner:
         steps: Sequence[ModelResponse],
         stream_steps: Sequence[dict[str, Any]],
     ) -> AgentResult:
-        pause_controller = pause_controller_from_case(case)
-        model = model_from_case(case, steps, stream_steps, pause_controller)
+        controller = controller_from_case(case)
+        model = model_from_case(case, steps, stream_steps, controller)
         return await AgentLoop(
             model=model,
             tools=case_tools(),
@@ -561,7 +633,7 @@ class ConformanceRunner:
         ).run(
             [Message.user_text("run conformance case")],
             stream=bool(stream_steps),
-            pause_controller=pause_controller,
+            controller=controller,
         )
 
     async def collect_case_events(
@@ -570,8 +642,8 @@ class ConformanceRunner:
         steps: Sequence[ModelResponse],
         stream_steps: Sequence[dict[str, Any]],
     ) -> list[AgentEvent]:
-        pause_controller = pause_controller_from_case(case)
-        model = model_from_case(case, steps, stream_steps, pause_controller)
+        controller = controller_from_case(case)
+        model = model_from_case(case, steps, stream_steps, controller)
         return [
             event
             async for event in AgentLoop(
@@ -581,7 +653,7 @@ class ConformanceRunner:
             ).run_events(
                 [Message.user_text("run conformance case")],
                 stream=bool(stream_steps),
-                pause_controller=pause_controller,
+                controller=controller,
             )
         ]
 
@@ -594,7 +666,7 @@ class ConformanceRunner:
         return [
             event
             async for event in AgentLoop(
-                model=model_from_case(case, steps, [], pause_controller=None),
+                model=model_from_case(case, steps, [], controller=None),
                 tools=case_tools(),
                 limits=limits_from_case(case),
             ).run_snapshot_events(resume_input)
@@ -755,6 +827,27 @@ class ConformanceRunner:
             replay_trace(event_trace).final_status is expected_status,
             "event trace final status mismatch",
         )
+        if "expected_event_types" in case:
+            expected_event_types = expect_case_list_of_strings(
+                case["expected_event_types"], "expected_event_types"
+            )
+            actual_event_types = [event.type for event in events]
+            missing = [
+                event_type
+                for event_type in expected_event_types
+                if event_type not in actual_event_types
+            ]
+            check(not missing, f"missing expected event type(s): {missing}")
+        if "expected_trace_kinds" in case:
+            expected_trace_kinds = expect_case_list_of_strings(
+                case["expected_trace_kinds"], "expected_trace_kinds"
+            )
+            result_kinds = [step.kind for step in trace.steps]
+            event_kinds = [step.kind for step in event_trace.steps]
+            missing_result = [kind for kind in expected_trace_kinds if kind not in result_kinds]
+            missing_event = [kind for kind in expected_trace_kinds if kind not in event_kinds]
+            check(not missing_result, f"result trace missing expected kind(s): {missing_result}")
+            check(not missing_event, f"event trace missing expected kind(s): {missing_event}")
         if result.snapshot is not None:
             self.assert_matches_schema(
                 "result snapshot",
@@ -993,7 +1086,7 @@ class ConformanceRunner:
             for step in cast(list[dict[str, Any]], case.get("resume_model_steps") or [])
         ]
         result = await AgentLoop(
-            model=model_from_case(case, resume_steps, [], pause_controller=None),
+            model=model_from_case(case, resume_steps, [], controller=None),
             tools=case_tools(),
             limits=limits_from_case(case),
         ).run_snapshot(resume_input)
@@ -1147,6 +1240,13 @@ def expect_case_list(value: object, label: str) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], value)
 
 
+def expect_case_list_of_strings(value: object, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise TypeError(f"{label} must be an array")
+    items = cast(list[object], value)
+    return [expect_case_str(item, f"{label} item") for item in items]
+
+
 def expect_case_str(value: object, label: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{label} must be a string")
@@ -1203,7 +1303,14 @@ def pause_request_from_case(case: dict[str, Any]) -> PauseRequest | None:
     return PauseRequest.from_dict(cast(Mapping[str, Any], raw_pause_obj))
 
 
-def apply_pause_request(controller: PauseController, request: PauseRequest) -> None:
+def conversation_insert_from_case(case: dict[str, Any]) -> ConversationInsert | None:
+    raw_insert_obj = case.get("conversation_insert")
+    if not isinstance(raw_insert_obj, dict):
+        return None
+    return ConversationInsert.from_dict(cast(Mapping[str, Any], raw_insert_obj))
+
+
+def apply_pause_request(controller: RunController, request: PauseRequest) -> None:
     if request.interrupt:
         controller.interrupt(
             reason=request.reason,
@@ -1220,12 +1327,16 @@ def apply_pause_request(controller: PauseController, request: PauseRequest) -> N
     )
 
 
-def pause_controller_from_case(case: dict[str, Any]) -> PauseController | None:
+def controller_from_case(case: dict[str, Any]) -> RunController | None:
     request = pause_request_from_case(case)
-    if request is None:
+    insert = conversation_insert_from_case(case)
+    if request is None and insert is None:
         return None
-    controller = PauseController()
-    if case.get("pause_request_timing") not in {"during_model_call", "stream_event"}:
+    controller = RunController()
+    if request is not None and case.get("pause_request_timing") not in {
+        "during_model_call",
+        "stream_event",
+    }:
         apply_pause_request(controller, request)
     return controller
 
@@ -1234,7 +1345,7 @@ def model_from_case(
     case: dict[str, Any],
     steps: Sequence[ModelResponse],
     stream_steps: Sequence[dict[str, Any]],
-    pause_controller: PauseController | None,
+    controller: RunController | None,
 ) -> ScriptedModel:
     pause_request_on_call = (
         pause_request_from_case(case)
@@ -1246,24 +1357,31 @@ def model_from_case(
         if case.get("pause_request_timing") == "stream_event"
         else None
     )
+    conversation_insert_on_call = (
+        conversation_insert_from_case(case)
+        if case.get("conversation_insert_timing") == "during_model_call"
+        else None
+    )
     if stream_steps:
         return StreamedCaseModel(
             steps,
             stream_steps,
-            pause_controller=pause_controller,
+            controller=controller,
             pause_request_on_call=pause_request_on_call,
             pause_request_on_stream_event=pause_request_on_stream_event,
+            conversation_insert_on_call=conversation_insert_on_call,
         )
     return ScriptedModel(
         steps,
-        pause_controller=pause_controller,
+        controller=controller,
         pause_request_on_call=pause_request_on_call,
         pause_request_on_stream_event=pause_request_on_stream_event,
+        conversation_insert_on_call=conversation_insert_on_call,
     )
 
 
 def case_tools() -> list[Tool]:
-    return [EchoTool(), FailTool(), DelayedEchoTool(), WaitTool(), ParallelWaitTool()]
+    return [EchoTool(), AcceptTool(), FailTool(), DelayedEchoTool(), WaitTool(), ParallelWaitTool()]
 
 
 def messages_from_case(value: object) -> list[Message]:

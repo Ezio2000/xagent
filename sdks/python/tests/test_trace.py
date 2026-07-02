@@ -86,12 +86,15 @@ def trace_model_result_payload(*, tool_call_count: int = 0) -> dict[str, Any]:
     }
 
 
-def trace_tool_result_payload() -> dict[str, Any]:
+def trace_tool_result_payload(
+    *, result_kind: str = "observation", is_error: bool = False
+) -> dict[str, Any]:
     return {
         "part_count": 1,
         "part_types": ["text"],
         "text_length": 2,
-        "is_error": False,
+        "result_kind": result_kind,
+        "is_error": is_error,
         "metadata_keys": [],
         "pause": None,
     }
@@ -276,6 +279,7 @@ def test_trace_compacts_event_metadata_values() -> None:
                 {
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -283,6 +287,7 @@ def test_trace_compacts_event_metadata_values() -> None:
                         "part_count": 1,
                         "part_types": ["text"],
                         "text_length": 6,
+                        "result_kind": "observation",
                         "is_error": False,
                         "metadata": {"artifact": {"id": "a1"}},
                         "pause": None,
@@ -658,6 +663,7 @@ def test_replay_rejects_planning_transition_with_unfinished_pending_tool_call() 
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -671,6 +677,7 @@ def test_replay_rejects_planning_transition_with_unfinished_pending_tool_call() 
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -720,6 +727,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
@@ -733,6 +741,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                 payload={
                     "id": "call-2",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
@@ -746,6 +755,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                 payload={
                     "id": "call-2",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
@@ -760,6 +770,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
@@ -1189,6 +1200,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                 payload={
                     "id": "call-1",
                     "name": "wait",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
@@ -1202,6 +1214,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                 payload={
                     "id": "call-2",
                     "name": "wait",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
@@ -1215,6 +1228,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                 payload={
                     "id": "call-2",
                     "name": "wait",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
@@ -1222,6 +1236,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                         "part_count": 1,
                         "part_types": ["text"],
                         "text_length": 5,
+                        "result_kind": "observation",
                         "is_error": False,
                         "metadata_keys": [],
                         "pause": pause_payload("job-2"),
@@ -1236,6 +1251,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                 payload={
                     "id": "call-1",
                     "name": "wait",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
@@ -1243,6 +1259,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                         "part_count": 1,
                         "part_types": ["text"],
                         "text_length": 5,
+                        "result_kind": "observation",
                         "is_error": False,
                         "metadata_keys": [],
                         "pause": pause_payload("job-1"),
@@ -1294,6 +1311,7 @@ def test_replay_rejects_paused_trace_with_open_tool_call() -> None:
                 payload={
                     "id": "call-1",
                     "name": "wait",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -1705,6 +1723,7 @@ def test_replay_rejects_tool_result_envelope_mismatch() -> None:
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -1718,6 +1737,7 @@ def test_replay_rejects_tool_result_envelope_mismatch() -> None:
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 1,
@@ -1728,6 +1748,66 @@ def test_replay_rejects_tool_result_envelope_mismatch() -> None:
     )
 
     with pytest.raises(ReplayError, match="tool_result envelope"):
+        replay_trace(trace)
+
+
+@pytest.mark.parametrize(
+    ("result_kind", "is_error"),
+    [("observation", False), ("acceptance", False), ("rejection", True)],
+)
+def test_trace_rejects_custom_mode_reserved_result_kind(result_kind: str, is_error: bool) -> None:
+    result = trace_tool_result_payload(result_kind=result_kind, is_error=is_error)
+    if result_kind == "acceptance":
+        result["correlation_id"] = "job-1"
+    trace = RunTrace(
+        run_id="run-1",
+        steps=[
+            TraceStep(
+                step_id=1,
+                kind=TraceStepKinds.RUN_STARTED,
+                after_status=AgentStatus.EXECUTING_TOOLS,
+                payload=trace_state_payload(
+                    "executing_tools",
+                    message_roles=("user", "assistant"),
+                    pending_tool_call_ids=("call-1",),
+                    iterations=1,
+                ),
+            ),
+            TraceStep(
+                step_id=2,
+                kind=TraceStepKinds.TOOL_CALL,
+                before_status=AgentStatus.EXECUTING_TOOLS,
+                after_status=AgentStatus.EXECUTING_TOOLS,
+                payload={
+                    "id": "call-1",
+                    "name": "tool",
+                    "mode": "handoff",
+                    "batch_id": "batch-1",
+                    "parallel": False,
+                    "index": 0,
+                },
+            ),
+            TraceStep(
+                step_id=3,
+                kind=TraceStepKinds.TOOL_RESULT,
+                before_status=AgentStatus.EXECUTING_TOOLS,
+                after_status=AgentStatus.EXECUTING_TOOLS,
+                payload={
+                    "id": "call-1",
+                    "name": "tool",
+                    "mode": "handoff",
+                    "batch_id": "batch-1",
+                    "parallel": False,
+                    "index": 0,
+                    "result": result,
+                },
+            ),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="result_kind"):
+        RunTrace.from_dict(trace.to_dict())
+    with pytest.raises(ReplayError, match="result_kind"):
         replay_trace(trace)
 
 
@@ -1921,6 +2001,7 @@ def test_replay_rejects_tool_call_before_model_result_pending_checkpoint() -> No
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -1956,6 +2037,7 @@ def test_replay_rejects_total_tool_calls_mismatching_tool_results() -> None:
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -1969,6 +2051,7 @@ def test_replay_rejects_total_tool_calls_mismatching_tool_results() -> None:
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -2017,6 +2100,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
@@ -2030,6 +2114,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                 payload={
                     "id": "call-2",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
@@ -2043,6 +2128,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
@@ -2057,6 +2143,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                 payload={
                     "id": "call-2",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
@@ -2451,6 +2538,7 @@ def test_replay_rejects_planning_transition_missing_tool_result() -> None:
                 payload={
                     "id": "call-1",
                     "name": "tool",
+                    "mode": "execute",
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
@@ -2541,6 +2629,7 @@ async def test_replay_rejects_corrupted_terminal_tail() -> None:
     steps[-2]["payload"] = {
         "id": "call-1",
         "name": "tool",
+        "mode": "execute",
         "batch_id": "batch-1",
         "parallel": False,
         "index": 0,

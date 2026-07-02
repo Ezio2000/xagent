@@ -1,42 +1,71 @@
 # Tool Protocol
 
-A tool is an executable capability with a model-neutral `ToolSpec`.
+A tool is a model-neutral capability with an explicit invocation mode.
 
 Tools expose:
 
 - `spec.name`
 - `spec.description`
 - `spec.input_schema`
+- `spec.modes`: supported non-empty invocation modes. Core runtimes recognize
+  `execute` and `accept`; other modes are extension points handled by tool
+  `invoke`.
 - `spec.output_schema`
 - `spec.annotations`
 - `spec.metadata`
-- `execute(arguments, context)`
+- `execute(invocation, context)` when the tool supports `execute`.
+- `accept(invocation, context)` when the tool supports `accept`.
+- `invoke(invocation, context)` when the tool supports extension modes.
 
-Tool results separate model-visible content from host metadata:
+`ToolInvocation` contains `id`, `name`, `mode`, `arguments`, and call metadata.
+Model adapters map provider syntax into that shape. For a model-facing operator
+such as `accept(web_search({"query": "..."}))`, the normalized runtime shape is
+the original tool name plus `mode: "accept"`; core does not create wrapper tool
+names such as `accept_web_search`.
+
+Execute-mode tools return `ToolObservation`:
 
 - `parts`: multimodal content parts appended as the tool observation.
 - `metadata`: optional small JSON-serializable details.
 - `is_error`: whether the result represents a tool failure.
 - `pause`: optional core pause request for external waits.
 
-Only `parts` and runtime-owned markers such as `is_error` are copied into the
-durable tool message. Tool result metadata is available to hooks/events during
-the current invocation, but it is not copied into model-visible history,
-checkpoints, or trace payload values.
+Accept-mode tools return `ToolAcceptance` when work was accepted, or
+`ToolRejection` when the invocation could not be accepted:
 
-The portable result shape is specified in `spec/v0/tool-result.schema.json`.
+- `parts`: short model-visible acknowledgement that the work was accepted.
+- `correlation_id`: stable id that a later external insertion can reference.
+- `metadata`: host-owned details for hooks/events only.
+- `ToolRejection` carries `is_error: true`, optional `correlation_id`, and no
+  pause request.
 
-When a tool starts external work and needs a callback before the run should
-continue, it can return a waiting result. The runtime commits the tool
-observation, applies the external-wait decision, and checkpoints the resulting
-`paused` snapshot. The emitted `pause_requested` event uses `origin:
+Extension-mode tools return `ToolOutput` with a non-empty custom `kind`. Core
+runtime validation preserves the generic output shape and only applies
+mode/result-kind coupling to known `execute` and `accept` modes.
+
+Only `parts` and runtime-owned markers such as `result_kind`, `is_error`, and
+`correlation_id` are copied into the durable tool message. Tool output metadata
+is available to hooks/events during the current invocation, but it is not copied
+into model-visible history, checkpoints, or trace payload values.
+
+The portable output shape is specified in `spec/v0/tool-result.schema.json`.
+
+When an execute-mode tool starts external work and needs a callback before the
+run should continue, it can return a waiting observation. The runtime commits
+the tool observation, applies the external-wait decision, and checkpoints the
+resulting `paused` snapshot. The emitted `pause_requested` event uses `origin:
 "tool_result"`; `pause.source` remains the public source label carried by the
 tool request. It must not emit an intermediate checkpoint that can be resumed
 without the external-wait decision. The host owns the external job, callback
 transport, persistence, and any context it adds before resuming the snapshot. If
-a committed batch contains multiple waiting results, the first one in
+a committed batch contains multiple waiting observations, the first one in
 model-provided tool-call order supplies the pause metadata. Tool-result pauses
 are boundary waits and cannot interrupt model execution.
+
+Accept mode is different from a waiting observation. It completes immediately
+from the runtime's point of view and commits an acceptance or rejection tool
+message. Any later external result must enter through the conversation insertion
+protocol, not through the original tool call.
 
 The registry exposes neutral `ToolSpec` values. Provider adapters are
 responsible for converting those specs to provider-specific tool formats.

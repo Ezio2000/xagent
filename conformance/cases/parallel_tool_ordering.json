@@ -10,6 +10,7 @@
         {
           "id": "call-slow",
           "name": "delayed_echo",
+          "mode": "execute",
           "arguments": {
             "text": "slow",
             "delay": 0.03
@@ -18,6 +19,7 @@
         {
           "id": "call-fast",
           "name": "delayed_echo",
+          "mode": "execute",
           "arguments": {
             "text": "fast",
             "delay": 0.01
@@ -26,13 +28,23 @@
       ]
     },
     {
-      "parts": [{ "type": "text", "text": "done" }],
+      "parts": [
+        {
+          "type": "text",
+          "text": "done"
+        }
+      ],
       "tool_calls": []
     }
   ],
   "expected_status": "completed",
   "expected_final_text": "done",
   "expected_tool_calls": 2,
-  "expected_tool_texts": ["slow", "fast"],
-  "forbidden_checkpoint_tool_counts": [1]
+  "expected_tool_texts": [
+    "slow",
+    "fast"
+  ],
+  "forbidden_checkpoint_tool_counts": [
+    1
+  ]
 }

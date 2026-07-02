@@ -12,7 +12,9 @@ from agent_runtime import (
     ModelResponse,
     RuntimeContext,
     ToolCall,
-    ToolResult,
+    ToolExecutionContext,
+    ToolInvocation,
+    ToolObservation,
     ToolSpec,
 )
 
@@ -49,9 +51,11 @@ class FileTool:
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
-        _ = arguments, context
-        return ToolResult(
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = invocation, context
+        return ToolObservation(
             parts=[
                 ContentPart.text_part("created"),
                 ContentPart.file_ref("artifact-tool-1", media_type="text/csv", name="tool.csv"),
@@ -109,7 +113,7 @@ def test_protocol_types_do_not_accept_extra_fields() -> None:
         )
 
     with pytest.raises(TypeError):
-        cast(Any, ToolResult)(
+        cast(Any, ToolObservation)(
             parts=[ContentPart.text_part("created")], extra={"artifact_state": {}}
         )
 
@@ -121,7 +125,7 @@ def test_protocol_types_do_not_accept_extra_fields() -> None:
 
 def test_protocol_instances_do_not_have_extra_slots() -> None:
     response = ModelResponse.text("hello")
-    result = ToolResult.text("created", is_error=False)
+    result = ToolObservation.text("created", is_error=False)
 
     with pytest.raises(AttributeError):
         cast(Any, response).extra = {"provider_state": {"cursor": "abc"}}

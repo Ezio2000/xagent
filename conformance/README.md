@@ -30,7 +30,7 @@ A non-Python runner should provide the same deterministic harness:
   and traces against the v0 schemas.
 - Convert `model_steps` and `resume_model_steps` into scripted model responses.
 - Emit stream events from `stream_model_steps` when the case requests streaming.
-- Provide the standard conformance tools: `echo`, `fail`, `delayed_echo`,
+- Provide the standard conformance tools: `echo`, `accept`, `fail`, `delayed_echo`,
   `wait`, and `parallel_wait`.
 - Execute `run` cases from a single initial user message.
 - Execute `resume` cases by first selecting the requested checkpoint, then
@@ -48,18 +48,23 @@ function names are SDK-local details.
 
 Standard tool behavior is part of the harness contract:
 
-- `echo`: returns a text tool result containing `arguments.text`, or `""` when
+- `echo`: returns a text tool observation containing `arguments.text`, or `""` when
   `text` is absent.
+- `accept`: supports only `accept` mode. It returns a text tool rejection when
+  `arguments.reject` is `true`; otherwise it returns a text tool acceptance
+  containing `arguments.text` or `accepted`, with `correlation_id` set to
+  `arguments.correlation_id` or the tool call id.
 - `fail`: signals a tool failure with message `tool failed`.
 - `delayed_echo`: has `parallel_safe`, `read_only`, and `idempotent`
   annotations set to `true`; sleeps for `arguments.delay` seconds when present,
   then returns `arguments.text` or `""`.
-- `wait`: returns a non-error waiting tool result whose text is `arguments.text`
-  or `external wait started`, whose `wait_id` is `arguments.wait_id`, and whose
-  reason is `arguments.reason` or `external_wait`.
+- `wait`: returns a non-error waiting tool observation whose text is
+  `arguments.text` or `external wait started`, whose `wait_id` is
+  `arguments.wait_id`, and whose reason is `arguments.reason` or
+  `external_wait`.
 - `parallel_wait`: has the same annotations as `delayed_echo`, sleeps for
-  `arguments.delay` seconds when present, then returns the same waiting result
-  shape as `wait`.
+  `arguments.delay` seconds when present, then returns the same waiting
+  observation shape as `wait`.
 
 `wait` and `parallel_wait` produce tool-origin pause requests. Their pause
 request must not be an interrupt, and their committed paused checkpoint is the
@@ -78,16 +83,22 @@ All case files must define `name`. Runtime cases also define `model_steps`,
 `model-response.schema.json` objects. Each step currently requires `parts` and
 `tool_calls`; optional fields include `finish_reason`, `usage`, `model`,
 `response_id`, and `metadata`.
+Every tool call must include `id`, `name`, `mode`, and `arguments`.
 
 `limits`, when present, uses `limits.schema.json` and may include
 `max_iterations`, `max_total_tool_calls`, `timeout_seconds`,
 `stop_on_tool_error`, and `max_parallel_tool_calls`.
 
+`conversation_insert`, when present with `conversation_insert_timing:
+"during_model_call"`, is inserted through the run controller while the scripted
+model call is in flight. The runtime must discard the interrupted model response,
+append one `external` message, checkpoint it, and continue planning.
+
 `stream_model_steps`, when present, is an array of objects with `events`.
 Supported stream event types are:
 
 - `text_delta`: requires `index`, `text_delta`, and `part_type`.
-- `tool_call_delta`: requires `index` and may include `id`, `name`, and
+- `tool_call_delta`: requires `index` and may include `id`, `name`, `mode`, and
   `arguments_delta`.
 - `sleep`: requires `seconds`.
 - `pause_request`: requests the configured stream-time pause.
@@ -168,6 +179,8 @@ Common optional keys:
 - `expected_pending_tool_call_ids`
 - `expected_pause`
 - `expected_model_deltas`
+- `expected_event_types`
+- `expected_trace_kinds`
 - `forbidden_event_types`
 - `forbidden_checkpoint_statuses`
 - `forbidden_checkpoint_tool_counts`
@@ -177,6 +190,10 @@ Common optional keys:
 
 `pause_request_timing`, when present, is either `during_model_call` or
 `stream_event`.
+
+`expected_event_types` requires each listed event type to appear at least once.
+`expected_trace_kinds` requires each listed compact trace kind to appear in both
+the result trace and the event-derived trace.
 
 ## `resume`
 

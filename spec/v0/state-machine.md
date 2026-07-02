@@ -12,9 +12,13 @@ Status values:
 The loop starts in `planning`.
 
 When the model returns tool calls, the runtime appends the assistant tool-call
-message and transitions to `executing_tools`.
+message and transitions to `executing_tools`. Each tool call carries
+an open non-empty `mode` string. Core runtimes recognize `execute` and `accept`.
 
-When all tool observations are appended, the runtime returns to `planning`.
+When all tool outputs are appended, the runtime returns to `planning`.
+Execute-mode calls append observations. Accept-mode calls append acceptance
+acknowledgements or rejection errors and complete immediately from the runtime's
+perspective.
 
 When the model returns no tool calls, the runtime completes with the model
 content parts as the final answer.
@@ -40,6 +44,11 @@ If host code interrupts model generation before a complete response exists, the
 runtime may pause from the previous durable state; partial `model_delta` content
 must remain uncommitted.
 
+If external input is inserted while planning, SDKs must append it as an
+`external` message, emit `conversation_inserted`, checkpoint, and continue
+planning. If a model call is in flight, SDKs may cancel it before committing the
+insert. Conversation insertion is independent of pause and tool execution.
+
 The runtime must stop with `limit_exceeded` when any configured limit is
 exceeded.
 
@@ -49,9 +58,10 @@ invocation-terminal transitions to `paused`, `completed`, `failed`, and
 
 SDKs must expose a durable `RunSnapshot` value containing `AgentState` and
 `RuntimeContext`. A `checkpoint` event must be emitted after each model response
-is committed to message history, after tool observations are committed to
-message history and removed from `pending_tool_calls`, and after each state
-transition. Serial tool calls commit one result at a time; parallel tool batches
+is committed to message history, after conversation insertions are committed to
+message history, after tool outputs are committed to message history and removed
+from `pending_tool_calls`, and after each state transition. Serial tool calls
+commit one output at a time; parallel tool batches
 commit atomically as specified in `tool-scheduling.md`.
 If a boundary pause is requested at a non-terminal model-response boundary, SDKs
 must apply the pause before emitting a resumable checkpoint for that boundary;

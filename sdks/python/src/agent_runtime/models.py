@@ -13,6 +13,7 @@ from agent_runtime.messages import (
     ContentPart,
     Message,
     ToolCall,
+    ToolCallMode,
     content_part_without_metadata,
     content_parts_summary,
     tool_call_without_metadata,
@@ -815,6 +816,7 @@ class ModelToolCallDelta:
     index: int
     id: str | None = None
     name: str | None = None
+    mode: ToolCallMode | None = None
     arguments_delta: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
@@ -824,6 +826,7 @@ class ModelToolCallDelta:
         )
         object.__setattr__(self, "id", _expect_optional_str(self.id, "tool call delta id"))
         object.__setattr__(self, "name", _expect_optional_str(self.name, "tool call delta name"))
+        object.__setattr__(self, "mode", _expect_optional_str(self.mode, "tool call delta mode"))
         object.__setattr__(
             self,
             "arguments_delta",
@@ -833,6 +836,8 @@ class ModelToolCallDelta:
             raise ValueError("tool call delta id must not be empty")
         if self.name is not None and not self.name:
             raise ValueError("tool call delta name must not be empty")
+        if self.mode is not None and not self.mode:
+            raise ValueError("tool call delta mode must not be empty")
         object.__setattr__(self, "metadata", _copy_mapping(self.metadata))
 
 
@@ -883,6 +888,7 @@ class _ContentBuffer:
 class _ToolCallBuffer:
     id: str | None = None
     name: str | None = None
+    mode: ToolCallMode | None = None
     arguments_text: str = ""
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
@@ -931,6 +937,10 @@ class ModelStreamAccumulator:
                 if buffer.name is not None and buffer.name != event.name:
                     raise AgentError("stream tool call name changed for the same index")
                 buffer.name = event.name
+            if event.mode is not None:
+                if buffer.mode is not None and buffer.mode != event.mode:
+                    raise AgentError("stream tool call mode changed for the same index")
+                buffer.mode = event.mode
             if event.arguments_delta is not None:
                 buffer.arguments_text += event.arguments_delta
             if event.metadata:
@@ -970,6 +980,7 @@ class ModelStreamAccumulator:
                 ToolCall(
                     id=buffer.id,
                     name=buffer.name,
+                    mode=buffer.mode or "execute",
                     arguments=cast(Mapping[str, Any], arguments),
                     metadata=buffer.metadata,
                 )
@@ -1015,6 +1026,8 @@ def stream_event_to_delta_payload(event: ModelStreamEvent) -> dict[str, Any] | N
             data["id"] = event.id
         if event.name is not None:
             data["name"] = event.name
+        if event.mode is not None:
+            data["mode"] = event.mode
         if event.arguments_delta is not None:
             data["arguments_delta"] = event.arguments_delta
         if event.metadata:

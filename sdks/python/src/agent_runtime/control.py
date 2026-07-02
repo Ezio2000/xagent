@@ -1,13 +1,15 @@
-"""Run-control primitives for pausing and interrupting agent runs."""
+"""Run-control primitives for pausing, interrupting, and inserting inputs."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
+
+from agent_runtime.messages import ContentPart, Message
 
 
 def _empty_metadata() -> Mapping[str, Any]:
@@ -24,6 +26,12 @@ def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{label} must be a mapping")
     return cast(Mapping[str, Any], value)
+
+
+def _expect_sequence(value: object, label: str) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise TypeError(f"{label} must be an array")
+    return cast(Sequence[object], value)
 
 
 def _expect_str(value: object, label: str) -> str:
@@ -102,32 +110,138 @@ class PauseRequest:
         }
 
 
-class PauseController:
+@dataclass(slots=True, frozen=True)
+class ConversationInsert:
+    """External input that preempts a run and enters conversation history."""
+
+    id: str
+    source: str
+    parts: tuple[ContentPart, ...]
+    correlation_id: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=_empty_metadata)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _expect_str(self.id, "conversation insert id"))
+        object.__setattr__(self, "source", _expect_str(self.source, "conversation insert source"))
+        object.__setattr__(
+            self,
+            "correlation_id",
+            _expect_optional_str(self.correlation_id, "conversation insert correlation_id"),
+        )
+        if not self.id:
+            raise ValueError("conversation insert id must not be empty")
+        if not self.source:
+            raise ValueError("conversation insert source must not be empty")
+        if self.correlation_id is not None and not self.correlation_id:
+            raise ValueError("conversation insert correlation_id must not be empty")
+        parts: list[ContentPart] = []
+        for part in _expect_sequence(self.parts, "conversation insert parts"):
+            if not isinstance(part, ContentPart):
+                raise TypeError("conversation insert parts items must be ContentPart")
+            parts.append(ContentPart.from_dict(part.to_dict()))
+        object.__setattr__(self, "parts", tuple(parts))
+        object.__setattr__(
+            self,
+            "metadata",
+            _copy_mapping(_expect_mapping(self.metadata, "conversation insert metadata")),
+        )
+
+    @classmethod
+    def text(
+        cls,
+        text: str,
+        *,
+        id: str,
+        source: str,
+        correlation_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> ConversationInsert:
+        return cls(
+            id=id,
+            source=source,
+            correlation_id=correlation_id,
+            parts=(ContentPart.text_part(text),),
+            metadata={} if metadata is None else metadata,
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> ConversationInsert:
+        known = {"id", "source", "parts", "correlation_id", "metadata"}
+        _reject_unknown_keys(value, known, "conversation insert")
+        raw_metadata: object = value.get("metadata", {})
+        return cls(
+            id=_expect_str(value["id"], "conversation insert id"),
+            source=_expect_str(value["source"], "conversation insert source"),
+            correlation_id=_expect_optional_str(
+                value.get("correlation_id"), "conversation insert correlation_id"
+            ),
+            parts=tuple(
+                ContentPart.from_dict(_expect_mapping(part, "conversation insert part"))
+                for part in _expect_sequence(value["parts"], "conversation insert parts")
+            ),
+            metadata=_expect_mapping(raw_metadata, "conversation insert metadata"),
+        )
+
+    def to_message(self) -> Message:
+        return Message.external(
+            self.parts,
+            insert_id=self.id,
+            source=self.source,
+            correlation_id=self.correlation_id,
+            metadata=self.metadata,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "id": self.id,
+            "source": self.source,
+            "parts": [part.to_dict() for part in self.parts],
+        }
+        if self.correlation_id is not None:
+            data["correlation_id"] = self.correlation_id
+        if self.metadata:
+            data["metadata"] = _copy_mapping(self.metadata)
+        return data
+
+
+ControlInterrupt: TypeAlias = PauseRequest | ConversationInsert
+
+
+class RunController:
     """Mutable run-control handle shared with host code."""
 
-    __slots__ = ("_lock", "_request", "_waiters")
+    __slots__ = ("_insert_ids", "_inserts", "_lock", "_pause_request", "_waiters")
 
+    _insert_ids: set[str]
+    _inserts: list[ConversationInsert]
     _lock: Lock
-    _request: PauseRequest | None
+    _pause_request: PauseRequest | None
     _waiters: set[asyncio.Future[None]]
 
     def __init__(self) -> None:
         self._lock = Lock()
-        self._request = None
+        self._pause_request = None
+        self._inserts = []
+        self._insert_ids = set()
         self._waiters = set()
 
     @property
-    def request(self) -> PauseRequest | None:
+    def pause_request(self) -> PauseRequest | None:
         with self._lock:
-            request = self._request
+            request = self._pause_request
             if request is None:
                 return None
             return PauseRequest.from_dict(request.to_dict())
 
     @property
-    def is_requested(self) -> bool:
+    def has_pause_request(self) -> bool:
         with self._lock:
-            return self._request is not None
+            return self._pause_request is not None
+
+    @property
+    def has_insert(self) -> bool:
+        with self._lock:
+            return bool(self._inserts)
 
     def request_pause(
         self,
@@ -144,7 +258,7 @@ class PauseController:
             metadata={} if metadata is None else metadata,
             interrupt=False,
         )
-        self._set_request(request)
+        self._set_pause_request(request)
         return PauseRequest.from_dict(request.to_dict())
 
     def interrupt(
@@ -162,19 +276,39 @@ class PauseController:
             metadata={} if metadata is None else metadata,
             interrupt=True,
         )
-        self._set_request(request)
+        self._set_pause_request(request)
         return PauseRequest.from_dict(request.to_dict())
 
-    def clear(self) -> None:
+    def insert(self, insert: ConversationInsert) -> ConversationInsert:
+        canonical = ConversationInsert.from_dict(insert.to_dict())
         with self._lock:
-            self._request = None
+            if canonical.id not in self._insert_ids:
+                self._insert_ids.add(canonical.id)
+                self._inserts.append(canonical)
+            waiters = tuple(self._waiters)
+        self._notify_waiters(waiters)
+        return ConversationInsert.from_dict(canonical.to_dict())
+
+    def pop_insert(self) -> ConversationInsert | None:
+        with self._lock:
+            if not self._inserts:
+                return None
+            insert = self._inserts.pop(0)
+            return ConversationInsert.from_dict(insert.to_dict())
+
+    def clear_pause(self) -> None:
+        with self._lock:
+            self._pause_request = None
             waiters = tuple(self._waiters)
         self._notify_waiters(waiters)
 
-    async def wait_for_interrupt(self) -> PauseRequest:
+    async def wait_for_interrupt_or_insert(self) -> ControlInterrupt:
         while True:
             with self._lock:
-                request = self._request
+                if self._inserts:
+                    insert = self._inserts.pop(0)
+                    return ConversationInsert.from_dict(insert.to_dict())
+                request = self._pause_request
                 if request is not None and request.interrupt:
                     return PauseRequest.from_dict(request.to_dict())
                 waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -185,9 +319,9 @@ class PauseController:
                 with self._lock:
                     self._waiters.discard(waiter)
 
-    def _set_request(self, request: PauseRequest) -> None:
+    def _set_pause_request(self, request: PauseRequest) -> None:
         with self._lock:
-            self._request = PauseRequest.from_dict(request.to_dict())
+            self._pause_request = PauseRequest.from_dict(request.to_dict())
             waiters = tuple(self._waiters)
         self._notify_waiters(waiters)
 
@@ -197,7 +331,7 @@ class PauseController:
             loop = waiter.get_loop()
             if loop.is_closed():
                 continue
-            loop.call_soon_threadsafe(PauseController._resolve_waiter, waiter)
+            loop.call_soon_threadsafe(RunController._resolve_waiter, waiter)
 
     @staticmethod
     def _resolve_waiter(waiter: asyncio.Future[None]) -> None:

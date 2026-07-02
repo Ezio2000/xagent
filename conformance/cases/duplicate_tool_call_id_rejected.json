@@ -4,8 +4,22 @@
   "model_response": {
     "parts": [],
     "tool_calls": [
-      { "id": "call-1", "name": "echo", "arguments": { "text": "first" } },
-      { "id": "call-1", "name": "echo", "arguments": { "text": "second" } }
+      {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "arguments": {
+          "text": "first"
+        }
+      },
+      {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "arguments": {
+          "text": "second"
+        }
+      }
     ]
   },
   "expected_error": "unique"

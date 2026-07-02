@@ -8,6 +8,7 @@
         {
           "id": "call-1",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "a"
           }
@@ -15,6 +16,7 @@
         {
           "id": "call-2",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "b"
           }
@@ -49,7 +51,19 @@
   "expected_resume_status": "completed",
   "expected_resume_final_text": "resumed done",
   "expected_resume_tool_calls": 2,
-  "expected_resume_tool_texts": ["a", "b"],
-  "expected_resume_message_roles": ["user", "assistant", "tool", "tool", "assistant"],
-  "expected_resume_trace_prefix": ["resume", "run_started"]
+  "expected_resume_tool_texts": [
+    "a",
+    "b"
+  ],
+  "expected_resume_message_roles": [
+    "user",
+    "assistant",
+    "tool",
+    "tool",
+    "assistant"
+  ],
+  "expected_resume_trace_prefix": [
+    "resume",
+    "run_started"
+  ]
 }

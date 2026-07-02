@@ -15,6 +15,7 @@
         {
           "id": "call-1",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "hello"
           }
@@ -24,8 +25,13 @@
   ],
   "expected_status": "paused",
   "expected_tool_calls": 0,
-  "expected_message_roles": ["user", "assistant"],
-  "expected_pending_tool_call_ids": ["call-1"],
+  "expected_message_roles": [
+    "user",
+    "assistant"
+  ],
+  "expected_pending_tool_call_ids": [
+    "call-1"
+  ],
   "expected_pause": {
     "reason": "host_requested",
     "resume_status": "executing_tools",
@@ -33,5 +39,7 @@
     "wait_id": null,
     "metadata": {}
   },
-  "forbidden_checkpoint_statuses": ["executing_tools"]
+  "forbidden_checkpoint_statuses": [
+    "executing_tools"
+  ]
 }

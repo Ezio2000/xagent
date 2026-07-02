@@ -7,6 +7,7 @@
         {
           "id": "call-1",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "hello"
           }
@@ -14,7 +15,12 @@
       ]
     },
     {
-      "parts": [{ "type": "text", "text": "hello" }],
+      "parts": [
+        {
+          "type": "text",
+          "text": "hello"
+        }
+      ],
       "tool_calls": []
     }
   ],

@@ -10,8 +10,12 @@ from agent_runtime import (
     PauseRequest,
     RuntimeContext,
     ToolCall,
+    ToolExecutionContext,
+    ToolInvocation,
+    ToolObservation,
+    ToolOutput,
     ToolRegistry,
-    ToolResult,
+    ToolRejection,
     ToolSpec,
 )
 
@@ -23,9 +27,11 @@ class EchoTool:
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        return ToolResult.text(str(arguments.get("text", "")))
+        return ToolObservation.text(str(invocation.arguments.get("text", "")))
 
 
 class MutatingTool:
@@ -35,22 +41,26 @@ class MutatingTool:
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        arguments["changed"] = True
-        return ToolResult.text("ok")
+        cast(dict[str, Any], invocation.arguments)["changed"] = True
+        return ToolObservation.text("ok")
 
 
 class InvalidResultTool:
     spec = ToolSpec(
         name="invalid_result",
-        description="Return a non-ToolResult value.",
+        description="Return a non-ToolObservation value.",
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
-        _ = arguments, context
-        return cast(Any, {"parts": [], "is_error": False})
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = invocation, context
+        return cast(Any, {"kind": "observation", "parts": [], "is_error": False})
 
 
 class MutableSpecTool:
@@ -62,9 +72,62 @@ class MutableSpecTool:
             annotations={"parallel_safe": False},
         )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
-        _ = arguments, context
-        return ToolResult.text("ok")
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = invocation, context
+        return ToolObservation.text("ok")
+
+
+class CustomModeTool:
+    spec = ToolSpec(
+        name="custom",
+        description="Handle a custom invocation mode.",
+        input_schema={"type": "object", "properties": {}},
+        modes=("handoff",),
+    )
+
+    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
+        _ = context
+        return ToolOutput(
+            kind="handoff",
+            parts=[ContentPart.text_part(str(invocation.arguments.get("text", "")))],
+            correlation_id=invocation.id,
+        )
+
+
+class RejectingAcceptTool:
+    spec = ToolSpec(
+        name="accepting",
+        description="Reject accept-mode invocations.",
+        input_schema={"type": "object", "properties": {}},
+        modes=("accept",),
+    )
+
+    async def accept(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolRejection:
+        _ = context
+        return ToolRejection.text(
+            str(invocation.arguments.get("text", "rejected")),
+            correlation_id=invocation.id,
+        )
+
+
+class ReservedKindCustomModeTool:
+    spec = ToolSpec(
+        name="reserved_custom",
+        description="Return a reserved result kind from a custom invocation mode.",
+        input_schema={"type": "object", "properties": {}},
+        modes=("handoff",),
+    )
+
+    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
+        _ = invocation, context
+        return ToolOutput(
+            kind="observation",
+            parts=[ContentPart.text_part("invalid")],
+        )
 
 
 def test_tool_specs_are_defensive_copies() -> None:
@@ -123,13 +186,13 @@ def test_duplicate_tool_name_rejected() -> None:
 
 
 def test_waiting_tool_result_round_trips_pause_request() -> None:
-    result = ToolResult.waiting(
+    result = ToolObservation.waiting(
         "started",
         wait_id="job-1",
         reason="external_callback",
         pause_metadata={"kind": "job"},
     )
-    restored = ToolResult.from_dict(result.to_dict())
+    restored = ToolObservation.from_dict(result.to_dict())
 
     assert restored.text_content == "started"
     assert restored.pause is not None
@@ -141,7 +204,7 @@ def test_waiting_tool_result_round_trips_pause_request() -> None:
 
 def test_tool_result_rejects_interrupt_pause() -> None:
     with pytest.raises(ValueError, match="cannot interrupt"):
-        ToolResult(
+        ToolObservation(
             parts=[],
             pause=PauseRequest(
                 reason="bad",
@@ -154,47 +217,62 @@ def test_tool_result_rejects_interrupt_pause() -> None:
 
 
 def test_tool_result_to_message_strips_host_metadata() -> None:
-    result = ToolResult(
+    result = ToolObservation(
         parts=[ContentPart.text_part("created", metadata={"secret": "part"})],
         metadata={"secret": "result"},
         is_error=True,
     )
 
-    message = result.to_message(ToolCall(id="call-1", name="tool"))
+    message = result.to_message(ToolInvocation.from_tool_call(ToolCall(id="call-1", name="tool")))
 
-    assert message.metadata == {"is_error": True}
+    assert message.metadata == {"result_kind": "observation", "is_error": True}
     assert message.parts[0].metadata == {}
 
 
 def test_tool_result_from_dict_rejects_invalid_required_fields() -> None:
     with pytest.raises(KeyError):
-        ToolResult.from_dict({"is_error": False})
+        ToolObservation.from_dict({"is_error": False})
 
     with pytest.raises(KeyError):
-        ToolResult.from_dict({"parts": []})
+        ToolObservation.from_dict({"kind": "observation", "parts": []})
+
+    with pytest.raises(ValueError, match="kind"):
+        ToolObservation.from_dict({"kind": "acceptance", "parts": [], "is_error": False})
 
     with pytest.raises(TypeError, match="is_error"):
-        ToolResult.from_dict({"parts": [], "is_error": "false"})
+        ToolObservation.from_dict({"kind": "observation", "parts": [], "is_error": "false"})
 
     with pytest.raises(TypeError, match="metadata"):
-        ToolResult.from_dict({"parts": [], "is_error": False, "metadata": None})
+        ToolObservation.from_dict(
+            {"kind": "observation", "parts": [], "is_error": False, "metadata": None}
+        )
 
     with pytest.raises(TypeError, match="metadata"):
-        ToolResult.from_dict({"parts": [], "is_error": False, "metadata": []})
+        ToolObservation.from_dict(
+            {"kind": "observation", "parts": [], "is_error": False, "metadata": []}
+        )
 
     with pytest.raises(TypeError, match="metadata"):
-        ToolResult.text("ok", metadata=cast(Any, []))
+        ToolObservation.text("ok", metadata=cast(Any, []))
 
     with pytest.raises(TypeError, match="parts items"):
-        ToolResult(parts=[cast(Any, object())])
+        ToolObservation(parts=[cast(Any, object())])
+
+    with pytest.raises(ValueError, match="is_error"):
+        ToolRejection.from_dict({"kind": "rejection", "parts": [], "is_error": False})
 
 
 def test_tool_spec_from_dict_rejects_schema_invalid_fields() -> None:
     with pytest.raises(TypeError, match="tool name"):
-        ToolSpec.from_dict({"name": 1, "description": "tool", "input_schema": {}})
+        ToolSpec.from_dict(
+            {"name": 1, "description": "tool", "input_schema": {}, "modes": ["execute"]}
+        )
 
     with pytest.raises(KeyError):
         ToolSpec.from_dict({"name": "tool", "description": "tool"})
+
+    with pytest.raises(KeyError):
+        ToolSpec.from_dict({"name": "tool", "description": "tool", "input_schema": {}})
 
     with pytest.raises(TypeError, match="metadata"):
         ToolSpec.from_dict(
@@ -202,6 +280,7 @@ def test_tool_spec_from_dict_rejects_schema_invalid_fields() -> None:
                 "name": "tool",
                 "description": "tool",
                 "input_schema": {},
+                "modes": ["execute"],
                 "metadata": None,
             }
         )
@@ -218,7 +297,7 @@ def test_tool_spec_constructor_rejects_invalid_core_types() -> None:
 @pytest.mark.asyncio
 async def test_tool_arguments_are_defensive_copies() -> None:
     call = ToolCall(id="call-1", name="mutate", arguments={"value": 1})
-    result = await ToolRegistry([MutatingTool()]).execute(call, RuntimeContext())
+    result = await ToolRegistry([MutatingTool()]).invoke(call, RuntimeContext())
 
     assert result.text_content == "ok"
     assert call.arguments == {"value": 1}
@@ -228,5 +307,47 @@ async def test_tool_arguments_are_defensive_copies() -> None:
 async def test_tool_registry_rejects_invalid_tool_result_type() -> None:
     call = ToolCall(id="call-1", name="invalid_result", arguments={})
 
-    with pytest.raises(TypeError, match="ToolResult"):
-        await ToolRegistry([InvalidResultTool()]).execute(call, RuntimeContext())
+    with pytest.raises(TypeError, match="ToolObservation"):
+        await ToolRegistry([InvalidResultTool()]).invoke(call, RuntimeContext())
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_dispatches_custom_modes_to_invoke() -> None:
+    call = ToolCall(
+        id="call-1",
+        name="custom",
+        mode="handoff",
+        arguments={"text": "accepted"},
+    )
+
+    result = await ToolRegistry([CustomModeTool()]).invoke(call, RuntimeContext())
+
+    assert result.kind == "handoff"
+    assert result.text_content == "accepted"
+    assert result.correlation_id == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_accepts_accept_rejections() -> None:
+    call = ToolCall(
+        id="call-1",
+        name="accepting",
+        mode="accept",
+        arguments={"text": "not accepted"},
+    )
+
+    result = await ToolRegistry([RejectingAcceptTool()]).invoke(call, RuntimeContext())
+
+    assert isinstance(result, ToolRejection)
+    assert result.kind == "rejection"
+    assert result.is_error is True
+    assert result.text_content == "not accepted"
+    assert result.correlation_id == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_rejects_reserved_result_kind_for_custom_mode() -> None:
+    call = ToolCall(id="call-1", name="reserved_custom", mode="handoff", arguments={})
+
+    with pytest.raises(TypeError, match="extension ToolOutput kind"):
+        await ToolRegistry([ReservedKindCustomModeTool()]).invoke(call, RuntimeContext())

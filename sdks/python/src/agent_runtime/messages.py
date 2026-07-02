@@ -7,8 +7,9 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
-Role = Literal["system", "user", "assistant", "tool"]
-KNOWN_ROLES = {"system", "user", "assistant", "tool"}
+Role = Literal["system", "user", "assistant", "tool", "external"]
+KNOWN_ROLES = {"system", "user", "assistant", "tool", "external"}
+ToolCallMode = str
 PartType = str
 
 
@@ -46,6 +47,13 @@ def _expect_str(value: object, label: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{label} must be a string")
     return value
+
+
+def _expect_tool_call_mode(value: object, label: str) -> ToolCallMode:
+    mode = _expect_str(value, label)
+    if not mode:
+        raise ValueError(f"{label} must not be empty")
+    return mode
 
 
 def _expect_optional_str(value: object, label: str) -> str | None:
@@ -230,12 +238,14 @@ class ToolCall:
 
     id: str
     name: str
+    mode: ToolCallMode = "execute"
     arguments: Mapping[str, Any] = field(default_factory=_empty_mapping)
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
     def __post_init__(self) -> None:
         self.id = _expect_str(self.id, "tool call id")
         self.name = _expect_str(self.name, "tool call name")
+        self.mode = _expect_tool_call_mode(self.mode, "tool call mode")
         if not self.id:
             raise ValueError("tool call id must not be empty")
         if not self.name:
@@ -245,12 +255,13 @@ class ToolCall:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ToolCall:
-        known = {"id", "name", "arguments", "metadata"}
+        known = {"id", "name", "mode", "arguments", "metadata"}
         _reject_unknown_keys(value, known, "tool call")
         raw_metadata: object = value.get("metadata", {})
         return cls(
             id=_expect_str(value["id"], "tool call id"),
             name=_expect_str(value["name"], "tool call name"),
+            mode=_expect_tool_call_mode(value["mode"], "tool call mode"),
             arguments=_expect_mapping(value["arguments"], "tool call arguments"),
             metadata=_expect_mapping(raw_metadata, "tool call metadata"),
         )
@@ -259,6 +270,7 @@ class ToolCall:
         data: dict[str, Any] = {
             "id": self.id,
             "name": self.name,
+            "mode": self.mode,
             "arguments": _copy_mapping(self.arguments),
         }
         if self.metadata:
@@ -369,6 +381,41 @@ class Message:
         return cls.tool(
             [ContentPart.text_part(text)],
             tool_call_id,
+            metadata=metadata,
+        )
+
+    @classmethod
+    def external(
+        cls,
+        parts: Sequence[ContentPart],
+        *,
+        insert_id: str,
+        source: str,
+        correlation_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Message:
+        external_metadata = dict(metadata or {})
+        external_metadata["insert_id"] = insert_id
+        external_metadata["source"] = source
+        if correlation_id is not None:
+            external_metadata["correlation_id"] = correlation_id
+        return cls(role="external", parts=list(parts), metadata=external_metadata)
+
+    @classmethod
+    def external_text(
+        cls,
+        text: str,
+        *,
+        insert_id: str,
+        source: str,
+        correlation_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Message:
+        return cls.external(
+            [ContentPart.text_part(text)],
+            insert_id=insert_id,
+            source=source,
+            correlation_id=correlation_id,
             metadata=metadata,
         )
 

@@ -52,6 +52,9 @@ of these rules is semantically invalid.
 
 - `model_call`, `model_delta`, and `model_result` occur only while `planning`,
   and model deltas/results must belong to an open model call;
+- `conversation_insert` occurs only while `planning`;
+- a `conversation_insert` may close an in-flight model call without a
+  `model_result`, because the model output was cancelled and not made durable;
 - `planning -> completed` and `planning -> executing_tools` transitions require
   a preceding, closed `model_result` after the last planning checkpoint;
 - `planning -> completed` requires a `model_result` with zero tool calls;
@@ -69,7 +72,7 @@ of these rules is semantically invalid.
 ### Tool Invariants
 
 - `tool_call` and `tool_result` occur only while `executing_tools`, and each
-  tool result must match an open tool call;
+  tool result must match an open tool call, including the invocation `mode`;
 - a tool call id must not be opened twice in the same execution segment;
 - if `pending_tool_call_ids` are known from the last checkpoint, every
   `tool_call` must belong to that pending set;
@@ -82,6 +85,9 @@ of these rules is semantically invalid.
   observed all pending tool results for the current execution segment;
 - if a tool result carries a pause request, that request must be applied before
   returning to `planning`.
+- accept-mode tool results are trace summaries with `result_kind: "acceptance"`
+  and a `correlation_id`, or `result_kind: "rejection"` with `is_error: true`;
+  neither form may carry a pause.
 
 ### Checkpoint And Accounting Invariants
 

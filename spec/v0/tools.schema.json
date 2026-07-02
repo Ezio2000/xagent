@@ -3,7 +3,7 @@
   "$id": "https://agent-runtime.local/spec/v0/tools.schema.json",
   "title": "Agent Runtime ToolSpec",
   "type": "object",
-  "required": ["name", "description", "input_schema"],
+  "required": ["name", "description", "input_schema", "modes"],
   "properties": {
     "name": {
       "type": "string",
@@ -15,6 +15,16 @@
     },
     "input_schema": {
       "type": "object"
+    },
+    "modes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Invocation modes supported by this tool. Core runtimes recognize execute and accept; other non-empty modes are extension points handled by tool implementations."
     },
     "output_schema": {
       "type": ["object", "null"]

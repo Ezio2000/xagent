@@ -10,8 +10,9 @@ The core SDK owns:
   streaming delta contracts;
 - loop limits;
 - event stream emission;
-- runtime context, hook slots, and serializable run snapshots.
-- core run-control boundaries for pause, interrupt, and external wait.
+- runtime context, hook slots, and serializable run snapshots;
+- core run-control boundaries for pause, interrupt, external wait, and
+  conversation insertion;
 - strict resume input validation, compact run traces, and deterministic replay
   validation.
 

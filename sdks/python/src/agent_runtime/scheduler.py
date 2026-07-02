@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from agent_runtime.messages import ToolCall
-from agent_runtime.tools import ToolRegistry, ToolResult, ToolSpec
+from agent_runtime.tools import ToolOutput, ToolRegistry, ToolSpec
 
 
 @dataclass(slots=True, frozen=True)
@@ -36,11 +36,11 @@ class ToolCompleted:
     batch: ToolBatch
     index: int
     call: ToolCall
-    result: ToolResult
+    result: ToolOutput
 
 
 ToolProgress: TypeAlias = ToolStarted | ToolCompleted
-ExecuteTool: TypeAlias = Callable[[ToolCall], Awaitable[ToolResult]]
+ExecuteTool: TypeAlias = Callable[[ToolCall], Awaitable[ToolOutput]]
 
 
 class ToolScheduler:
@@ -88,7 +88,7 @@ class ToolScheduler:
 
         max_active = self._max_parallel_tool_calls if batch.parallel else 1
         next_index = 0
-        active: dict[asyncio.Future[ToolResult], tuple[int, ToolCall]] = {}
+        active: dict[asyncio.Future[ToolOutput], tuple[int, ToolCall]] = {}
 
         def start_next() -> ToolStarted | None:
             nonlocal next_index
@@ -116,7 +116,7 @@ class ToolScheduler:
                     index, call = active.pop(task)
                     result = await task
                     yield ToolCompleted(batch=batch, index=index, call=call, result=result)
-                    if stop_on_error and result.is_error:
+                    if stop_on_error and getattr(result, "is_error", False):
                         for remaining in active:
                             remaining.cancel()
                         if active:

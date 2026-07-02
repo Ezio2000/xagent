@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 
 from agent_runtime import (
     AgentLoop,
@@ -17,7 +16,9 @@ from agent_runtime import (
     RuntimeContext,
     RunTrace,
     ToolCall,
-    ToolResult,
+    ToolExecutionContext,
+    ToolInvocation,
+    ToolObservation,
     ToolSpec,
     replay_trace,
 )
@@ -37,11 +38,13 @@ class ExternalWaitTool:
         },
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        return ToolResult.waiting(
-            str(arguments.get("description", "external work started")),
-            wait_id=str(arguments["wait_id"]),
+        return ToolObservation.waiting(
+            str(invocation.arguments.get("description", "external work started")),
+            wait_id=str(invocation.arguments["wait_id"]),
             reason="external_callback",
             pause_metadata={"example": "pause_resume_trace"},
         )

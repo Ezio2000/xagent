@@ -10,7 +10,7 @@ from agent_runtime.messages import ToolCall
 from agent_runtime.models import ModelRequest, ModelResponse
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.state import AgentState, AgentStatus
-from agent_runtime.tools import ToolResult
+from agent_runtime.tools import ToolOutput
 
 T = TypeVar("T")
 MaybeAwaitable: TypeAlias = T | Awaitable[T]
@@ -45,8 +45,8 @@ class RuntimeHook:
         return None
 
     def after_tool(
-        self, result: ToolResult, context: RuntimeContext
-    ) -> MaybeAwaitable[ToolResult | None] | None:
+        self, result: ToolOutput, context: RuntimeContext
+    ) -> MaybeAwaitable[ToolOutput | None] | None:
         return None
 
     def on_transition(

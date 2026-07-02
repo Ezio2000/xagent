@@ -1,0 +1,45 @@
+{
+  "name": "stream_conversation_insert_during_model_call",
+  "conversation_insert": {
+    "id": "insert-1",
+    "source": "external_test",
+    "parts": [
+      {
+        "type": "text",
+        "text": "streamed external update"
+      }
+    ],
+    "correlation_id": "job-1",
+    "metadata": {}
+  },
+  "conversation_insert_timing": "during_model_call",
+  "model_steps": [],
+  "stream_model_steps": [
+    {
+      "events": [
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "stale",
+          "part_type": "text"
+        }
+      ]
+    },
+    {
+      "events": [
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "saw streamed external update",
+          "part_type": "text"
+        }
+      ]
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "saw streamed external update",
+  "expected_tool_calls": 0,
+  "expected_message_roles": ["user", "external", "assistant"],
+  "expected_event_types": ["conversation_inserted"],
+  "expected_trace_kinds": ["conversation_insert"]
+}

@@ -1,7 +1,8 @@
 # Agent Runtime v0 Run Control
 
-Run control defines portable pause and interrupt semantics. Concrete SDK handles
-may be language-specific; the behavior is shared.
+Run control defines portable pause, interrupt, and conversation insertion
+semantics. Concrete SDK handles may be language-specific; the behavior is
+shared.
 
 ## Pause Request
 
@@ -45,6 +46,25 @@ history. The paused snapshot resumes from the previous durable state, usually
 
 Interrupt does not define user-message policy. Hosts decide whether to resume
 the paused snapshot as-is, append new messages, or start a different run.
+
+## Conversation Insert
+
+A conversation insert is host-owned input that enters message history during a
+live invocation. It is represented as an `external` message with an insertion
+id, source label, optional correlation id, content parts, and metadata.
+
+If an insert arrives while the runtime is planning, SDKs must append the
+external message, emit `conversation_inserted`, checkpoint, and plan again. If a
+model call or stream is in flight, SDKs may cancel it before committing the
+insert; partial model deltas remain non-durable UI progress.
+
+Conversation insertion is independent of pause:
+
+- it does not transition to `paused`;
+- it does not require a tool call;
+- it may reference an earlier `ToolAcceptance.correlation_id`, but the runtime
+  does not require that relationship;
+- it is checkpointed as normal message history before the next model call.
 
 ## Resume Input
 
@@ -100,7 +120,9 @@ are ignored. The paused snapshot resumes to `executing_tools` when unexecuted
 pending tool calls remain; otherwise it resumes to `planning`.
 
 Callback payloads are not a separate runtime channel. To make external callback
-data visible to the next model call, hosts must encode that data in the
+data visible after a paused external wait, hosts must encode that data in the
 resume input using the normal message protocol before calling
-`run_snapshot(ResumeInput(...))`. `pause.metadata` and resume `metadata` are
-host-visible bookkeeping and are not model-visible by themselves.
+`run_snapshot(ResumeInput(...))`. For non-paused live invocations, hosts may use
+conversation insertion to append the callback data as an `external` message.
+`pause.metadata` and resume `metadata` are host-visible bookkeeping and are not
+model-visible by themselves.

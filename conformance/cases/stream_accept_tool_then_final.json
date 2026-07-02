@@ -1,0 +1,48 @@
+{
+  "name": "stream_accept_tool_then_final",
+  "model_steps": [],
+  "stream_model_steps": [
+    {
+      "events": [
+        {
+          "type": "tool_call_delta",
+          "index": 0,
+          "id": "call-1",
+          "name": "accept",
+          "mode": "accept",
+          "arguments_delta": "{\"text\":\"accepted external task\",\"correlation_id\":\"job-1\"}"
+        }
+      ]
+    },
+    {
+      "events": [
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "done",
+          "part_type": "text"
+        }
+      ]
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "done",
+  "expected_tool_calls": 1,
+  "expected_tool_texts": ["accepted external task"],
+  "expected_model_deltas": [
+    {
+      "kind": "tool_call_delta",
+      "index": 0,
+      "id": "call-1",
+      "name": "accept",
+      "mode": "accept",
+      "arguments_delta": "{\"text\":\"accepted external task\",\"correlation_id\":\"job-1\"}"
+    },
+    {
+      "kind": "text_delta",
+      "index": 0,
+      "text_delta": "done",
+      "part_type": "text"
+    }
+  ]
+}

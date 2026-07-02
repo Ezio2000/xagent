@@ -7,7 +7,7 @@
   "properties": {
     "role": {
       "type": "string",
-      "enum": ["system", "user", "assistant", "tool"]
+      "enum": ["system", "user", "assistant", "tool", "external"]
     },
     "parts": {
       "type": "array",
@@ -101,10 +101,11 @@
     },
     "tool_call": {
       "type": "object",
-      "required": ["id", "name", "arguments"],
+      "required": ["id", "name", "mode", "arguments"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
         "arguments": { "type": "object" },
         "metadata": { "type": "object" }
       },

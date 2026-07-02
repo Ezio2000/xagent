@@ -219,7 +219,7 @@ class ModelProviderError(ModelError):
 
 
 class ToolError(AgentError):
-    """A tool failed before it could return a ToolResult."""
+    """A tool failed before it could return a tool output."""
 
 
 class LimitExceeded(AgentError):

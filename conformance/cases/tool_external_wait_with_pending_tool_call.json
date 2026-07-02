@@ -7,6 +7,7 @@
         {
           "id": "call-1",
           "name": "wait",
+          "mode": "execute",
           "arguments": {
             "text": "external wait started",
             "wait_id": "job-1",
@@ -16,6 +17,7 @@
         {
           "id": "call-2",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "after wait"
           }
@@ -25,9 +27,17 @@
   ],
   "expected_status": "paused",
   "expected_tool_calls": 1,
-  "expected_message_roles": ["user", "assistant", "tool"],
-  "expected_tool_texts": ["external wait started"],
-  "expected_pending_tool_call_ids": ["call-2"],
+  "expected_message_roles": [
+    "user",
+    "assistant",
+    "tool"
+  ],
+  "expected_tool_texts": [
+    "external wait started"
+  ],
+  "expected_pending_tool_call_ids": [
+    "call-2"
+  ],
   "expected_pause": {
     "reason": "external_callback",
     "resume_status": "executing_tools",
@@ -35,5 +45,7 @@
     "wait_id": "job-1",
     "metadata": {}
   },
-  "forbidden_unpaused_checkpoint_tool_counts": [1]
+  "forbidden_unpaused_checkpoint_tool_counts": [
+    1
+  ]
 }

@@ -60,15 +60,16 @@ from agent_runtime import (
     Message,
     ModelOptions,
     ModelResponse,
-    PauseController,
     replay_trace,
     ResponseFormat,
     ResumeInput,
+    RunController,
     RuntimeContext,
     RuntimeHook,
     RunSnapshot,
     ToolChoice,
-    ToolResult,
+    ToolObservation,
+    ToolRejection,
     ToolSpec,
 )
 
@@ -111,8 +112,8 @@ class EchoTool:
         input_schema={"type": "object", "properties": {"text": {"type": "string"}}},
     )
 
-    async def execute(self, arguments, context):
-        return ToolResult.text(arguments["text"])
+    async def execute(self, invocation, context):
+        return ToolObservation.text(invocation.arguments["text"])
 ```
 
 Tool execution is serial by default. Enable simple parallel scheduling with a
@@ -138,8 +139,8 @@ agent = AgentLoop(
 ```
 
 The model decides which tools to request. The runtime decides whether those
-calls may run concurrently. Tool observations are committed to message history
-in the model-provided order even when executions finish out of order. Parallel
+calls may run concurrently. Tool outputs are committed to message history in
+the model-provided order even when executions finish out of order. Parallel
 batches checkpoint only after the whole batch is committed; serial tools still
 checkpoint one result at a time.
 If `stop_on_tool_error=True`, tool execution is serial to preserve fail-fast
@@ -208,9 +209,9 @@ not raw host metadata values.
 Hosts can request that a run stop at the next durable boundary:
 
 ```python
-controller = PauseController()
+controller = RunController()
 controller.request_pause(reason="operator_requested")
-result = await agent.run(messages, pause_controller=controller)
+result = await agent.run(messages, controller=controller)
 assert result.status == "paused"
 ```
 
@@ -226,7 +227,7 @@ Tools can pause the run after committing an observation when they start external
 work and need a callback:
 
 ```python
-return ToolResult.waiting(
+return ToolObservation.waiting(
     "external job started",
     wait_id="job-123",
     reason="external_callback",

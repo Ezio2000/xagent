@@ -12,6 +12,7 @@ Known v0.1 event types:
 - `model_completed`
 - `tool_started`
 - `tool_completed`
+- `conversation_inserted`
 - `pause_requested`
 - `checkpoint`
 - `final`
@@ -35,6 +36,16 @@ adapter supports it. It is live rendering progress, not durable state. Known
 payload kinds are standardized in `spec/v0/events.schema.json` and
 `spec/v0/model-stream.md`: `text_delta`, `tool_call_delta`, `reasoning_delta`,
 and `usage_delta`.
+
+`tool_started` and `tool_completed` include the normalized tool invocation
+`mode`. For core-known modes, `tool_completed.data.result.result_kind` is
+`observation` for execute-mode output and either `acceptance` or `rejection` for
+accept-mode output; extension modes use non-empty custom result kinds.
+
+`conversation_inserted` is emitted when host or external input preempts
+planning and enters message history as an `external` message. The event carries
+the normalized insertion payload and the message that was appended. It is
+followed by a checkpoint before the runtime asks the model to plan again.
 
 A `checkpoint` event carries a full `RunSnapshot` payload after durable state
 commits and state transitions so host applications can persist resumable

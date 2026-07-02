@@ -10,6 +10,7 @@
         {
           "id": "call-1",
           "name": "fail",
+          "mode": "execute",
           "arguments": {}
         }
       ]

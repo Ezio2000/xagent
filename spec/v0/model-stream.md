@@ -23,13 +23,14 @@ assistant message.
 Known `model_delta` payload shapes:
 
 - `text_delta`: `{ "kind": "text_delta", "index": 0, "text_delta": "...", "part_type": "text" }`
-- `tool_call_delta`: `{ "kind": "tool_call_delta", "index": 0, "id": "...", "name": "...", "arguments_delta": "..." }`
+- `tool_call_delta`: `{ "kind": "tool_call_delta", "index": 0, "id": "...", "name": "...", "mode": "accept", "arguments_delta": "..." }`
 - `reasoning_delta`: `{ "kind": "reasoning_delta", "index": 0, "text_delta": "..." }`
 - `usage_delta`: `{ "kind": "usage_delta", "usage": { "input_tokens": 1 } }`
 
 `index` is zero-based within the current streamed response. `id`, `name`, and
-`arguments_delta` may arrive across multiple `tool_call_delta` events for the
-same index. Tool-call arguments are accumulated as JSON object bytes and become
+`mode`, and `arguments_delta` may arrive across multiple `tool_call_delta`
+events for the same index. If `mode` is omitted, the accumulated tool call uses
+`execute`. Tool-call arguments are accumulated as JSON object bytes and become
 durable only in the final `ModelResponse`.
 
 Tool execution must wait until the complete streamed `ModelResponse` is

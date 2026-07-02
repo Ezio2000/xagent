@@ -123,6 +123,19 @@
     {
       "if": {
         "properties": {
+          "type": { "const": "conversation_inserted" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/conversation_inserted_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
           "type": { "const": "pause_requested" }
         },
         "required": ["type"]
@@ -426,10 +439,11 @@
     },
     "tool_started_data": {
       "type": "object",
-      "required": ["id", "name", "arguments", "batch_id", "parallel", "index"],
+      "required": ["id", "name", "mode", "arguments", "batch_id", "parallel", "index"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
         "arguments": { "type": "object" },
         "batch_id": { "type": "string", "minLength": 1 },
         "parallel": { "type": "boolean" },
@@ -439,7 +453,15 @@
     },
     "tool_result_summary": {
       "type": "object",
-      "required": ["part_count", "part_types", "text_length", "is_error", "metadata", "pause"],
+      "required": [
+        "part_count",
+        "part_types",
+        "text_length",
+        "result_kind",
+        "is_error",
+        "metadata",
+        "pause"
+      ],
       "properties": {
         "part_count": { "type": "integer", "minimum": 0 },
         "part_types": {
@@ -447,7 +469,9 @@
           "items": { "type": "string" }
         },
         "text_length": { "type": "integer", "minimum": 0 },
+        "result_kind": { "type": "string", "minLength": 1 },
         "is_error": { "type": "boolean" },
+        "correlation_id": { "type": "string", "minLength": 1 },
         "metadata": { "type": "object" },
         "pause": {
           "oneOf": [
@@ -456,18 +480,122 @@
           ]
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "result_kind": { "const": "acceptance" } },
+            "required": ["result_kind"]
+          },
+          "then": {
+            "required": ["correlation_id"],
+            "properties": {
+              "is_error": { "const": false },
+              "pause": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "result_kind": { "const": "rejection" } },
+            "required": ["result_kind"]
+          },
+          "then": {
+            "properties": {
+              "is_error": { "const": true },
+              "pause": { "type": "null" }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "tool_completed_data": {
       "type": "object",
-      "required": ["id", "name", "batch_id", "parallel", "index", "result"],
+      "required": ["id", "name", "mode", "batch_id", "parallel", "index", "result"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
         "batch_id": { "type": "string", "minLength": 1 },
         "parallel": { "type": "boolean" },
         "index": { "type": "integer", "minimum": 0 },
         "result": { "$ref": "#/$defs/tool_result_summary" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mode": { "const": "execute" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "properties": { "result_kind": { "const": "observation" } },
+                "required": ["result_kind"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "mode": { "const": "accept" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "properties": {
+                  "result_kind": { "enum": ["acceptance", "rejection"] }
+                },
+                "required": ["result_kind"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": { "not": { "enum": ["execute", "accept"] } }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "properties": {
+                  "result_kind": {
+                    "not": { "enum": ["observation", "acceptance", "rejection"] }
+                  }
+                },
+                "required": ["result_kind"]
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "conversation_insert": {
+      "type": "object",
+      "required": ["id", "source", "parts"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "parts": {
+          "type": "array",
+          "items": { "$ref": "messages.schema.json#/$defs/content_part" }
+        },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "conversation_inserted_data": {
+      "type": "object",
+      "required": ["insert", "message"],
+      "properties": {
+        "insert": { "$ref": "#/$defs/conversation_insert" },
+        "message": { "$ref": "messages.schema.json" }
       },
       "additionalProperties": false
     },
@@ -520,6 +648,7 @@
         "index": { "type": "integer", "minimum": 0 },
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
         "arguments_delta": { "type": "string" },
         "metadata": { "type": "object" }
       },

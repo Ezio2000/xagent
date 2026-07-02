@@ -21,6 +21,13 @@ durable assistant messages, checkpoints, or trace payloads. Common finish
 reasons include `end_turn`, `tool_calls`, `max_tokens`, `stop_sequence`,
 `refusal`, `content_filter`, and `error`; the field remains an open string.
 
+Each `ToolCall` includes an open non-empty `mode` string. Core runtimes
+recognize `execute`, which waits for the tool's final observation before
+continuing, and `accept`, which asks the tool to accept external work and
+immediately commits a `ToolAcceptance` or `ToolRejection` result. Provider
+adapters may expose model syntax such as `accept(web_search(...))`, but the
+normalized core shape remains the original tool name with `mode: "accept"`.
+
 Python adapters may raise `ModelProviderError(ModelErrorInfo(...))` for
 structured provider failures. `ModelErrorInfo` is runtime exception detail for
 the current SDK invocation; checkpoint state records the portable error message,
@@ -37,3 +44,9 @@ it must not return a coroutine that callers must await to obtain the iterator.
 Stream deltas are emitted as `model_delta` events for live rendering only.
 Durable `AgentState` is committed after the complete `ModelResponse` is
 available.
+
+External inputs that arrive while a model call is in flight use run-control
+conversation insertion. The runtime cancels the in-flight model call, appends an
+`external` message, checkpoints, and starts planning again. This insertion
+mechanism is independent of tool calls and does not require the inserted input
+to originate from a tool.

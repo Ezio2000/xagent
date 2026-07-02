@@ -24,12 +24,12 @@ these shapes, but the JSON form is the cross-language boundary.
 
 | File | Owns | Portable Contract |
 | --- | --- | --- |
-| `messages.schema.json` | Messages, content parts, assistant tool-call shape, and tool-message linkage. | Roles, part types, tool-call ids/names/arguments, tool-call uniqueness semantics, tool result message linkage, and extension points for future content. |
+| `messages.schema.json` | Messages, content parts, assistant tool-call shape, and tool-message linkage. | Roles including `external`, part types, tool-call ids/names/modes/arguments, tool-call uniqueness semantics, tool output message linkage, and extension points for future content. |
 | `model-request.schema.json` | Runtime-to-model adapter request. | Message history, tool specs, model options, tool choice, response format, and request metadata boundary. |
 | `model-response.schema.json` | Model-to-runtime response. | Final content parts, requested tool calls using the shared tool-call shape, finish reason, usage, model id, response id, and response metadata boundary. |
 | `model-error.schema.json` | Structured model/provider failures. | Stable message, provider, error code, status code, retryability, request id, and error metadata boundary. |
-| `tools.schema.json` | Tool specifications exposed to models. | Tool name, description, input/output schema, scheduling annotations, and tool metadata boundary. |
-| `tool-result.schema.json` | Tool execution result. | Result content parts, error flag, result metadata boundary, and optional non-interrupting tool-origin pause request. |
+| `tools.schema.json` | Tool specifications exposed to models. | Tool name, description, supported invocation modes, input/output schema, scheduling annotations, and tool metadata boundary. |
+| `tool-result.schema.json` | Tool output. | Execute-mode observations, accept-mode acknowledgements or rejections, extension output kinds, content parts, error/pause boundaries, correlation ids, and output metadata boundary. |
 | `limits.schema.json` | Runtime limits and scheduling knobs. | Iteration limits, tool-call limits, timeout, stop-on-tool-error, and max parallel tool calls. |
 | `state.schema.json` | Durable agent state. | Status, messages, pending tool calls, counters, final parts, error summary, and pause state. |
 | `runtime-context.schema.json` | Runtime invocation context. | Run id, start time, optional deadline, host metadata boundary, and event sequence. |
@@ -43,7 +43,7 @@ The Markdown files own semantic rules that schemas only partially express:
 | File | Owns |
 | --- | --- |
 | `state-machine.md` | Status meanings, allowed transitions, terminal states, and checkpoint placement. |
-| `run-control.md` | Pause, interrupt, resume, timeout priority, and external waits. |
+| `run-control.md` | Pause, interrupt, conversation insertion, resume, timeout priority, and external waits. |
 | `tool-scheduling.md` | Serial and parallel tool execution, batch atomicity, and tool error behavior. |
 | `model-stream.md` | Streaming deltas, accumulator behavior, and non-durable partial output. |
 | `run-trace.md` | Trace step order, deterministic replay rules, and compact payload policy. |

@@ -10,6 +10,7 @@
         {
           "id": "call-1",
           "name": "parallel_wait",
+          "mode": "execute",
           "arguments": {
             "text": "job one started",
             "wait_id": "job-1",
@@ -20,6 +21,7 @@
         {
           "id": "call-2",
           "name": "parallel_wait",
+          "mode": "execute",
           "arguments": {
             "text": "job two started",
             "wait_id": "job-2",
@@ -32,8 +34,16 @@
   ],
   "expected_status": "paused",
   "expected_tool_calls": 2,
-  "expected_message_roles": ["user", "assistant", "tool", "tool"],
-  "expected_tool_texts": ["job one started", "job two started"],
+  "expected_message_roles": [
+    "user",
+    "assistant",
+    "tool",
+    "tool"
+  ],
+  "expected_tool_texts": [
+    "job one started",
+    "job two started"
+  ],
   "expected_pause": {
     "reason": "external_callback",
     "resume_status": "planning",
@@ -41,6 +51,10 @@
     "wait_id": "job-1",
     "metadata": {}
   },
-  "forbidden_checkpoint_tool_counts": [1],
-  "forbidden_unpaused_checkpoint_tool_counts": [2]
+  "forbidden_checkpoint_tool_counts": [
+    1
+  ],
+  "forbidden_unpaused_checkpoint_tool_counts": [
+    2
+  ]
 }

@@ -1,0 +1,34 @@
+{
+  "name": "accept_tool_rejection_recovery",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "accept",
+          "mode": "accept",
+          "arguments": {
+            "text": "external task rejected",
+            "reject": true
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "recovered"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "recovered",
+  "expected_tool_calls": 1,
+  "expected_tool_texts": ["external task rejected"],
+  "expected_event_types": ["tool_completed"],
+  "expected_trace_kinds": ["tool_result"]
+}

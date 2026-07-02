@@ -10,6 +10,7 @@
         {
           "id": "call-1",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "a"
           }
@@ -22,6 +23,7 @@
         {
           "id": "call-2",
           "name": "echo",
+          "mode": "execute",
           "arguments": {
             "text": "b"
           }
@@ -29,7 +31,12 @@
       ]
     },
     {
-      "parts": [{ "type": "text", "text": "should not be reached" }],
+      "parts": [
+        {
+          "type": "text",
+          "text": "should not be reached"
+        }
+      ],
       "tool_calls": []
     }
   ],

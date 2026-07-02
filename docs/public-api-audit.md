@@ -12,8 +12,8 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
 - Keep runtime orchestration names: `AgentLoop`, `AgentResult`, `AgentState`,
   `AgentStatus`, `LoopLimits`, `RuntimeContext`, `RuntimeHook`, and
   `RunSnapshot`.
-- Keep resume names: `ResumeInput`, `PauseSelector`, `PauseRequest`,
-  `PauseController`, and `PauseState`.
+- Keep resume/control names: `ResumeInput`, `PauseSelector`, `PauseRequest`,
+  `RunController`, `ConversationInsert`, and `PauseState`.
 - Keep trace names: `RunTrace`, `TraceStep`, `TraceStepKinds`,
   `ReplayResult`, `ReplayError`, and `replay_trace`.
 - Keep event names: `AgentEvent`, `EventType`, `EventTypes`, `EventEmitter`,
@@ -22,7 +22,9 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
 - Keep model and tool protocol names: `ModelRequest`, `ModelResponse`,
   `ModelClient`, `StreamingModelClient`, `ModelOptions`, `ToolChoice`,
   `ResponseFormat`, `ModelCapabilities`, `ModelUsage`, `model_capabilities`,
-  `ToolSpec`, `ToolResult`, `Tool`, and `ToolRegistry`.
+  `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`, `ToolObservation`,
+  `ToolAcceptance`, `ToolRejection`, `ToolOutput`, `ExecutableTool`,
+  `AcceptableTool`, `Tool`, and `ToolRegistry`.
 - Keep model streaming names: `ModelStreamEvent`, `ModelContentDelta`,
   `ModelToolCallDelta`, `ModelReasoningDelta`, `ModelUsageDelta`,
   `ModelStreamStarted`, `ModelStreamCompleted`, and `ModelStreamAccumulator`.
@@ -40,23 +42,24 @@ for crossing a durable runtime boundary. It contains a snapshot, optional
 append-only messages, an optional expected-pause selector, and host metadata.
 The name keeps it aligned with `resume-input.schema.json`.
 
-`PauseController` remains separate from `LoopLimits`. The controller is the
-host-owned imperative handle for pause and interrupt requests. Limits are static
-run configuration. A broader public `RunControl` object would blur those two
-roles and is not needed in v0.1.
+`RunController` remains separate from `LoopLimits`. The controller is the
+host-owned imperative handle for pause, interrupt, and conversation insertion.
+Limits are static run configuration.
 
 `PauseSelector` names the `expected_pause` matcher used by `ResumeInput`. It is
 not a general query object; it only matches the paused snapshot before resume.
 
 `Message`, `ContentPart`, and `ToolCall` are the public message protocol names.
 They intentionally avoid provider-specific terms such as chat, prompt, block,
-or function call. `ToolCall` is model-requested work, while `ToolResult` is the
-runtime observation returned by a tool.
+or function call. `ToolCall` is model-requested work. `ToolInvocation` is the
+tool-facing view of that work, including an open `mode` string. `ToolObservation`
+is execute-mode output, `ToolAcceptance` is accept-mode acknowledgement for
+external completion, `ToolRejection` is accept-mode failure output, and
+`ToolOutput` is the generic extension output shape.
 
 `RunTrace` and `TraceStep` name the compact semantic record and its entries.
-`TraceStepKinds` mirrors `EventTypes`: both are open string-constant namespaces,
-not closed enums. This leaves room for future trace extensions without creating
-enum compatibility friction.
+`TraceStepKinds` mirrors runtime-owned core `EventTypes`. Replay validates this
+closed core trace vocabulary so corrupted or unknown semantic steps fail early.
 
 `EventEmitter` is the right name for hook-owned custom event emission. It emits
 `QueuedEvent` payloads, while the runtime remains the owner of `AgentEvent`

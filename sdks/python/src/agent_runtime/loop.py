@@ -10,8 +10,8 @@ from inspect import isawaitable, iscoroutinefunction
 from time import monotonic, time
 from typing import Any, TypeVar, cast
 
-from agent_runtime.control import PauseController, PauseRequest
-from agent_runtime.errors import AgentError, ModelProviderError
+from agent_runtime.control import ConversationInsert, PauseRequest, RunController
+from agent_runtime.errors import AgentError, InvalidToolCall, ModelProviderError, ToolError
 from agent_runtime.events import CORE_EVENT_TYPES, AgentEvent, EventEmitter, EventTypes
 from agent_runtime.hooks import RuntimeHook
 from agent_runtime.limits import LoopLimits
@@ -37,7 +37,15 @@ from agent_runtime.runtime import RuntimeContext
 from agent_runtime.scheduler import ToolBatch, ToolScheduler, ToolStarted
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentState, AgentStatus, PauseState
-from agent_runtime.tools import Tool, ToolRegistry, ToolResult
+from agent_runtime.tools import (
+    Tool,
+    ToolAcceptance,
+    ToolInvocation,
+    ToolObservation,
+    ToolOutput,
+    ToolRegistry,
+    ToolRejection,
+)
 from agent_runtime.trace import RunTrace, TraceRecorder
 
 T = TypeVar("T")
@@ -53,6 +61,14 @@ class RuntimePauseInterrupt(Exception):
     def __init__(self, request: PauseRequest) -> None:
         super().__init__(request.reason)
         self.request = request
+
+
+class RuntimeConversationInsert(Exception):
+    """Raised when external input preempts an in-flight model call."""
+
+    def __init__(self, insert: ConversationInsert) -> None:
+        super().__init__(insert.id)
+        self.insert = insert
 
 
 @dataclass(slots=True, frozen=True)
@@ -78,7 +94,7 @@ class RunControlState:
     started_at: float
     deadline: float | None = None
     monotonic_deadline: float | None = None
-    pause_controller: PauseController | None = None
+    run_controller: RunController | None = None
     trace: TraceRecorder | None = None
     tool_scheduler: ToolScheduler | None = None
     initial_snapshot: RunSnapshot | None = None
@@ -144,10 +160,10 @@ class AgentLoop:
         *,
         context: RuntimeContext | None = None,
         stream: bool = False,
-        pause_controller: PauseController | None = None,
+        controller: RunController | None = None,
     ) -> AgentResult:
         state = AgentState(status=AgentStatus.PLANNING, messages=list(messages))
-        runtime_context, control = self._prepare_run(context, pause_controller=pause_controller)
+        runtime_context, control = self._prepare_run(context, controller=controller)
         return await self._run_prepared_state(state, runtime_context, control, stream=stream)
 
     async def run_events(
@@ -156,10 +172,10 @@ class AgentLoop:
         *,
         context: RuntimeContext | None = None,
         stream: bool = False,
-        pause_controller: PauseController | None = None,
+        controller: RunController | None = None,
     ) -> AsyncIterator[AgentEvent]:
         state = AgentState(status=AgentStatus.PLANNING, messages=list(messages))
-        runtime_context, control = self._prepare_run(context, pause_controller=pause_controller)
+        runtime_context, control = self._prepare_run(context, controller=controller)
         iterator = self._run_prepared_state_events(
             state, runtime_context, control, stream=stream
         ).__aiter__()
@@ -179,15 +195,13 @@ class AgentLoop:
         resume_input: ResumeInput,
         *,
         stream: bool = False,
-        pause_controller: PauseController | None = None,
+        controller: RunController | None = None,
     ) -> AgentResult:
         if type(resume_input) is not ResumeInput:
             raise TypeError("run_snapshot requires ResumeInput")
         resume_input = ResumeInput.from_dict(resume_input.to_dict())
         working_state, resume_snapshot = resume_input.apply()
-        runtime_context, control = self._prepare_run(
-            resume_snapshot.context, pause_controller=pause_controller
-        )
+        runtime_context, control = self._prepare_run(resume_snapshot.context, controller=controller)
         if control.trace is not None:
             control.trace.record_resume(resume_input, working_state)
         return await self._run_prepared_state(
@@ -199,15 +213,13 @@ class AgentLoop:
         resume_input: ResumeInput,
         *,
         stream: bool = False,
-        pause_controller: PauseController | None = None,
+        controller: RunController | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if type(resume_input) is not ResumeInput:
             raise TypeError("run_snapshot_events requires ResumeInput")
         resume_input = ResumeInput.from_dict(resume_input.to_dict())
         working_state, resume_snapshot = resume_input.apply()
-        runtime_context, control = self._prepare_run(
-            resume_snapshot.context, pause_controller=pause_controller
-        )
+        runtime_context, control = self._prepare_run(resume_snapshot.context, controller=controller)
         if control.trace is not None:
             control.trace.record_resume(resume_input, working_state)
         iterator = self._run_prepared_state_events(
@@ -428,6 +440,12 @@ class AgentLoop:
                     yield event
                 return
 
+            insert_events = await self._insert_if_requested(state, context, control)
+            if insert_events:
+                for event in insert_events:
+                    yield event
+                continue
+
             pause_events = await self._pause_if_requested(state, context, control)
             if pause_events:
                 for event in pause_events:
@@ -539,6 +557,11 @@ class AgentLoop:
                 resume_status=AgentStatus.PLANNING,
                 origin="control",
             ):
+                yield event
+            return
+        except RuntimeConversationInsert as exc:
+            state.iterations -= 1
+            for event in await self._apply_conversation_insert(state, context, control, exc.insert):
                 yield event
             return
         except RuntimeTimeoutError:
@@ -691,7 +714,7 @@ class AgentLoop:
                     AgentStatus.FAILED,
                     context,
                     control,
-                    error="before_tool cannot change tool call id or name",
+                    error="before_tool cannot change tool call id, name, or mode",
                 ):
                     yield event
                 return
@@ -741,7 +764,7 @@ class AgentLoop:
         prepared: list[ToolCall] = []
         for index, raw_call in enumerate(batch.calls):
             call = await self._before_tool(raw_call, context, control)
-            if call.id != raw_call.id or call.name != raw_call.name:
+            if call.id != raw_call.id or call.name != raw_call.name or call.mode != raw_call.mode:
                 return None
             self._replace_tool_call_in_history(state, raw_call.id, call)
             state.pending_tool_calls[index] = call
@@ -755,9 +778,9 @@ class AgentLoop:
         context: RuntimeContext,
         control: RunControlState,
     ) -> AsyncIterator[AgentEvent]:
-        completed: dict[int, tuple[ToolCall, ToolResult, Message]] = {}
+        completed: dict[int, tuple[ToolCall, ToolOutput, Message]] = {}
 
-        async def execute(call: ToolCall) -> ToolResult:
+        async def execute(call: ToolCall) -> ToolOutput:
             return await self._await_with_timeout(self._execute_tool(call, context), control)
 
         async for progress in self._tool_scheduler(control).run_batch(
@@ -771,6 +794,7 @@ class AgentLoop:
                     {
                         "id": progress.call.id,
                         "name": progress.call.name,
+                        "mode": progress.call.mode,
                         "arguments": dict(progress.call.arguments),
                         "batch_id": progress.batch.id,
                         "parallel": progress.batch.parallel,
@@ -781,7 +805,9 @@ class AgentLoop:
                 continue
 
             result = await self._after_tool(progress.result, context, control)
-            tool_message = result.to_message(progress.call)
+            self._validate_tool_output_mode(progress.call, result)
+            invocation = ToolInvocation.from_tool_call(progress.call)
+            tool_message = result.to_message(invocation)
             completed[progress.index] = (progress.call, result, tool_message)
             for event in await self._events(
                 context,
@@ -790,6 +816,7 @@ class AgentLoop:
                 {
                     "id": progress.call.id,
                     "name": progress.call.name,
+                    "mode": progress.call.mode,
                     "batch_id": progress.batch.id,
                     "parallel": progress.batch.parallel,
                     "index": progress.index,
@@ -801,7 +828,7 @@ class AgentLoop:
             if len(completed) < len(batch.calls):
                 continue
 
-            committed_results: list[ToolResult] = []
+            committed_results: list[ToolOutput] = []
             for index in range(len(batch.calls)):
                 _call, committed_result, message = completed[index]
                 committed_results.append(committed_result)
@@ -890,14 +917,25 @@ class AgentLoop:
             for event in await self._checkpoint_events(state, context, control):
                 yield event
 
-    async def _execute_tool(self, call: ToolCall, context: RuntimeContext) -> ToolResult:
+    async def _execute_tool(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
         try:
             tool_context = RuntimeContext.from_dict(context.to_dict())
-            return await self._tools.execute(call, tool_context)
-        except Exception as exc:
-            return ToolResult(
-                parts=[ContentPart.text_part(str(exc) or exc.__class__.__name__)],
-                metadata={"error_type": exc.__class__.__name__},
+            return await self._tools.invoke(call, tool_context)
+        except (InvalidToolCall, ToolError) as exc:
+            text = str(exc) or exc.__class__.__name__
+            metadata = {"error_type": exc.__class__.__name__}
+            if call.mode == "execute":
+                return ToolObservation(
+                    parts=[ContentPart.text_part(text)],
+                    metadata=metadata,
+                    is_error=True,
+                )
+            if call.mode == "accept":
+                return ToolRejection.text(text, metadata=metadata)
+            return ToolOutput(
+                kind="tool_error",
+                parts=[ContentPart.text_part(text)],
+                metadata=metadata,
                 is_error=True,
             )
 
@@ -936,13 +974,18 @@ class AgentLoop:
     async def _await_model_with_interrupt(
         self, awaitable: Awaitable[T], control: RunControlState
     ) -> T:
-        controller = control.pause_controller
+        controller = control.run_controller
         if controller is None:
             return await self._await_with_timeout(awaitable, control)
 
         remaining = control.remaining_seconds()
         task = asyncio.ensure_future(awaitable)
-        interrupt_task = asyncio.ensure_future(controller.wait_for_interrupt())
+        pending_insert = controller.pop_insert()
+        if pending_insert is not None:
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            raise RuntimeConversationInsert(pending_insert)
+        interrupt_task = asyncio.ensure_future(controller.wait_for_interrupt_or_insert())
         try:
             if remaining is None:
                 done, _pending = await asyncio.wait(
@@ -959,15 +1002,21 @@ class AgentLoop:
                 if not done:
                     raise RuntimeTimeoutError
 
-            if task in done:
-                interrupt_task.cancel()
-                return await task
-
             if interrupt_task in done:
                 request = await interrupt_task
+                if isinstance(request, ConversationInsert):
+                    task.add_done_callback(self._consume_background_task_exception)
+                    task.cancel()
+                    raise RuntimeConversationInsert(request)
+                if task in done:
+                    return await task
                 task.add_done_callback(self._consume_background_task_exception)
                 task.cancel()
                 raise RuntimePauseInterrupt(request)
+
+            if task in done:
+                interrupt_task.cancel()
+                return await task
 
             raise RuntimeError("model wait returned without a completed task")
         except RuntimeTimeoutError:
@@ -1024,17 +1073,21 @@ class AgentLoop:
     async def _anext_model_with_interrupt(
         self, iterator: AsyncIterator[T], control: RunControlState
     ) -> T:
-        controller = control.pause_controller
+        controller = control.run_controller
         if controller is None:
             return await self._anext_with_timeout(iterator, control)
 
         remaining = control.remaining_seconds()
-        pending_request = controller.request
+        pending_insert = controller.pop_insert()
+        if pending_insert is not None:
+            await self._close_async_iterator(iterator)
+            raise RuntimeConversationInsert(pending_insert)
+        pending_request = controller.pause_request
         if pending_request is not None and pending_request.interrupt:
             await self._close_async_iterator(iterator)
             raise RuntimePauseInterrupt(pending_request)
         task = asyncio.ensure_future(anext(iterator))
-        interrupt_task = asyncio.ensure_future(controller.wait_for_interrupt())
+        interrupt_task = asyncio.ensure_future(controller.wait_for_interrupt_or_insert())
         try:
             if remaining is None:
                 done, _pending = await asyncio.wait(
@@ -1056,6 +1109,8 @@ class AgentLoop:
                 task.add_done_callback(self._consume_background_task_exception)
                 task.cancel()
                 await self._close_async_iterator(iterator)
+                if isinstance(request, ConversationInsert):
+                    raise RuntimeConversationInsert(request)
                 raise RuntimePauseInterrupt(request)
 
             if task in done:
@@ -1091,7 +1146,7 @@ class AgentLoop:
         self,
         context: RuntimeContext | None = None,
         *,
-        pause_controller: PauseController | None = None,
+        controller: RunController | None = None,
     ) -> tuple[RuntimeContext, RunControlState]:
         now_monotonic = monotonic()
         now_wall = time()
@@ -1117,7 +1172,7 @@ class AgentLoop:
             started_at=runtime_context.started_at,
             deadline=runtime_context.deadline,
             monotonic_deadline=None if remaining is None else now_monotonic + remaining,
-            pause_controller=pause_controller,
+            run_controller=controller,
             trace=TraceRecorder(runtime_context.run_id),
             tool_scheduler=ToolScheduler(
                 self._tools,
@@ -1174,16 +1229,60 @@ class AgentLoop:
             state, AgentStatus.LIMIT_EXCEEDED, context, control, error=reason
         )
 
+    async def _insert_if_requested(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> tuple[AgentEvent, ...]:
+        controller = control.run_controller
+        if controller is None or state.status is not AgentStatus.PLANNING or state.is_terminal:
+            return ()
+        insert = controller.pop_insert()
+        if insert is None:
+            return ()
+        return await self._apply_conversation_insert(state, context, control, insert)
+
+    async def _apply_conversation_insert(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        insert: ConversationInsert,
+    ) -> tuple[AgentEvent, ...]:
+        if state.is_terminal:
+            return ()
+        if state.status is not AgentStatus.PLANNING:
+            controller = control.run_controller
+            if controller is not None:
+                controller.insert(insert)
+            return ()
+        message = insert.to_message()
+        state.messages.append(message)
+        events = list(
+            await self._events(
+                context,
+                control,
+                EventTypes.CONVERSATION_INSERTED,
+                {
+                    "insert": insert.to_dict(),
+                    "message": message.to_dict(),
+                },
+            )
+        )
+        events.extend(await self._checkpoint_events(state, context, control))
+        return tuple(events)
+
     async def _pause_if_requested(
         self,
         state: AgentState,
         context: RuntimeContext,
         control: RunControlState,
     ) -> tuple[AgentEvent, ...]:
-        controller = control.pause_controller
+        controller = control.run_controller
         if controller is None or state.is_terminal:
             return ()
-        request = controller.request
+        request = controller.pause_request
         if request is None:
             return ()
         return await self._pause(
@@ -1201,10 +1300,10 @@ class AgentLoop:
         context: RuntimeContext,
         control: RunControlState,
     ) -> tuple[AgentEvent, ...]:
-        controller = control.pause_controller
+        controller = control.run_controller
         if controller is None or state.is_terminal:
             return ()
-        request = controller.request
+        request = controller.pause_request
         if request is None:
             return ()
         resume_status = (
@@ -1262,16 +1361,16 @@ class AgentLoop:
                 pause=pause,
             )
         )
-        controller = control.pause_controller
-        if controller is not None and controller.request == request:
-            controller.clear()
+        controller = control.run_controller
+        if controller is not None and controller.pause_request == request:
+            controller.clear_pause()
         return tuple(events)
 
     @staticmethod
     def _clear_pause_request(control: RunControlState) -> None:
-        controller = control.pause_controller
-        if controller is not None and controller.request is not None:
-            controller.clear()
+        controller = control.run_controller
+        if controller is not None and controller.pause_request is not None:
+            controller.clear_pause()
 
     @staticmethod
     def _rollback_trace_to_durable(control: RunControlState) -> None:
@@ -1501,15 +1600,15 @@ class AgentLoop:
         return ToolCall.from_dict(current.to_dict())
 
     async def _after_tool(
-        self, result: ToolResult, context: RuntimeContext, control: RunControlState
-    ) -> ToolResult:
+        self, result: ToolOutput, context: RuntimeContext, control: RunControlState
+    ) -> ToolOutput:
         current = result
         for hook in self._hooks:
             replacement = await self._call_hook(hook.after_tool, current, context, control=control)
             if replacement is not None:
-                current = cast(ToolResult, replacement)
-            current = ToolResult.from_dict(current.to_dict())
-        return ToolResult.from_dict(current.to_dict())
+                current = cast(ToolOutput, replacement)
+            current = self._normalize_tool_output(current)
+        return self._normalize_tool_output(current)
 
     async def _notify_hooks(self, name: str, *args: object, control: RunControlState) -> None:
         for hook in self._hooks:
@@ -1540,6 +1639,29 @@ class AgentLoop:
                 if call.id == original_call_id:
                     message.tool_calls[index] = ToolCall.from_dict(replacement.to_dict())
                     return
+
+    @staticmethod
+    def _normalize_tool_output(output: ToolOutput) -> ToolOutput:
+        if isinstance(output, ToolObservation):
+            return ToolObservation.from_dict(output.to_dict())
+        if isinstance(output, ToolAcceptance):
+            return ToolAcceptance.from_dict(output.to_dict())
+        if isinstance(output, ToolRejection):
+            return ToolRejection.from_dict(output.to_dict())
+        return ToolOutput.from_dict(output.to_dict())
+
+    @staticmethod
+    def _validate_tool_output_mode(call: ToolCall, output: ToolOutput) -> None:
+        if call.mode == "execute" and output.kind != "observation":
+            raise AgentError("execute tool call must produce ToolObservation")
+        if call.mode == "accept" and output.kind not in {"acceptance", "rejection"}:
+            raise AgentError("accept tool call must produce ToolAcceptance or ToolRejection")
+        if call.mode not in {"execute", "accept"} and output.kind in {
+            "observation",
+            "acceptance",
+            "rejection",
+        }:
+            raise AgentError("custom tool call must produce an extension ToolOutput kind")
 
     @staticmethod
     def _restore_state_from_snapshot(state: AgentState, snapshot: RunSnapshot) -> None:

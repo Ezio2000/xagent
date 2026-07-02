@@ -1,6 +1,6 @@
 """Lightweight model-neutral agent loop runtime."""
 
-from agent_runtime.control import PauseController, PauseRequest
+from agent_runtime.control import ConversationInsert, PauseRequest, RunController
 from agent_runtime.errors import (
     AgentError,
     DuplicateToolError,
@@ -41,7 +41,20 @@ from agent_runtime.runtime import RuntimeContext
 from agent_runtime.scheduler import ToolBatch, ToolCompleted, ToolScheduler, ToolStarted
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentState, AgentStatus, PauseState
-from agent_runtime.tools import Tool, ToolRegistry, ToolResult, ToolSpec
+from agent_runtime.tools import (
+    AcceptableTool,
+    ExecutableTool,
+    InvocableTool,
+    Tool,
+    ToolAcceptance,
+    ToolExecutionContext,
+    ToolInvocation,
+    ToolObservation,
+    ToolOutput,
+    ToolRegistry,
+    ToolRejection,
+    ToolSpec,
+)
 from agent_runtime.trace import (
     ReplayError,
     ReplayResult,
@@ -59,6 +72,7 @@ __all__ = [
     "AgentState",
     "AgentStatus",
     "ContentPart",
+    "ConversationInsert",
     "DuplicateToolError",
     "EventEmitter",
     "EventType",
@@ -84,7 +98,6 @@ __all__ = [
     "ModelToolCallDelta",
     "ModelUsage",
     "ModelUsageDelta",
-    "PauseController",
     "PauseRequest",
     "PauseSelector",
     "PauseState",
@@ -96,15 +109,24 @@ __all__ = [
     "RuntimeContext",
     "RuntimeHook",
     "RunSnapshot",
+    "RunController",
     "RunTrace",
     "StreamingModelClient",
     "Tool",
+    "AcceptableTool",
+    "ExecutableTool",
+    "InvocableTool",
+    "ToolAcceptance",
     "ToolBatch",
     "ToolCall",
     "ToolCompleted",
     "ToolError",
+    "ToolExecutionContext",
+    "ToolInvocation",
+    "ToolObservation",
+    "ToolOutput",
+    "ToolRejection",
     "ToolRegistry",
-    "ToolResult",
     "ToolScheduler",
     "ToolSpec",
     "ToolStarted",

@@ -23,7 +23,7 @@ def test_tool_call_from_dict_rejects_missing_required_arguments() -> None:
         ToolCall.from_dict({"id": 1, "name": "tool", "arguments": {}})
 
     with pytest.raises(TypeError, match="arguments"):
-        ToolCall.from_dict({"id": "call-1", "name": "tool", "arguments": None})
+        ToolCall.from_dict({"id": "call-1", "name": "tool", "mode": "execute", "arguments": None})
 
 
 def test_assistant_tool_call_ids_must_be_unique() -> None:
@@ -61,7 +61,15 @@ def test_message_from_dict_rejects_unknown_wire_fields() -> None:
         ContentPart.from_dict({"type": "text", "text": "hello", "provider": {}})
 
     with pytest.raises(ValueError, match="unknown"):
-        ToolCall.from_dict({"id": "call-1", "name": "tool", "arguments": {}, "provider": {}})
+        ToolCall.from_dict(
+            {
+                "id": "call-1",
+                "name": "tool",
+                "mode": "execute",
+                "arguments": {},
+                "provider": {},
+            }
+        )
 
     with pytest.raises(ValueError, match="unknown"):
         Message.from_dict({"role": "user", "parts": [], "provider": {}})

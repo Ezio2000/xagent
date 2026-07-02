@@ -194,6 +194,7 @@ class TraceStepKinds:
     MODEL_RESULT = "model_result"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    CONVERSATION_INSERT = "conversation_insert"
     PAUSE_REQUESTED = "pause_requested"
     STATE_CHANGED = "state_changed"
     CHECKPOINT = "checkpoint"
@@ -211,6 +212,7 @@ VALID_TRACE_STEP_KINDS = {
     TraceStepKinds.MODEL_RESULT,
     TraceStepKinds.TOOL_CALL,
     TraceStepKinds.TOOL_RESULT,
+    TraceStepKinds.CONVERSATION_INSERT,
     TraceStepKinds.PAUSE_REQUESTED,
     TraceStepKinds.STATE_CHANGED,
     TraceStepKinds.CHECKPOINT,
@@ -219,6 +221,8 @@ VALID_TRACE_STEP_KINDS = {
     TraceStepKinds.RUN_PAUSED,
     TraceStepKinds.RUN_COMPLETED,
 }
+
+_RESERVED_TOOL_RESULT_KINDS = {"observation", "acceptance", "rejection"}
 
 
 VALID_STATE_TRANSITIONS = {
@@ -245,6 +249,7 @@ EVENT_TRACE_KIND: Mapping[str, str] = {
     EventTypes.MODEL_COMPLETED: TraceStepKinds.MODEL_RESULT,
     EventTypes.TOOL_STARTED: TraceStepKinds.TOOL_CALL,
     EventTypes.TOOL_COMPLETED: TraceStepKinds.TOOL_RESULT,
+    EventTypes.CONVERSATION_INSERTED: TraceStepKinds.CONVERSATION_INSERT,
     EventTypes.PAUSE_REQUESTED: TraceStepKinds.PAUSE_REQUESTED,
     EventTypes.STATE_CHANGED: TraceStepKinds.STATE_CHANGED,
     EventTypes.CHECKPOINT: TraceStepKinds.CHECKPOINT,
@@ -530,7 +535,13 @@ def _validate_trace_payload(kind: str, payload: Mapping[str, Any]) -> None:
         data = _validate_tool_call_payload(
             payload, "tool_result payload", extra_required={"result"}
         )
-        _validate_tool_result_summary(data["result"], "tool_result result")
+        result = _validate_tool_result_summary(data["result"], "tool_result result")
+        mode = _expect_tool_mode(data["mode"], "tool_result mode")
+        result_kind = _expect_str(result["result_kind"], "tool_result result_kind")
+        if not _tool_result_kind_matches_mode(mode, result_kind):
+            raise ValueError("tool_result result_kind must match tool invocation mode")
+    elif kind == TraceStepKinds.CONVERSATION_INSERT:
+        _validate_conversation_insert_payload(payload, "conversation_insert payload")
     elif kind == TraceStepKinds.PAUSE_REQUESTED:
         _validate_compact_pause_request(payload, "pause_requested payload", require_origin=True)
     elif kind == TraceStepKinds.STATE_CHANGED:
@@ -660,7 +671,7 @@ def _validate_model_delta_payload(value: Mapping[str, Any]) -> None:
         data = _validate_object_shape(
             value,
             {"kind", "index"},
-            {"id", "name", "arguments_delta_length", "metadata_keys"},
+            {"id", "name", "mode", "arguments_delta_length", "metadata_keys"},
             "tool_call_delta payload",
         )
         _expect_nonnegative_int(data["index"], "tool_call_delta index")
@@ -668,6 +679,8 @@ def _validate_model_delta_payload(value: Mapping[str, Any]) -> None:
             _expect_non_empty_str(data["id"], "tool_call_delta id")
         if "name" in data:
             _expect_non_empty_str(data["name"], "tool_call_delta name")
+        if "mode" in data:
+            _expect_tool_mode(data["mode"], "tool_call_delta mode")
         if "arguments_delta_length" in data:
             _expect_nonnegative_int(
                 data["arguments_delta_length"], "tool_call_delta arguments_delta_length"
@@ -719,30 +732,82 @@ def _validate_tool_call_payload(
     *,
     extra_required: set[str] | None = None,
 ) -> Mapping[str, Any]:
-    required = {"id", "name", "batch_id", "parallel", "index"} | (extra_required or set())
+    required = {"id", "name", "mode", "batch_id", "parallel", "index"} | (extra_required or set())
     data = _validate_object_shape(value, required, set(), label)
     _expect_non_empty_str(data["id"], f"{label} id")
     _expect_non_empty_str(data["name"], f"{label} name")
+    _expect_tool_mode(data["mode"], f"{label} mode")
     _expect_non_empty_str(data["batch_id"], f"{label} batch_id")
     _expect_bool(data["parallel"], f"{label} parallel")
     _expect_nonnegative_int(data["index"], f"{label} index")
     return data
 
 
-def _validate_tool_result_summary(value: object, label: str) -> None:
+def _validate_tool_result_summary(value: object, label: str) -> Mapping[str, Any]:
     data = _expect_mapping(value, label)
     data = _validate_object_shape(
         data,
-        {"part_count", "part_types", "text_length", "is_error", "metadata_keys", "pause"},
-        set(),
+        {
+            "part_count",
+            "part_types",
+            "text_length",
+            "result_kind",
+            "is_error",
+            "metadata_keys",
+            "pause",
+        },
+        {"correlation_id"},
         label,
     )
     _expect_nonnegative_int(data["part_count"], f"{label} part_count")
     _expect_str_list(data["part_types"], f"{label} part_types")
     _expect_nonnegative_int(data["text_length"], f"{label} text_length")
+    result_kind = _expect_str(data["result_kind"], f"{label} result_kind")
+    if not result_kind:
+        raise ValueError(f"{label} result_kind must not be empty")
     _expect_bool(data["is_error"], f"{label} is_error")
+    if "correlation_id" in data:
+        _expect_non_empty_str(data["correlation_id"], f"{label} correlation_id")
+    if result_kind == "acceptance":
+        if "correlation_id" not in data:
+            raise ValueError(f"{label} acceptance requires correlation_id")
+        if data["is_error"]:
+            raise ValueError(f"{label} acceptance is_error must be false")
+        if data["pause"] is not None:
+            raise ValueError(f"{label} acceptance pause must be null")
+    if result_kind == "rejection":
+        if not data["is_error"]:
+            raise ValueError(f"{label} rejection is_error must be true")
+        if data["pause"] is not None:
+            raise ValueError(f"{label} rejection pause must be null")
     _expect_str_list(data["metadata_keys"], f"{label} metadata_keys")
     _validate_compact_pause_request_or_null(data["pause"], f"{label} pause", tool_only=True)
+    return data
+
+
+def _tool_result_kind_matches_mode(mode: str, result_kind: str) -> bool:
+    if mode == "execute":
+        return result_kind == "observation"
+    if mode == "accept":
+        return result_kind in {"acceptance", "rejection"}
+    return result_kind not in _RESERVED_TOOL_RESULT_KINDS
+
+
+def _validate_conversation_insert_payload(value: Mapping[str, Any], label: str) -> None:
+    data = _validate_object_shape(
+        value,
+        {"id", "source", "part_count", "part_types", "text_length", "metadata_keys"},
+        {"correlation_id"},
+        label,
+    )
+    _expect_non_empty_str(data["id"], f"{label} id")
+    _expect_non_empty_str(data["source"], f"{label} source")
+    if "correlation_id" in data:
+        _expect_non_empty_str(data["correlation_id"], f"{label} correlation_id")
+    _expect_nonnegative_int(data["part_count"], f"{label} part_count")
+    _expect_str_list(data["part_types"], f"{label} part_types")
+    _expect_nonnegative_int(data["text_length"], f"{label} text_length")
+    _expect_str_list(data["metadata_keys"], f"{label} metadata_keys")
 
 
 def _validate_compact_pause_or_null(value: object, label: str) -> None:
@@ -853,6 +918,13 @@ def _expect_non_empty_str(value: object, label: str) -> str:
     return text
 
 
+def _expect_tool_mode(value: object, label: str) -> str:
+    mode = _expect_str(value, label)
+    if not mode:
+        raise ValueError(f"{label} must not be empty")
+    return mode
+
+
 def _expect_bool(value: object, label: str) -> bool:
     if not isinstance(value, bool):
         raise TypeError(f"{label} must be a boolean")
@@ -866,7 +938,7 @@ def _expect_str_list(value: object, label: str) -> list[str]:
 def _expect_role_list(value: object, label: str) -> list[str]:
     roles = _expect_str_list(value, label)
     for role in roles:
-        if role not in {"system", "user", "assistant", "tool"}:
+        if role not in {"system", "user", "assistant", "tool", "external"}:
             raise ValueError(f"{label} contains unsupported role: {role}")
     return roles
 
@@ -924,6 +996,8 @@ class _ReplayValidator:
         self.tool_result_ids_since_checkpoint: list[str] = []
         self.pending_tool_pause_requests: list[tuple[int, Mapping[str, Any]]] = []
         self.pending_pause_request: Mapping[str, Any] | None = None
+        self.pending_conversation_insert_baseline = 0
+        self.pending_conversation_insert_count = 0
         self.run_completed_seen = False
         self.last_checkpoint_status: AgentStatus | None = None
         self.last_checkpoint_payload: Mapping[str, Any] | None = None
@@ -988,6 +1062,11 @@ class _ReplayValidator:
             return
         if self.current_status is None:
             raise ReplayError(f"{step.kind} appeared before run_started")
+        if self.pending_conversation_insert_count and step.kind not in {
+            TraceStepKinds.CONVERSATION_INSERT,
+            TraceStepKinds.CHECKPOINT,
+        }:
+            raise ReplayError(f"conversation_insert requires checkpoint before {step.kind}")
 
         if step.kind == TraceStepKinds.STATE_CHANGED:
             self._validate_state_changed(step)
@@ -1008,6 +1087,8 @@ class _ReplayValidator:
             self._validate_tool_call(step)
         elif step.kind == TraceStepKinds.TOOL_RESULT:
             self._validate_tool_result(step)
+        elif step.kind == TraceStepKinds.CONVERSATION_INSERT:
+            self._validate_conversation_insert(step)
         elif step.kind == TraceStepKinds.PAUSE_REQUESTED:
             self._validate_pause_requested(step)
         elif step.kind == TraceStepKinds.RUN_PAUSED:
@@ -1136,6 +1217,23 @@ class _ReplayValidator:
             if raw_count > self.stream_baseline_message_count:
                 raise ReplayError("stream delta was checkpointed without a complete model result")
         raw_count = step.payload.get("message_count")
+        if self.pending_conversation_insert_count:
+            if not isinstance(raw_count, int) or isinstance(raw_count, bool):
+                raise ReplayError("conversation_insert checkpoint must include message_count")
+            expected_count = (
+                self.pending_conversation_insert_baseline + self.pending_conversation_insert_count
+            )
+            if raw_count != expected_count:
+                raise ReplayError(
+                    "conversation_insert checkpoint must include every inserted message"
+                )
+            roles = _expect_role_list(step.payload.get("message_roles"), "checkpoint message_roles")
+            inserted_roles = roles[-self.pending_conversation_insert_count :]
+            if inserted_roles != ["external"] * self.pending_conversation_insert_count:
+                raise ReplayError(
+                    "conversation_insert checkpoint must append external message roles"
+                )
+            self.pending_conversation_insert_count = 0
         if isinstance(raw_count, int) and not isinstance(raw_count, bool):
             self.durable_message_count = raw_count
         if status is AgentStatus.PLANNING:
@@ -1205,6 +1303,7 @@ class _ReplayValidator:
             raise ReplayError(f"tool_call id must be unique in execution segment: {call_id}")
         self.open_tool_calls[call_id] = {
             "name": _payload_str(step.payload, "name"),
+            "mode": _payload_str(step.payload, "mode"),
             "batch_id": _payload_str(step.payload, "batch_id"),
             "parallel": _expect_bool(step.payload.get("parallel"), "tool_call parallel"),
             "index": _expect_nonnegative_int(step.payload.get("index"), "tool_call index"),
@@ -1220,19 +1319,24 @@ class _ReplayValidator:
         if expected is None:
             raise ReplayError(f"tool_result requires an open tool_call: {call_id}")
         result_index = _expect_nonnegative_int(step.payload.get("index"), "tool_result index")
+        mode = _payload_str(step.payload, "mode")
         actual = {
             "name": _payload_str(step.payload, "name"),
+            "mode": mode,
             "batch_id": _payload_str(step.payload, "batch_id"),
             "parallel": _expect_bool(step.payload.get("parallel"), "tool_result parallel"),
             "index": result_index,
         }
         if actual != expected:
             raise ReplayError("tool_result envelope does not match matching tool_call")
+        result = _expect_mapping(step.payload["result"], "tool result payload")
+        result_kind = _expect_str(result.get("result_kind"), "tool result kind")
+        if not _tool_result_kind_matches_mode(mode, result_kind):
+            raise ReplayError("tool_result result_kind must match tool invocation mode")
         del self.open_tool_calls[call_id]
         self.tool_result_count += 1
         self.tool_result_ready = True
         self.tool_result_ids_since_checkpoint.append(call_id)
-        result = _expect_mapping(step.payload["result"], "tool result payload")
         pause = result.get("pause")
         if pause is not None:
             self.pending_tool_pause_requests.append(
@@ -1241,6 +1345,18 @@ class _ReplayValidator:
                     _expect_mapping(pause, "tool result pause"),
                 )
             )
+
+    def _validate_conversation_insert(self, step: TraceStep) -> None:
+        self._validate_same_status(step)
+        if self.current_status is not AgentStatus.PLANNING:
+            raise ReplayError("conversation_insert is only valid while planning")
+        _validate_conversation_insert_payload(step.payload, "conversation_insert payload")
+        if self.pending_conversation_insert_count == 0:
+            self.pending_conversation_insert_baseline = self.durable_message_count
+        self.pending_conversation_insert_count += 1
+        self.model_call_open = False
+        self.model_result_ready = False
+        self.pending_stream_delta = False
 
     def _validate_final(self, step: TraceStep) -> None:
         self._validate_same_status(step)
@@ -1538,6 +1654,7 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "id": data["id"],
             "name": data["name"],
+            "mode": data["mode"],
             "batch_id": data["batch_id"],
             "parallel": data["parallel"],
             "index": data["index"],
@@ -1546,6 +1663,7 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "id": data["id"],
             "name": data["name"],
+            "mode": data["mode"],
             "batch_id": data["batch_id"],
             "parallel": data["parallel"],
             "index": data["index"],
@@ -1553,6 +1671,8 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
                 _expect_mapping(data["result"], "tool result summary")
             ),
         }
+    if kind == TraceStepKinds.CONVERSATION_INSERT:
+        return _compact_conversation_insert(_expect_mapping(data["insert"], "conversation insert"))
     if kind == TraceStepKinds.MODEL_CALL:
         return deepcopy(dict(data))
     if kind == TraceStepKinds.MODEL_RESULT:
@@ -1583,14 +1703,49 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
 
 def _compact_tool_result_summary(result: Mapping[str, Any]) -> dict[str, Any]:
     metadata = _expect_mapping(result.get("metadata", {}), "tool result metadata")
-    return {
+    payload = {
         "part_count": result["part_count"],
         "part_types": list(_expect_sequence(result["part_types"], "tool result part_types")),
         "text_length": result["text_length"],
+        "result_kind": result["result_kind"],
         "is_error": result["is_error"],
         "metadata_keys": sorted(str(key) for key in metadata),
         "pause": _compact_pause_request(result["pause"]),
     }
+    if "correlation_id" in result:
+        payload["correlation_id"] = result["correlation_id"]
+    return payload
+
+
+def _compact_conversation_insert(insert: Mapping[str, Any]) -> dict[str, Any]:
+    parts = [
+        _expect_mapping(part, "conversation insert part")
+        for part in _expect_sequence(insert["parts"], "conversation insert parts")
+    ]
+    part_types: list[str] = []
+    seen: set[str] = set()
+    text_length = 0
+    for part in parts:
+        part_type = _expect_str(part["type"], "conversation insert part type")
+        if part_type not in seen:
+            seen.add(part_type)
+            part_types.append(part_type)
+        if part_type == "text":
+            text = part.get("text")
+            if isinstance(text, str):
+                text_length += len(text)
+    metadata = _expect_mapping(insert.get("metadata", {}), "conversation insert metadata")
+    payload: dict[str, Any] = {
+        "id": insert["id"],
+        "source": insert["source"],
+        "part_count": len(parts),
+        "part_types": part_types,
+        "text_length": text_length,
+        "metadata_keys": sorted(str(key) for key in metadata),
+    }
+    if "correlation_id" in insert:
+        payload["correlation_id"] = insert["correlation_id"]
+    return payload
 
 
 def _compact_model_result_summary(data: Mapping[str, Any]) -> dict[str, Any]:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from agent_runtime import (
     AgentLoop,
@@ -12,7 +11,9 @@ from agent_runtime import (
     ModelResponse,
     RuntimeContext,
     ToolCall,
-    ToolResult,
+    ToolExecutionContext,
+    ToolInvocation,
+    ToolObservation,
     ToolSpec,
 )
 
@@ -28,9 +29,11 @@ class EchoTool:
         },
     )
 
-    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
         _ = context
-        return ToolResult.text(str(arguments.get("text", "")))
+        return ToolObservation.text(str(invocation.arguments.get("text", "")))
 
 
 class DemoModel:

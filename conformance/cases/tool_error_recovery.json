@@ -7,12 +7,18 @@
         {
           "id": "call-1",
           "name": "fail",
+          "mode": "execute",
           "arguments": {}
         }
       ]
     },
     {
-      "parts": [{ "type": "text", "text": "handled error" }],
+      "parts": [
+        {
+          "type": "text",
+          "text": "handled error"
+        }
+      ],
       "tool_calls": []
     }
   ],

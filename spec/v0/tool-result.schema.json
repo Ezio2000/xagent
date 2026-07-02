@@ -1,30 +1,119 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agent-runtime.local/spec/v0/tool-result.schema.json",
-  "title": "Agent Runtime ToolResult",
-  "type": "object",
-  "required": ["parts", "is_error"],
-  "properties": {
-    "parts": {
-      "type": "array",
-      "items": {
-        "$ref": "messages.schema.json#/$defs/content_part"
-      }
-    },
-    "metadata": {
-      "type": "object"
-    },
-    "is_error": {
-      "type": "boolean"
-    },
-    "pause": {
-      "oneOf": [
-        { "type": "null" },
-        { "$ref": "#/$defs/pause_request" }
-      ]
-    }
-  },
+  "title": "Agent Runtime ToolOutput",
+  "oneOf": [
+    { "$ref": "#/$defs/observation" },
+    { "$ref": "#/$defs/acceptance" },
+    { "$ref": "#/$defs/rejection" },
+    { "$ref": "#/$defs/extension_output" }
+  ],
   "$defs": {
+    "observation": {
+      "type": "object",
+      "required": ["kind", "parts", "is_error"],
+      "properties": {
+        "kind": { "const": "observation" },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "messages.schema.json#/$defs/content_part"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "pause": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/pause_request" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["kind", "parts", "correlation_id"],
+      "properties": {
+        "kind": { "const": "acceptance" },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "messages.schema.json#/$defs/content_part"
+          }
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rejection": {
+      "type": "object",
+      "required": ["kind", "parts", "is_error"],
+      "properties": {
+        "kind": { "const": "rejection" },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "messages.schema.json#/$defs/content_part"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "is_error": {
+          "const": true
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "extension_output": {
+      "type": "object",
+      "required": ["kind", "parts"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "not": { "enum": ["observation", "acceptance", "rejection"] }
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "messages.schema.json#/$defs/content_part"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "pause": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/pause_request" }
+          ]
+        },
+        "correlation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "pause_request": {
       "type": "object",
       "required": ["reason", "source", "wait_id", "metadata", "interrupt"],
@@ -49,6 +138,5 @@
       },
       "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  }
 }
