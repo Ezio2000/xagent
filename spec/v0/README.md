@@ -17,20 +17,36 @@ runtime boundary priority.
   streamed content is never durable state.
 - `run-trace.md`: compact trace records and deterministic replay validation.
 
-## Wire Schemas
+## Contract Index
 
-- `messages.schema.json`: model-neutral message and content-part wire shape.
-- `model-request.schema.json` and `model-response.schema.json`: provider-neutral
-  model adapter boundary.
-- `model-error.schema.json`: structured provider/runtime model errors.
-- `tools.schema.json` and `tool-result.schema.json`: tool specs, tool calls, and
-  compact tool results.
-- `state.schema.json`, `runtime-context.schema.json`, and
-  `run-snapshot.schema.json`: durable checkpoint state.
-- `resume-input.schema.json`: strict resume boundary input.
-- `events.schema.json`: runtime event stream envelope and payload summaries.
-- `run-trace.schema.json`: compact run-trace envelope and step payloads.
-- `limits.schema.json`: loop limits and scheduling controls.
+Each schema owns one portable wire shape. SDKs may expose native classes around
+these shapes, but the JSON form is the cross-language boundary.
+
+| File | Owns | Portable Contract |
+| --- | --- | --- |
+| `messages.schema.json` | Messages, content parts, assistant tool-call shape, and tool-message linkage. | Roles, part types, tool-call ids/names/arguments, tool-call uniqueness semantics, tool result message linkage, and extension points for future content. |
+| `model-request.schema.json` | Runtime-to-model adapter request. | Message history, tool specs, model options, tool choice, response format, and request metadata boundary. |
+| `model-response.schema.json` | Model-to-runtime response. | Final content parts, requested tool calls using the shared tool-call shape, finish reason, usage, model id, response id, and response metadata boundary. |
+| `model-error.schema.json` | Structured model/provider failures. | Stable message, provider, error code, status code, retryability, request id, and error metadata boundary. |
+| `tools.schema.json` | Tool specifications exposed to models. | Tool name, description, input/output schema, scheduling annotations, and tool metadata boundary. |
+| `tool-result.schema.json` | Tool execution result. | Result content parts, error flag, result metadata boundary, and optional non-interrupting tool-origin pause request. |
+| `limits.schema.json` | Runtime limits and scheduling knobs. | Iteration limits, tool-call limits, timeout, stop-on-tool-error, and max parallel tool calls. |
+| `state.schema.json` | Durable agent state. | Status, messages, pending tool calls, counters, final parts, error summary, and pause state. |
+| `runtime-context.schema.json` | Runtime invocation context. | Run id, start time, optional deadline, host metadata boundary, and event sequence. |
+| `run-snapshot.schema.json` | Durable resume checkpoint. | State plus context at a checkpoint boundary. |
+| `resume-input.schema.json` | Host-to-runtime resume boundary. | Snapshot, append-only messages, optional expected-pause selector, and resume metadata. |
+| `events.schema.json` | Ordered runtime event stream. | Event envelope, event names, sequence ordering, and compact payload summaries. |
+| `run-trace.schema.json` | Compact semantic trace. | Trace envelope, ordered trace steps, status summaries, stable references, and replayable payloads. |
+
+The Markdown files own semantic rules that schemas only partially express:
+
+| File | Owns |
+| --- | --- |
+| `state-machine.md` | Status meanings, allowed transitions, terminal states, and checkpoint placement. |
+| `run-control.md` | Pause, interrupt, resume, timeout priority, and external waits. |
+| `tool-scheduling.md` | Serial and parallel tool execution, batch atomicity, and tool error behavior. |
+| `model-stream.md` | Streaming deltas, accumulator behavior, and non-durable partial output. |
+| `run-trace.md` | Trace step order, deterministic replay rules, and compact payload policy. |
 
 ## Boundary Rules
 
@@ -51,6 +67,31 @@ The v0 documents share these boundary decisions:
 - Trace replay validates recorded semantic boundaries without calling live
   models or tools. It must reject traces that describe impossible state,
   checkpoint, or commit histories even when the JSON shape is valid.
+
+## Portable Versus SDK-Local
+
+Portable contract:
+
+- JSON shapes accepted by the schemas above.
+- Status names, event names, trace step names, and transition semantics.
+- Durable checkpoint contents and resume-input validation.
+- Message, model, tool, limit, pause, snapshot, event, and trace behavior needed
+  by conformance cases.
+- Replay acceptance or rejection for a compact `run-trace.schema.json` value.
+
+SDK-local detail:
+
+- Native class names, method names, package layout, and helper APIs.
+- Exception classes, stack traces, and diagnostic wording outside conformance
+  expectations.
+- Provider SDK request/response objects and transport-specific errors before
+  they are translated into v0 model shapes.
+- Persistence stores, approval flows, plugin systems, UI rendering, queues, and
+  deployment runtime.
+- Internal semantics of `metadata` keys and values. Metadata fields included in
+  v0 schemas are still part of the wire shape; SDKs should preserve them where
+  the schema includes them. Run traces are the exception: they intentionally
+  record stable `metadata_keys` summaries instead of raw metadata values.
 
 ## Schema Versus SDK Validation
 

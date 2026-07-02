@@ -14,6 +14,61 @@ uv run agent-runtime-conformance ../../conformance/cases
 
 Use `--spec-dir` when running against a non-standard checkout layout.
 
+## Implementing a Runner for Another SDK
+
+The case files are the cross-SDK input. The Python runner is the reference
+implementation and reference harness for current behavior, but the normative
+inputs are the fixtures, `spec/v0`, and this document. Other SDKs should
+implement their own runner against the same JSON fixtures instead of importing
+Python code or depending on Python object layouts.
+
+A non-Python runner should provide the same deterministic harness:
+
+- Load every `*.json` case in sorted order and reject unknown keys.
+- Validate fixture fields that map to v0 schemas, plus runner-specific field
+  checks. During execution, validate emitted events, snapshots, resume input,
+  and traces against the v0 schemas.
+- Convert `model_steps` and `resume_model_steps` into scripted model responses.
+- Emit stream events from `stream_model_steps` when the case requests streaming.
+- Provide the standard conformance tools: `echo`, `fail`, `delayed_echo`,
+  `wait`, and `parallel_wait`.
+- Execute `run` cases from a single initial user message.
+- Execute `resume` cases by first selecting the requested checkpoint, then
+  resuming through the SDK's resume-input value.
+- Execute `model_response_negative` cases by checking that the SDK rejects the
+  schema-valid but semantically invalid model response.
+- Assert every `expected_*` field and every `forbidden_*` field present in the
+  case. Absence of an expectation means the runner should not assert it.
+
+The runner may use SDK-native classes, async primitives, error types, and test
+frameworks. The portable contract is the JSON fixture, emitted event/snapshot
+wire shape, final status, trace replay result, and documented behavior. Exact
+exception classes, stack traces, local timestamps, object identities, and helper
+function names are SDK-local details.
+
+Standard tool behavior is part of the harness contract:
+
+- `echo`: returns a text tool result containing `arguments.text`, or `""` when
+  `text` is absent.
+- `fail`: signals a tool failure with message `tool failed`.
+- `delayed_echo`: has `parallel_safe`, `read_only`, and `idempotent`
+  annotations set to `true`; sleeps for `arguments.delay` seconds when present,
+  then returns `arguments.text` or `""`.
+- `wait`: returns a non-error waiting tool result whose text is `arguments.text`
+  or `external wait started`, whose `wait_id` is `arguments.wait_id`, and whose
+  reason is `arguments.reason` or `external_wait`.
+- `parallel_wait`: has the same annotations as `delayed_echo`, sleeps for
+  `arguments.delay` seconds when present, then returns the same waiting result
+  shape as `wait`.
+
+`wait` and `parallel_wait` produce tool-origin pause requests. Their pause
+request must not be an interrupt, and their committed paused checkpoint is the
+durable resume boundary.
+
+When adding a new SDK, first make a minimal runner pass `final_only`,
+`one_tool_then_final`, and one `model_response_negative` case. Then broaden to
+resume, streaming, external wait, limits, and parallel scheduling cases.
+
 ## Shared Conventions
 
 All case files must define `name`. Runtime cases also define `model_steps`,
