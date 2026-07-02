@@ -2,17 +2,52 @@
 
 The Python SDK implements the v0.1 agent loop runtime.
 
+## Installation
+
+The distribution package name is `agent-runtime`. The import package name is
+`agent_runtime`.
+
+From a published package:
+
+```bash
+uv add agent-runtime
+```
+
+From the repository before a package release:
+
+```bash
+uv add "agent-runtime @ git+https://github.com/Ezio2000/agent-runtime.git@main#subdirectory=sdks/python"
+```
+
+From a local checkout:
+
+```bash
+uv add --editable /path/to/agent-runtime/sdks/python
+```
+
+Application code should import the runtime package:
+
+```python
+from agent_runtime import AgentLoop, Message, ModelResponse
+```
+
+The installed package also provides `agent_runtime_conformance` and the
+`agent-runtime-conformance` CLI for SDK development and contract validation.
+Most applications do not need to import it.
+
 ## Development
+
+Run development commands from `sdks/python`:
 
 ```bash
 uv sync
 uv run pytest -q -p no:cacheprovider
-uv run ruff check . ../../examples/python
-uv run ruff format --check . ../../examples/python
+uv run ruff check .
+uv run ruff format --check .
 uv run pyright
 uv run agent-runtime-conformance ../../conformance/cases
-uv run python ../../examples/python/basic_tool_loop.py
-uv run python ../../examples/python/pause_resume_trace.py
+uv run python examples/basic_tool_loop.py
+uv run python examples/pause_resume_trace.py
 ```
 
 ## Minimal Usage

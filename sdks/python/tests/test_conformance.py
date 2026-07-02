@@ -17,8 +17,8 @@ from agent_runtime import (
     ModelResponse,
     RunTrace,
 )
-from agent_runtime.conformance import ConformanceRunner
-from agent_runtime.conformance import main as conformance_main
+from agent_runtime_conformance import ConformanceRunner
+from agent_runtime_conformance import main as conformance_main
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SPEC_DIR = REPO_ROOT / "spec" / "v0"

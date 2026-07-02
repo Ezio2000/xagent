@@ -15,7 +15,10 @@ dependencies = [
 Repository = "https://github.com/Ezio2000/agent-runtime"
 
 [project.scripts]
-agent-runtime-conformance = "agent_runtime.conformance:main"
+agent-runtime-conformance = "agent_runtime_conformance.runner:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_runtime", "src/agent_runtime_conformance"]
 
 [build-system]
 requires = ["hatchling"]
@@ -45,6 +48,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.pyright]
-include = ["src", "tests", "../../examples/python"]
+include = ["src", "tests", "examples"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"

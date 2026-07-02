@@ -6,6 +6,58 @@ The project is organized for multiple language SDKs. The Python SDK is the
 reference implementation today; TypeScript and Go directories are reserved for
 future SDKs.
 
+External applications should depend on a language SDK package, not on the
+repository root. For Python, the package name is `agent-runtime` and the import
+package is `agent_runtime`.
+
+## Using The Python SDK
+
+For a published Python package:
+
+```bash
+uv add agent-runtime
+```
+
+If you want to depend on this repository before a package release, point your
+dependency at the Python SDK subdirectory:
+
+```bash
+uv add "agent-runtime @ git+https://github.com/Ezio2000/agent-runtime.git@main#subdirectory=sdks/python"
+```
+
+For local development against this checkout:
+
+```bash
+uv add --editable /path/to/agent-runtime/sdks/python
+```
+
+Minimal usage:
+
+```python
+import asyncio
+
+from agent_runtime import AgentLoop, Message, ModelRequest, ModelResponse, RuntimeContext
+
+
+class EchoModel:
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = context
+        return ModelResponse.text(request.messages[-1].text)
+
+
+async def main() -> None:
+    agent = AgentLoop(model=EchoModel())
+    result = await agent.run([Message.user_text("hello")])
+    print(result.final_parts[0].text)
+
+
+asyncio.run(main())
+```
+
+`agent_runtime_conformance` is packaged with the Python SDK for SDK development
+and contract validation. Most application code should import only
+`agent_runtime`.
+
 ## What This Core Provides
 
 `agent-runtime` focuses on the reusable runtime layer:
@@ -55,42 +107,19 @@ If a timeout interrupts a parallel batch, the next checkpoint remains at the las
 fully committed boundary; observed but uncommitted idempotent calls may be rerun
 when resuming from that prior non-terminal checkpoint.
 
-## Quick Start
+## Repository Quick Start
 
 ```bash
 cd sdks/python
 uv sync
-uv run python ../../examples/python/basic_tool_loop.py
-uv run python ../../examples/python/pause_resume_trace.py
-```
-
-Minimal model:
-
-```python
-import asyncio
-
-from agent_runtime import AgentLoop, Message, ModelRequest, ModelResponse
-from agent_runtime import RuntimeContext
-
-
-class EchoModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = context
-        return ModelResponse.text(request.messages[-1].text)
-
-
-async def main() -> None:
-    agent = AgentLoop(model=EchoModel())
-    result = await agent.run([Message.user_text("hello")])
-    print(result.final_parts[0].text)
-
-
-asyncio.run(main())
+uv run python examples/basic_tool_loop.py
+uv run python examples/pause_resume_trace.py
 ```
 
 For tool usage, streaming, multimodal messages, snapshots, pause/resume, and
-run traces, see `sdks/python/README.md`, `examples/python/basic_tool_loop.py`,
-and `examples/python/pause_resume_trace.py`.
+run traces, see `sdks/python/README.md`,
+`sdks/python/examples/basic_tool_loop.py`, and
+`sdks/python/examples/pause_resume_trace.py`.
 
 ## Model Protocol
 
@@ -125,10 +154,18 @@ checkpoint state, message wire fields, or trace replay data.
   and expectations are documented in `conformance/README.md`.
 - `docs`: design notes for architecture, event streams, state machine, model
   protocol, tool protocol, and public API audit decisions.
-- `sdks/python`: reference SDK implementation managed with `uv`.
+- `sdks/python`: self-contained reference SDK implementation managed with `uv`,
+  including package code, tests, examples, and Python conformance tooling.
 - `sdks/typescript`: reserved TypeScript SDK location.
 - `sdks/go`: reserved Go SDK location.
-- `examples/python`: small runnable examples.
+
+The intended package boundary is:
+
+- `sdks/python/src/agent_runtime`: Python runtime SDK used by applications.
+- `sdks/python/src/agent_runtime_conformance`: Python conformance CLI and
+  shared-case runner for SDK development.
+- Future `sdks/typescript` and `sdks/go` implementations should be independently
+  publishable packages that follow `spec/v0` and pass `conformance/cases`.
 
 ## Development Principles
 
@@ -155,12 +192,12 @@ packages.
 cd sdks/python
 uv sync
 uv run pytest -q -p no:cacheprovider
-uv run ruff check . ../../examples/python
-uv run ruff format --check . ../../examples/python
+uv run ruff check .
+uv run ruff format --check .
 uv run pyright
 uv run agent-runtime-conformance ../../conformance/cases
-uv run python ../../examples/python/basic_tool_loop.py
-uv run python ../../examples/python/pause_resume_trace.py
+uv run python examples/basic_tool_loop.py
+uv run python examples/pause_resume_trace.py
 ```
 
 When JSON spec or conformance files change, also parse them:

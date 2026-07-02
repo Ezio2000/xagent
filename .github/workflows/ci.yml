@@ -22,7 +22,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install uv
-        run: python -m pip install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         working-directory: sdks/python
@@ -31,9 +33,14 @@ jobs:
       - name: Smoke test package CLI
         working-directory: sdks/python
         run: |
-          python -m venv /tmp/agent-runtime-smoke
-          /tmp/agent-runtime-smoke/bin/python -m pip install .
-          /tmp/agent-runtime-smoke/bin/agent-runtime-conformance --help
+          uv run --isolated --with . agent-runtime-conformance --help
+          uv run --isolated --with . python - <<'PY'
+          import agent_runtime
+          import agent_runtime_conformance
+
+          assert agent_runtime.AgentLoop.__name__ == "AgentLoop"
+          assert agent_runtime_conformance.ConformanceRunner.__name__ == "ConformanceRunner"
+          PY
 
       - name: Check JSON contracts
         working-directory: sdks/python
@@ -55,11 +62,11 @@ jobs:
 
       - name: Lint
         working-directory: sdks/python
-        run: uv run ruff check . ../../examples/python
+        run: uv run ruff check .
 
       - name: Check formatting
         working-directory: sdks/python
-        run: uv run ruff format --check . ../../examples/python
+        run: uv run ruff format --check .
 
       - name: Type-check
         working-directory: sdks/python
