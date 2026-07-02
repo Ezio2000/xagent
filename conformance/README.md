@@ -6,6 +6,14 @@ JSON objects. Unknown keys are invalid so misspelled expectations fail early.
 `case_type` defaults to `run`. Current case types are `run`, `resume`, and
 `model_response_negative`.
 
+Run the Python reference runner from `sdks/python`:
+
+```bash
+uv run agent-runtime-conformance ../../conformance/cases
+```
+
+Use `--spec-dir` when running against a non-standard checkout layout.
+
 ## Shared Conventions
 
 All case files must define `name`. Runtime cases also define `model_steps`,

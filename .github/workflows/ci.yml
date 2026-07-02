@@ -28,6 +28,13 @@ jobs:
         working-directory: sdks/python
         run: uv sync --locked
 
+      - name: Smoke test package CLI
+        working-directory: sdks/python
+        run: |
+          python -m venv /tmp/agent-runtime-smoke
+          /tmp/agent-runtime-smoke/bin/python -m pip install .
+          /tmp/agent-runtime-smoke/bin/agent-runtime-conformance --help
+
       - name: Check JSON contracts
         working-directory: sdks/python
         run: |
@@ -57,6 +64,10 @@ jobs:
       - name: Type-check
         working-directory: sdks/python
         run: uv run pyright
+
+      - name: Run conformance CLI
+        working-directory: sdks/python
+        run: uv run agent-runtime-conformance ../../conformance/cases
 
       - name: Test
         working-directory: sdks/python

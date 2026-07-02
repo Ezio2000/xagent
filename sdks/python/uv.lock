@@ -6,6 +6,10 @@ requires-python = ">=3.11"
 name = "agent-runtime"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "referencing" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -17,6 +21,10 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4.23.0" },
+    { name = "referencing", specifier = ">=0.35.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [

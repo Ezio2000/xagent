@@ -10,6 +10,7 @@ uv run pytest -q -p no:cacheprovider
 uv run ruff check . ../../examples/python
 uv run ruff format --check . ../../examples/python
 uv run pyright
+uv run agent-runtime-conformance ../../conformance/cases
 uv run python ../../examples/python/basic_tool_loop.py
 uv run python ../../examples/python/pause_resume_trace.py
 ```
