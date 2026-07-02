@@ -10,14 +10,16 @@ from inspect import isawaitable, iscoroutinefunction
 from time import monotonic, time
 from typing import Any, TypeVar, cast
 
+from agent_runtime.control import PauseController, PauseRequest
 from agent_runtime.errors import AgentError, ModelProviderError
-from agent_runtime.events import AgentEvent, EventEmitter, EventTypes
+from agent_runtime.events import CORE_EVENT_TYPES, AgentEvent, EventEmitter, EventTypes
 from agent_runtime.hooks import RuntimeHook
 from agent_runtime.limits import LoopLimits
 from agent_runtime.messages import (
     ContentPart,
     Message,
     ToolCall,
+    content_part_without_metadata,
     content_parts_summary,
 )
 from agent_runtime.models import (
@@ -30,17 +32,27 @@ from agent_runtime.models import (
     ToolChoice,
     stream_event_to_delta_payload,
 )
+from agent_runtime.resume import ResumeInput
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.scheduler import ToolBatch, ToolScheduler, ToolStarted
 from agent_runtime.snapshot import RunSnapshot
-from agent_runtime.state import AgentState, AgentStatus
+from agent_runtime.state import AgentState, AgentStatus, PauseState
 from agent_runtime.tools import Tool, ToolRegistry, ToolResult
+from agent_runtime.trace import RunTrace, TraceRecorder
 
 T = TypeVar("T")
 
 
 class RuntimeTimeoutError(Exception):
     """Raised only when the runtime-owned deadline expires."""
+
+
+class RuntimePauseInterrupt(Exception):
+    """Raised when host code interrupts a model call before it can commit."""
+
+    def __init__(self, request: PauseRequest) -> None:
+        super().__init__(request.reason)
+        self.request = request
 
 
 @dataclass(slots=True, frozen=True)
@@ -54,9 +66,8 @@ class AgentResult:
     total_tool_calls: int
     error: str | None = None
     run_id: str = ""
-    state: AgentState | None = None
-    context: RuntimeContext | None = None
     snapshot: RunSnapshot | None = None
+    trace: RunTrace | None = None
 
 
 @dataclass(slots=True)
@@ -67,6 +78,11 @@ class RunControlState:
     started_at: float
     deadline: float | None = None
     monotonic_deadline: float | None = None
+    pause_controller: PauseController | None = None
+    trace: TraceRecorder | None = None
+    tool_scheduler: ToolScheduler | None = None
+    initial_snapshot: RunSnapshot | None = None
+    last_checkpoint: RunSnapshot | None = None
     sequence: int = 0
 
     def next_sequence(self) -> int:
@@ -89,7 +105,6 @@ class AgentLoop:
         "_model_options",
         "_response_format",
         "_tool_choice",
-        "_tool_scheduler",
         "_tools",
     )
 
@@ -99,7 +114,6 @@ class AgentLoop:
     _model_options: ModelOptions
     _response_format: ResponseFormat | None
     _tool_choice: ToolChoice
-    _tool_scheduler: ToolScheduler
     _tools: ToolRegistry
 
     def __init__(
@@ -122,12 +136,6 @@ class AgentLoop:
         self._response_format = (
             None if response_format is None else ResponseFormat.from_dict(response_format.to_dict())
         )
-        scheduler_parallelism = (
-            1 if self._limits.stop_on_tool_error else (self._limits.max_parallel_tool_calls)
-        )
-        self._tool_scheduler = ToolScheduler(
-            self._tools, max_parallel_tool_calls=scheduler_parallelism
-        )
         self._hooks = tuple(hooks or ())
 
     async def run(
@@ -136,9 +144,11 @@ class AgentLoop:
         *,
         context: RuntimeContext | None = None,
         stream: bool = False,
+        pause_controller: PauseController | None = None,
     ) -> AgentResult:
         state = AgentState(status=AgentStatus.PLANNING, messages=list(messages))
-        return await self.run_state(state, context=context, stream=stream)
+        runtime_context, control = self._prepare_run(context, pause_controller=pause_controller)
+        return await self._run_prepared_state(state, runtime_context, control, stream=stream)
 
     async def run_events(
         self,
@@ -146,52 +156,117 @@ class AgentLoop:
         *,
         context: RuntimeContext | None = None,
         stream: bool = False,
+        pause_controller: PauseController | None = None,
     ) -> AsyncIterator[AgentEvent]:
         state = AgentState(status=AgentStatus.PLANNING, messages=list(messages))
-        async for event in self.run_state_events(state, context=context, stream=stream):
-            yield event
+        runtime_context, control = self._prepare_run(context, pause_controller=pause_controller)
+        iterator = self._run_prepared_state_events(
+            state, runtime_context, control, stream=stream
+        ).__aiter__()
+        try:
+            while True:
+                try:
+                    event = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                yield event
+        finally:
+            runtime_context.sequence = control.sequence
+            await self._close_async_iterator(iterator)
 
-    async def run_state(
+    async def run_snapshot(
         self,
-        state: AgentState,
+        resume_input: ResumeInput,
         *,
-        context: RuntimeContext | None = None,
         stream: bool = False,
+        pause_controller: PauseController | None = None,
     ) -> AgentResult:
-        runtime_context, control = self._prepare_run(context)
-        working_state = AgentState.from_dict(state.to_dict())
-        async for _event in self._run_state_events(
+        if type(resume_input) is not ResumeInput:
+            raise TypeError("run_snapshot requires ResumeInput")
+        resume_input = ResumeInput.from_dict(resume_input.to_dict())
+        working_state, resume_snapshot = resume_input.apply()
+        runtime_context, control = self._prepare_run(
+            resume_snapshot.context, pause_controller=pause_controller
+        )
+        if control.trace is not None:
+            control.trace.record_resume(resume_input, working_state)
+        return await self._run_prepared_state(
             working_state, runtime_context, control, stream=stream
-        ):
-            pass
-        runtime_context.sequence = control.sequence
-        return self._result(working_state, runtime_context, control)
-
-    async def run_state_events(
-        self,
-        state: AgentState,
-        *,
-        context: RuntimeContext | None = None,
-        stream: bool = False,
-    ) -> AsyncIterator[AgentEvent]:
-        runtime_context, control = self._prepare_run(context)
-        working_state = AgentState.from_dict(state.to_dict())
-        async for event in self._run_state_events(
-            working_state, runtime_context, control, stream=stream
-        ):
-            yield event
-        runtime_context.sequence = control.sequence
-
-    async def run_snapshot(self, snapshot: RunSnapshot, *, stream: bool = False) -> AgentResult:
-        return await self.run_state(snapshot.state, context=snapshot.context, stream=stream)
+        )
 
     async def run_snapshot_events(
-        self, snapshot: RunSnapshot, *, stream: bool = False
+        self,
+        resume_input: ResumeInput,
+        *,
+        stream: bool = False,
+        pause_controller: PauseController | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        async for event in self.run_state_events(
-            snapshot.state, context=snapshot.context, stream=stream
-        ):
-            yield event
+        if type(resume_input) is not ResumeInput:
+            raise TypeError("run_snapshot_events requires ResumeInput")
+        resume_input = ResumeInput.from_dict(resume_input.to_dict())
+        working_state, resume_snapshot = resume_input.apply()
+        runtime_context, control = self._prepare_run(
+            resume_snapshot.context, pause_controller=pause_controller
+        )
+        if control.trace is not None:
+            control.trace.record_resume(resume_input, working_state)
+        iterator = self._run_prepared_state_events(
+            working_state, runtime_context, control, stream=stream
+        ).__aiter__()
+        try:
+            while True:
+                try:
+                    event = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                yield event
+        finally:
+            runtime_context.sequence = control.sequence
+            await self._close_async_iterator(iterator)
+
+    async def _run_prepared_state(
+        self,
+        working_state: AgentState,
+        runtime_context: RuntimeContext,
+        control: RunControlState,
+        *,
+        stream: bool,
+    ) -> AgentResult:
+        iterator = self._run_prepared_state_events(
+            working_state, runtime_context, control, stream=stream
+        ).__aiter__()
+        try:
+            while True:
+                try:
+                    await anext(iterator)
+                except StopAsyncIteration:
+                    break
+        finally:
+            runtime_context.sequence = control.sequence
+            await self._close_async_iterator(iterator)
+        return self._result(working_state, runtime_context, control)
+
+    async def _run_prepared_state_events(
+        self,
+        working_state: AgentState,
+        runtime_context: RuntimeContext,
+        control: RunControlState,
+        *,
+        stream: bool,
+    ) -> AsyncIterator[AgentEvent]:
+        iterator = self._run_state_events(
+            working_state, runtime_context, control, stream=stream
+        ).__aiter__()
+        try:
+            while True:
+                try:
+                    event = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                yield event
+        finally:
+            runtime_context.sequence = control.sequence
+            await self._close_async_iterator(iterator)
 
     async def _run_state_events(
         self,
@@ -201,17 +276,32 @@ class AgentLoop:
         *,
         stream: bool,
     ) -> AsyncIterator[AgentEvent]:
+        terminal_checkpoint_committed = False
+        control.initial_snapshot = self._snapshot(state, context, control)
         try:
             for event in await self._events(
                 context,
                 control,
                 EventTypes.RUN_STARTED,
-                {"state": state.snapshot()},
+                {"state": state.summary()},
+                trace_before_hooks=True,
             ):
                 yield event
 
-            async for event in self._drive(state, context, control, stream=stream):
-                yield event
+            drive_iterator = self._drive(state, context, control, stream=stream).__aiter__()
+            try:
+                while True:
+                    try:
+                        event = await anext(drive_iterator)
+                    except StopAsyncIteration:
+                        break
+                    yield event
+            finally:
+                await self._close_async_iterator(drive_iterator)
+
+            terminal_checkpoint_committed = state.is_terminal
+            if state.status is not AgentStatus.PAUSED:
+                self._clear_pause_request(control)
 
             if state.status is AgentStatus.COMPLETED:
                 for event in await self._events(
@@ -224,6 +314,14 @@ class AgentLoop:
                     },
                 ):
                     yield event
+            elif state.status is AgentStatus.PAUSED:
+                for event in await self._events(
+                    context,
+                    control,
+                    EventTypes.RUN_PAUSED,
+                    {"pause": None if state.pause is None else state.pause.to_dict()},
+                ):
+                    yield event
             else:
                 for event in await self._events(
                     context,
@@ -234,13 +332,29 @@ class AgentLoop:
                     yield event
 
             for event in await self._events(
-                context, control, EventTypes.RUN_COMPLETED, {"state": state.snapshot()}
+                context, control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
             ):
                 yield event
+            self._clear_pause_request(control)
         except RuntimeTimeoutError:
+            if terminal_checkpoint_committed:
+                self._clear_pause_request(control)
+                yield self._raw_event(
+                    control,
+                    EventTypes.ERROR,
+                    {"status": state.status.value, "message": "timeout_seconds"},
+                )
+                yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
+                return
+            previous = state.status
+            durable = control.last_checkpoint or control.initial_snapshot
+            self._restore_state_from_snapshot(state, durable)
+            self._rollback_trace_to_durable(control)
             previous = state.status
             state.status = AgentStatus.LIMIT_EXCEEDED
             state.error = "timeout_seconds"
+            state.pause = None
+            self._clear_pause_request(control)
             yield self._raw_event(
                 control,
                 EventTypes.STATE_CHANGED,
@@ -250,6 +364,7 @@ class AgentLoop:
                     "iterations": state.iterations,
                     "total_tool_calls": state.total_tool_calls,
                     "error": state.error,
+                    "pause": None,
                 },
             )
             yield self._raw_checkpoint_event(state, context, control)
@@ -258,11 +373,26 @@ class AgentLoop:
                 EventTypes.ERROR,
                 {"status": state.status.value, "message": state.error},
             )
-            yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.snapshot()})
+            yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
         except Exception as exc:  # pragma: no cover - defensive boundary
+            if terminal_checkpoint_committed:
+                self._clear_pause_request(control)
+                yield self._raw_event(
+                    control,
+                    EventTypes.ERROR,
+                    {"status": state.status.value, "message": str(exc) or exc.__class__.__name__},
+                )
+                yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
+                return
+            previous = state.status
+            durable = control.last_checkpoint or control.initial_snapshot
+            self._restore_state_from_snapshot(state, durable)
+            self._rollback_trace_to_durable(control)
             previous = state.status
             state.status = AgentStatus.FAILED
             state.error = str(exc) or exc.__class__.__name__
+            state.pause = None
+            self._clear_pause_request(control)
             yield self._raw_event(
                 control,
                 EventTypes.STATE_CHANGED,
@@ -272,6 +402,7 @@ class AgentLoop:
                     "iterations": state.iterations,
                     "total_tool_calls": state.total_tool_calls,
                     "error": state.error,
+                    "pause": None,
                 },
             )
             yield self._raw_checkpoint_event(state, context, control)
@@ -280,7 +411,7 @@ class AgentLoop:
                 EventTypes.ERROR,
                 {"status": state.status.value, "message": state.error},
             )
-            yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.snapshot()})
+            yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
 
     async def _drive(
         self,
@@ -291,20 +422,42 @@ class AgentLoop:
         stream: bool,
     ) -> AsyncIterator[AgentEvent]:
         while not state.is_terminal:
-            reason = self._timeout_reason(control)
+            reason = self._active_limit_reason(state, control)
             if reason is not None:
                 for event in await self._limit(state, context, control, reason):
                     yield event
                 return
 
-            if state.status is AgentStatus.PLANNING:
-                async for event in self._planning_step(state, context, control, stream=stream):
+            pause_events = await self._pause_if_requested(state, context, control)
+            if pause_events:
+                for event in pause_events:
                     yield event
+                return
+
+            if state.status is AgentStatus.PLANNING:
+                iterator = self._planning_step(state, context, control, stream=stream).__aiter__()
+                try:
+                    while True:
+                        try:
+                            event = await anext(iterator)
+                        except StopAsyncIteration:
+                            break
+                        yield event
+                finally:
+                    await self._close_async_iterator(iterator)
                 continue
 
             if state.status is AgentStatus.EXECUTING_TOOLS:
-                async for event in self._tool_step(state, context, control):
-                    yield event
+                iterator = self._tool_step(state, context, control).__aiter__()
+                try:
+                    while True:
+                        try:
+                            event = await anext(iterator)
+                        except StopAsyncIteration:
+                            break
+                        yield event
+                finally:
+                    await self._close_async_iterator(iterator)
                 continue
 
             for event in await self._transition(
@@ -325,7 +478,7 @@ class AgentLoop:
         *,
         stream: bool,
     ) -> AsyncIterator[AgentEvent]:
-        reason = self._limits.iteration_reason(state)
+        reason = self._active_limit_reason(state, control)
         if reason is not None:
             for event in await self._limit(state, context, control, reason):
                 yield event
@@ -354,11 +507,21 @@ class AgentLoop:
         try:
             if stream and hasattr(self._model, "stream"):
                 response_holder: list[ModelResponse] = []
-                async for event in self._stream_model(request, context, control, response_holder):
-                    yield event
+                iterator = self._stream_model(
+                    request, context, control, response_holder
+                ).__aiter__()
+                try:
+                    while True:
+                        try:
+                            event = await anext(iterator)
+                        except StopAsyncIteration:
+                            break
+                        yield event
+                finally:
+                    await self._close_async_iterator(iterator)
                 response = response_holder[0]
             else:
-                response = await self._await_with_timeout(
+                response = await self._await_model_with_interrupt(
                     self._model.complete(request, context),
                     control,
                 )
@@ -366,12 +529,23 @@ class AgentLoop:
                 ModelResponse.from_dict(response.to_dict()), context, control
             )
             assistant_message = response.to_assistant_message()
+        except RuntimePauseInterrupt as exc:
+            state.iterations -= 1
+            for event in await self._pause(
+                state,
+                context,
+                control,
+                exc.request,
+                resume_status=AgentStatus.PLANNING,
+                origin="control",
+            ):
+                yield event
+            return
         except RuntimeTimeoutError:
             for event in await self._limit(state, context, control, "timeout_seconds"):
                 yield event
             return
         except ModelProviderError as exc:
-            state.extra = dict(state.extra) | {"model_error": exc.info.to_dict()}
             for event in await self._transition(
                 state,
                 AgentStatus.FAILED,
@@ -403,16 +577,20 @@ class AgentLoop:
             return
 
         state.messages.append(assistant_message)
-        if response.tool_calls:
-            state.pending_tool_calls = list(response.tool_calls)
-            transition_data = await self._apply_transition(
-                state,
-                AgentStatus.EXECUTING_TOOLS,
-                context,
-                control,
-            )
+        limit_reason = None
+        transition_data: Mapping[str, Any] | None = None
+        if assistant_message.tool_calls:
+            state.pending_tool_calls = list(assistant_message.tool_calls)
+            limit_reason = self._limits.tool_call_reason(state)
+            if limit_reason is None:
+                transition_data = await self._apply_transition(
+                    state,
+                    AgentStatus.EXECUTING_TOOLS,
+                    context,
+                    control,
+                )
         else:
-            state.final_parts = list(response.parts)
+            state.final_parts = [content_part_without_metadata(part) for part in response.parts]
             transition_data = await self._apply_transition(
                 state,
                 AgentStatus.COMPLETED,
@@ -427,11 +605,28 @@ class AgentLoop:
             response.summary(),
         ):
             yield event
-        for event in await self._events(
+        if limit_reason is not None:
+            for event in await self._limit(state, context, control, limit_reason):
+                yield event
+            return
+        if transition_data is None:
+            raise RuntimeError("model response did not produce a state transition")
+        transition_events = await self._events(
             context, control, EventTypes.STATE_CHANGED, transition_data
-        ):
-            yield event
-        for event in await self._checkpoint_events(state, context, control):
+        )
+        limit_reason = self._active_limit_reason(state, control)
+        if limit_reason is not None:
+            limit_events = await self._limit(state, context, control, limit_reason)
+            for event in (*transition_events, *limit_events):
+                yield event
+            return
+        pause_events = await self._pause_if_requested(state, context, control)
+        if pause_events:
+            for event in (*transition_events, *pause_events):
+                yield event
+            return
+        checkpoint_events = await self._checkpoint_events(state, context, control)
+        for event in (*transition_events, *checkpoint_events):
             yield event
 
     async def _stream_model(
@@ -446,24 +641,27 @@ class AgentLoop:
         accumulator = ModelStreamAccumulator()
         completed_response: ModelResponse | None = None
 
-        while True:
-            try:
-                stream_event = await self._anext_with_timeout(iterator, control)
-            except StopAsyncIteration:
-                break
-            response = accumulator.apply(stream_event)
-            if response is not None:
-                completed_response = response
-            payload = stream_event_to_delta_payload(stream_event)
-            if payload is None:
-                continue
-            for event in await self._events(
-                context,
-                control,
-                EventTypes.MODEL_DELTA,
-                payload,
-            ):
-                yield event
+        try:
+            while True:
+                try:
+                    stream_event = await self._anext_model_with_interrupt(iterator, control)
+                except StopAsyncIteration:
+                    break
+                response = accumulator.apply(stream_event)
+                if response is not None:
+                    completed_response = response
+                payload = stream_event_to_delta_payload(stream_event)
+                if payload is None:
+                    continue
+                for event in await self._events(
+                    context,
+                    control,
+                    EventTypes.MODEL_DELTA,
+                    payload,
+                ):
+                    yield event
+        finally:
+            await self._close_async_iterator(iterator)
 
         response_holder.append(completed_response or accumulator.response())
 
@@ -471,14 +669,14 @@ class AgentLoop:
         self, state: AgentState, context: RuntimeContext, control: RunControlState
     ) -> AsyncIterator[AgentEvent]:
         while state.pending_tool_calls:
-            reason = self._timeout_reason(control) or self._limits.tool_call_reason(state)
+            reason = self._active_limit_reason(state, control)
             if reason is not None:
                 for event in await self._limit(state, context, control, reason):
                     yield event
                 return
 
             remaining_slots = self._remaining_tool_call_slots(state)
-            batch = self._tool_scheduler.next_batch(
+            batch = self._tool_scheduler(control).next_batch(
                 tuple(state.pending_tool_calls[:remaining_slots])
             )
             if batch is None:
@@ -499,8 +697,16 @@ class AgentLoop:
                 return
 
             try:
-                async for event in self._run_tool_batch(prepared, state, context, control):
-                    yield event
+                iterator = self._run_tool_batch(prepared, state, context, control).__aiter__()
+                try:
+                    while True:
+                        try:
+                            event = await anext(iterator)
+                        except StopAsyncIteration:
+                            break
+                        yield event
+                finally:
+                    await self._close_async_iterator(iterator)
             except RuntimeTimeoutError:
                 for event in await self._limit(state, context, control, "timeout_seconds"):
                     yield event
@@ -509,8 +715,21 @@ class AgentLoop:
             if state.is_terminal:
                 return
 
-        for event in await self._transition(state, AgentStatus.PLANNING, context, control):
-            yield event
+            reason = self._active_limit_reason(state, control)
+            if reason is not None:
+                for event in await self._limit(state, context, control, reason):
+                    yield event
+                return
+
+            pause_events = await self._pause_if_requested(state, context, control)
+            if pause_events:
+                for event in pause_events:
+                    yield event
+                return
+
+        if state.status is not AgentStatus.PLANNING:
+            for event in await self._transition(state, AgentStatus.PLANNING, context, control):
+                yield event
 
     async def _prepare_tool_batch(
         self,
@@ -541,7 +760,7 @@ class AgentLoop:
         async def execute(call: ToolCall) -> ToolResult:
             return await self._await_with_timeout(self._execute_tool(call, context), control)
 
-        async for progress in self._tool_scheduler.run_batch(
+        async for progress in self._tool_scheduler(control).run_batch(
             batch, execute, stop_on_error=self._limits.stop_on_tool_error
         ):
             if isinstance(progress, ToolStarted):
@@ -591,8 +810,6 @@ class AgentLoop:
                 state.pending_tool_calls.pop(0)
 
             completed.clear()
-            for event in await self._checkpoint_events(state, context, control):
-                yield event
 
             if self._limits.stop_on_tool_error:
                 error_result = next(
@@ -611,9 +828,72 @@ class AgentLoop:
                         yield event
                     return
 
+            limit_reason = self._post_tool_commit_limit_reason(state, control)
+            if limit_reason is not None:
+                for event in await self._limit(state, context, control, limit_reason):
+                    yield event
+                return
+
+            pause_result = next(
+                (result for result in committed_results if result.pause is not None),
+                None,
+            )
+            if pause_result is not None and pause_result.pause is not None:
+                resume_status = (
+                    AgentStatus.EXECUTING_TOOLS
+                    if state.pending_tool_calls
+                    else AgentStatus.PLANNING
+                )
+                for event in await self._pause(
+                    state,
+                    context,
+                    control,
+                    pause_result.pause,
+                    resume_status=resume_status,
+                    origin="tool_result",
+                ):
+                    yield event
+                return
+
+            pause_events = await self._pause_after_tool_commit_if_requested(state, context, control)
+            if pause_events:
+                for event in pause_events:
+                    yield event
+                return
+
+            if not state.pending_tool_calls:
+                transition_data = await self._apply_transition(
+                    state,
+                    AgentStatus.PLANNING,
+                    context,
+                    control,
+                )
+                transition_events = await self._events(
+                    context, control, EventTypes.STATE_CHANGED, transition_data
+                )
+                limit_reason = self._active_limit_reason(state, control)
+                if limit_reason is not None:
+                    limit_events = await self._limit(state, context, control, limit_reason)
+                    for event in (*transition_events, *limit_events):
+                        yield event
+                    return
+                pause_events = await self._pause_if_requested(state, context, control)
+                if pause_events:
+                    for event in (*transition_events, *pause_events):
+                        yield event
+                    return
+                checkpoint_events = await self._checkpoint_events(state, context, control)
+                for event in (*transition_events, *checkpoint_events):
+                    yield event
+                return
+
+            for event in await self._checkpoint_events(state, context, control):
+                yield event
+
     async def _execute_tool(self, call: ToolCall, context: RuntimeContext) -> ToolResult:
         try:
-            return await self._tools.execute(call, context)
+            tool_context = RuntimeContext.from_dict(context.to_dict())
+            return await self._tools.execute(call, tool_context)
         except Exception as exc:
             return ToolResult(
                 parts=[ContentPart.text_part(str(exc) or exc.__class__.__name__)],
@@ -629,11 +909,12 @@ class AgentLoop:
         task = asyncio.ensure_future(awaitable)
         if remaining is None:
             try:
-                return await asyncio.shield(task)
+                await asyncio.wait({task})
             except asyncio.CancelledError:
                 task.add_done_callback(self._consume_background_task_exception)
                 task.cancel()
                 raise
+            return await task
 
         if remaining <= 0:
             task.add_done_callback(self._consume_background_task_exception)
@@ -652,16 +933,69 @@ class AgentLoop:
             raise RuntimeTimeoutError
         return await task
 
+    async def _await_model_with_interrupt(
+        self, awaitable: Awaitable[T], control: RunControlState
+    ) -> T:
+        controller = control.pause_controller
+        if controller is None:
+            return await self._await_with_timeout(awaitable, control)
+
+        remaining = control.remaining_seconds()
+        task = asyncio.ensure_future(awaitable)
+        interrupt_task = asyncio.ensure_future(controller.wait_for_interrupt())
+        try:
+            if remaining is None:
+                done, _pending = await asyncio.wait(
+                    {task, interrupt_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+            elif remaining <= 0:
+                raise RuntimeTimeoutError
+            else:
+                done, _pending = await asyncio.wait(
+                    {task, interrupt_task},
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    raise RuntimeTimeoutError
+
+            if task in done:
+                interrupt_task.cancel()
+                return await task
+
+            if interrupt_task in done:
+                request = await interrupt_task
+                task.add_done_callback(self._consume_background_task_exception)
+                task.cancel()
+                raise RuntimePauseInterrupt(request)
+
+            raise RuntimeError("model wait returned without a completed task")
+        except RuntimeTimeoutError:
+            interrupt_task.cancel()
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            raise
+        except asyncio.CancelledError:
+            interrupt_task.cancel()
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            raise
+        finally:
+            if not interrupt_task.done():
+                interrupt_task.cancel()
+
     async def _anext_with_timeout(self, iterator: AsyncIterator[T], control: RunControlState) -> T:
         remaining = control.remaining_seconds()
         task = asyncio.ensure_future(anext(iterator))
         if remaining is None:
             try:
-                return await asyncio.shield(task)
+                await asyncio.wait({task})
             except asyncio.CancelledError:
                 task.add_done_callback(self._consume_background_task_exception)
                 task.cancel()
+                await self._close_async_iterator(iterator)
                 raise
+            return await task
 
         if remaining <= 0:
             task.add_done_callback(self._consume_background_task_exception)
@@ -673,6 +1007,7 @@ class AgentLoop:
         except asyncio.CancelledError:
             task.add_done_callback(self._consume_background_task_exception)
             task.cancel()
+            await self._close_async_iterator(iterator)
             raise
         if not done:
             task.add_done_callback(self._consume_background_task_exception)
@@ -686,8 +1021,77 @@ class AgentLoop:
             raise RuntimeTimeoutError
         return await task
 
+    async def _anext_model_with_interrupt(
+        self, iterator: AsyncIterator[T], control: RunControlState
+    ) -> T:
+        controller = control.pause_controller
+        if controller is None:
+            return await self._anext_with_timeout(iterator, control)
+
+        remaining = control.remaining_seconds()
+        pending_request = controller.request
+        if pending_request is not None and pending_request.interrupt:
+            await self._close_async_iterator(iterator)
+            raise RuntimePauseInterrupt(pending_request)
+        task = asyncio.ensure_future(anext(iterator))
+        interrupt_task = asyncio.ensure_future(controller.wait_for_interrupt())
+        try:
+            if remaining is None:
+                done, _pending = await asyncio.wait(
+                    {task, interrupt_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+            elif remaining <= 0:
+                raise RuntimeTimeoutError
+            else:
+                done, _pending = await asyncio.wait(
+                    {task, interrupt_task},
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    raise RuntimeTimeoutError
+
+            if interrupt_task in done:
+                request = await interrupt_task
+                task.add_done_callback(self._consume_background_task_exception)
+                task.cancel()
+                await self._close_async_iterator(iterator)
+                raise RuntimePauseInterrupt(request)
+
+            if task in done:
+                interrupt_task.cancel()
+                return await task
+
+            raise RuntimeError("model stream wait returned without a completed task")
+        except RuntimeTimeoutError:
+            interrupt_task.cancel()
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            await self._close_async_iterator(iterator)
+            raise
+        except asyncio.CancelledError:
+            interrupt_task.cancel()
+            task.add_done_callback(self._consume_background_task_exception)
+            task.cancel()
+            await self._close_async_iterator(iterator)
+            raise
+        finally:
+            if not interrupt_task.done():
+                interrupt_task.cancel()
+
+    async def _close_async_iterator(self, iterator: AsyncIterator[object]) -> None:
+        aclose = getattr(iterator, "aclose", None)
+        if callable(aclose):
+            with suppress(BaseException):
+                close_result = aclose()
+                if isawaitable(close_result):
+                    await cast(Awaitable[object], close_result)
+
     def _prepare_run(
-        self, context: RuntimeContext | None = None
+        self,
+        context: RuntimeContext | None = None,
+        *,
+        pause_controller: PauseController | None = None,
     ) -> tuple[RuntimeContext, RunControlState]:
         now_monotonic = monotonic()
         now_wall = time()
@@ -713,14 +1117,50 @@ class AgentLoop:
             started_at=runtime_context.started_at,
             deadline=runtime_context.deadline,
             monotonic_deadline=None if remaining is None else now_monotonic + remaining,
+            pause_controller=pause_controller,
+            trace=TraceRecorder(runtime_context.run_id),
+            tool_scheduler=ToolScheduler(
+                self._tools,
+                max_parallel_tool_calls=(
+                    1 if self._limits.stop_on_tool_error else self._limits.max_parallel_tool_calls
+                ),
+            ),
             sequence=runtime_context.sequence,
         )
         return runtime_context, control
+
+    @staticmethod
+    def _tool_scheduler(control: RunControlState) -> ToolScheduler:
+        if control.tool_scheduler is None:
+            raise RuntimeError("run control is missing a tool scheduler")
+        return control.tool_scheduler
 
     def _timeout_reason(self, control: RunControlState) -> str | None:
         remaining = control.remaining_seconds()
         if remaining is not None and remaining <= 0:
             return "timeout_seconds"
+        return None
+
+    def _active_limit_reason(self, state: AgentState, control: RunControlState) -> str | None:
+        if state.is_terminal:
+            return None
+        reason = self._timeout_reason(control)
+        if reason is not None:
+            return reason
+        if state.status is AgentStatus.PLANNING:
+            return self._limits.iteration_reason(state)
+        if state.status is AgentStatus.EXECUTING_TOOLS:
+            return self._limits.tool_call_reason(state)
+        return None
+
+    def _post_tool_commit_limit_reason(
+        self, state: AgentState, control: RunControlState
+    ) -> str | None:
+        reason = self._active_limit_reason(state, control)
+        if reason is not None:
+            return reason
+        if state.status is AgentStatus.EXECUTING_TOOLS and not state.pending_tool_calls:
+            return self._limits.iteration_reason(state)
         return None
 
     async def _limit(
@@ -734,6 +1174,110 @@ class AgentLoop:
             state, AgentStatus.LIMIT_EXCEEDED, context, control, error=reason
         )
 
+    async def _pause_if_requested(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> tuple[AgentEvent, ...]:
+        controller = control.pause_controller
+        if controller is None or state.is_terminal:
+            return ()
+        request = controller.request
+        if request is None:
+            return ()
+        return await self._pause(
+            state,
+            context,
+            control,
+            request,
+            resume_status=state.status,
+            origin="control",
+        )
+
+    async def _pause_after_tool_commit_if_requested(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> tuple[AgentEvent, ...]:
+        controller = control.pause_controller
+        if controller is None or state.is_terminal:
+            return ()
+        request = controller.request
+        if request is None:
+            return ()
+        resume_status = (
+            AgentStatus.EXECUTING_TOOLS if state.pending_tool_calls else AgentStatus.PLANNING
+        )
+        return await self._pause(
+            state,
+            context,
+            control,
+            request,
+            resume_status=resume_status,
+            origin="control",
+        )
+
+    async def _pause(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        request: PauseRequest,
+        *,
+        resume_status: AgentStatus,
+        origin: str,
+    ) -> tuple[AgentEvent, ...]:
+        if state.is_terminal:
+            return ()
+        reason = self._active_limit_reason(state, control)
+        if reason is not None:
+            return await self._limit(state, context, control, reason)
+        pause = PauseState(
+            reason=request.reason,
+            resume_status=resume_status,
+            source=request.source,
+            wait_id=request.wait_id,
+            metadata=request.metadata,
+        )
+        events = list(
+            await self._events(
+                context,
+                control,
+                EventTypes.PAUSE_REQUESTED,
+                {
+                    "request": request.to_dict(),
+                    "resume_status": resume_status.value,
+                    "origin": origin,
+                },
+            )
+        )
+        events.extend(
+            await self._transition(
+                state,
+                AgentStatus.PAUSED,
+                context,
+                control,
+                pause=pause,
+            )
+        )
+        controller = control.pause_controller
+        if controller is not None and controller.request == request:
+            controller.clear()
+        return tuple(events)
+
+    @staticmethod
+    def _clear_pause_request(control: RunControlState) -> None:
+        controller = control.pause_controller
+        if controller is not None and controller.request is not None:
+            controller.clear()
+
+    @staticmethod
+    def _rollback_trace_to_durable(control: RunControlState) -> None:
+        if control.trace is not None:
+            control.trace.rollback_to_durable()
+
     async def _transition(
         self,
         state: AgentState,
@@ -742,9 +1286,12 @@ class AgentLoop:
         control: RunControlState,
         *,
         error: str | None = None,
+        pause: PauseState | None = None,
         emit_checkpoint: bool = True,
     ) -> tuple[AgentEvent, ...]:
-        transition_data = await self._apply_transition(state, status, context, control, error=error)
+        transition_data = await self._apply_transition(
+            state, status, context, control, error=error, pause=pause
+        )
         events = list(
             await self._events(
                 context,
@@ -765,10 +1312,12 @@ class AgentLoop:
         control: RunControlState,
         *,
         error: str | None = None,
+        pause: PauseState | None = None,
     ) -> dict[str, Any]:
         previous = state.status
         state.status = status
-        state.error = error
+        state.error = None if status is AgentStatus.PAUSED else error
+        state.pause = pause if status is AgentStatus.PAUSED else None
         transition_state = AgentState.from_dict(state.to_dict())
         await self._notify_hooks(
             "on_transition", previous, status, transition_state, context, control=control
@@ -779,6 +1328,7 @@ class AgentLoop:
             "iterations": state.iterations,
             "total_tool_calls": state.total_tool_calls,
             "error": state.error,
+            "pause": None if state.pause is None else state.pause.to_dict(),
         }
 
     async def _checkpoint_events(
@@ -794,7 +1344,11 @@ class AgentLoop:
             run_id=control.run_id,
             sequence=sequence,
         )
-        return await self._dispatch_events(event, context, control)
+        events = await self._dispatch_events(event, context, control)
+        control.last_checkpoint = RunSnapshot.from_dict(event.data)
+        if control.trace is not None:
+            control.trace.mark_durable()
+        return events
 
     async def _events(
         self,
@@ -802,6 +1356,8 @@ class AgentLoop:
         control: RunControlState,
         event_type: str,
         data: Mapping[str, Any],
+        *,
+        trace_before_hooks: bool = False,
     ) -> tuple[AgentEvent, ...]:
         event = AgentEvent(
             event_type,
@@ -809,25 +1365,41 @@ class AgentLoop:
             run_id=control.run_id,
             sequence=control.next_sequence(),
         )
-        return await self._dispatch_events(event, context, control)
+        return await self._dispatch_events(
+            event, context, control, trace_before_hooks=trace_before_hooks
+        )
 
     async def _dispatch_events(
         self,
         first_event: AgentEvent,
         context: RuntimeContext,
         control: RunControlState,
+        *,
+        trace_before_hooks: bool = False,
     ) -> tuple[AgentEvent, ...]:
-        specs: list[AgentEvent] = [first_event]
+        specs: list[tuple[AgentEvent, bool]] = [(first_event, True)]
         events: list[AgentEvent] = []
+        pending_trace_events: list[AgentEvent] = []
         while specs:
-            event = specs.pop(0)
+            event, runtime_owned = specs.pop(0)
             emitter = EventEmitter()
+            runtime_event = event
+            recorded_before_hooks = False
+            if runtime_owned and trace_before_hooks and control.trace is not None:
+                control.trace.record_event(runtime_event)
+                recorded_before_hooks = True
             for hook in self._hooks:
                 replacement = await self._call_hook(
                     hook.on_event, event, context, emitter, control=control
                 )
                 if replacement is not None:
+                    if runtime_owned:
+                        raise ValueError("core runtime events cannot be replaced")
                     replacement_event = cast(AgentEvent, replacement)
+                    if replacement_event.type in CORE_EVENT_TYPES:
+                        raise ValueError(
+                            f"core event type is runtime-owned: {replacement_event.type}"
+                        )
                     event = AgentEvent(
                         replacement_event.type,
                         replacement_event.data,
@@ -837,39 +1409,56 @@ class AgentLoop:
                         schema_version=event.schema_version,
                     )
             events.append(event)
+            if runtime_owned and not recorded_before_hooks and control.trace is not None:
+                pending_trace_events.append(runtime_event)
             specs.extend(
-                AgentEvent(
-                    queued.type,
-                    queued.data,
-                    run_id=control.run_id,
-                    sequence=control.next_sequence(),
+                (
+                    AgentEvent(
+                        queued.type,
+                        queued.data,
+                        run_id=control.run_id,
+                        sequence=control.next_sequence(),
+                    ),
+                    False,
                 )
                 for queued in emitter.drain()
             )
+        if control.trace is not None:
+            for pending in pending_trace_events:
+                control.trace.record_event(pending)
         return tuple(events)
 
     @staticmethod
     def _raw_event(
         control: RunControlState, event_type: str, data: Mapping[str, Any]
     ) -> AgentEvent:
-        return AgentEvent(
+        event = AgentEvent(
             event_type,
             data,
             run_id=control.run_id,
             sequence=control.next_sequence(),
         )
+        if control.trace is not None:
+            control.trace.record_event(event)
+        return event
 
     @staticmethod
     def _raw_checkpoint_event(
         state: AgentState, context: RuntimeContext, control: RunControlState
     ) -> AgentEvent:
         sequence = control.next_sequence()
-        return AgentEvent(
+        event = AgentEvent(
             EventTypes.CHECKPOINT,
             AgentLoop._snapshot(state, context, control, sequence=sequence).to_dict(),
             run_id=control.run_id,
             sequence=sequence,
         )
+        if control.trace is not None:
+            control.trace.record_event(event)
+        control.last_checkpoint = RunSnapshot.from_dict(event.data)
+        if control.trace is not None:
+            control.trace.mark_durable()
+        return event
 
     @staticmethod
     def _consume_background_task_exception(task: asyncio.Future[Any]) -> None:
@@ -953,6 +1542,18 @@ class AgentLoop:
                     return
 
     @staticmethod
+    def _restore_state_from_snapshot(state: AgentState, snapshot: RunSnapshot) -> None:
+        restored = AgentState.from_dict(snapshot.state.to_dict())
+        state.status = restored.status
+        state.messages = restored.messages
+        state.pending_tool_calls = restored.pending_tool_calls
+        state.iterations = restored.iterations
+        state.total_tool_calls = restored.total_tool_calls
+        state.final_parts = restored.final_parts
+        state.error = restored.error
+        state.pause = restored.pause
+
+    @staticmethod
     def _snapshot(
         state: AgentState,
         context: RuntimeContext,
@@ -974,7 +1575,9 @@ class AgentLoop:
     def _result(
         state: AgentState, context: RuntimeContext, control: RunControlState
     ) -> AgentResult:
-        snapshot = AgentLoop._snapshot(state, context, control)
+        _ = context
+        snapshot = control.last_checkpoint
+        trace = None if control.trace is None else control.trace.to_trace()
         return AgentResult(
             status=state.status,
             final_parts=tuple(state.final_parts),
@@ -983,7 +1586,6 @@ class AgentLoop:
             total_tool_calls=state.total_tool_calls,
             error=state.error,
             run_id=control.run_id,
-            state=snapshot.state,
-            context=snapshot.context,
             snapshot=snapshot,
+            trace=trace,
         )

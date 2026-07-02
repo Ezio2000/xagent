@@ -1,0 +1,44 @@
+{
+  "name": "parallel_external_wait_before_non_wait",
+  "limits": {
+    "max_parallel_tool_calls": 2
+  },
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "parallel_wait",
+          "arguments": {
+            "text": "job one started",
+            "wait_id": "job-1",
+            "reason": "external_callback",
+            "delay": 0
+          }
+        },
+        {
+          "id": "call-2",
+          "name": "delayed_echo",
+          "arguments": {
+            "text": "after wait",
+            "delay": 0.02
+          }
+        }
+      ]
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 2,
+  "expected_message_roles": ["user", "assistant", "tool", "tool"],
+  "expected_tool_texts": ["job one started", "after wait"],
+  "expected_pause": {
+    "reason": "external_callback",
+    "resume_status": "planning",
+    "source": "tool",
+    "wait_id": "job-1",
+    "metadata": {}
+  },
+  "forbidden_checkpoint_tool_counts": [1],
+  "forbidden_unpaused_checkpoint_tool_counts": [2]
+}

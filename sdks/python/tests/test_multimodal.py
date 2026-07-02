@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -84,54 +84,47 @@ async def test_multimodal_user_message_and_file_result() -> None:
     assert result.final_parts[1].ref == "artifact-1"
 
 
-def test_custom_content_part_round_trip_preserves_extra_fields() -> None:
-    part = ContentPart.from_dict(
-        {
-            "type": "audio",
-            "ref": "artifact-audio-1",
-            "media_type": "audio/wav",
-            "provider_cache_control": {"ttl": 60},
-        }
-    )
-
-    assert part.type == "audio"
-    assert part.to_dict()["provider_cache_control"] == {"ttl": 60}
+def test_content_part_from_dict_rejects_unknown_wire_fields() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        ContentPart.from_dict(
+            {
+                "type": "audio",
+                "ref": "artifact-audio-1",
+                "media_type": "audio/wav",
+                "provider_cache_control": {"ttl": 60},
+            }
+        )
 
 
-def test_model_response_extra_is_preserved_on_assistant_message() -> None:
+def test_protocol_types_do_not_accept_extra_fields() -> None:
+    with pytest.raises(TypeError):
+        cast(Any, ContentPart.text_part)("hello", extra={"provider_state": {"cursor": "abc"}})
+
+    with pytest.raises(TypeError):
+        cast(Any, Message.assistant_text)("hello", extra={"provider_state": {"cursor": "abc"}})
+
+    with pytest.raises(TypeError):
+        cast(Any, ModelResponse)(
+            parts=[ContentPart.text_part("hello")], extra={"provider_state": {}}
+        )
+
+    with pytest.raises(TypeError):
+        cast(Any, ToolResult)(
+            parts=[ContentPart.text_part("created")], extra={"artifact_state": {}}
+        )
+
+    with pytest.raises(TypeError):
+        cast(Any, ModelRequest)(
+            messages=(Message.user_text("hello"),), extra={"provider_state": {}}
+        )
+
+
+def test_protocol_instances_do_not_have_extra_slots() -> None:
     response = ModelResponse.text("hello")
-    response.extra = {"provider_state": {"cursor": "abc"}}
-
-    message = response.to_assistant_message()
-
-    assert message.to_dict()["provider_state"] == {"cursor": "abc"}
-
-
-def test_tool_result_extra_is_preserved_on_tool_message() -> None:
     result = ToolResult.text("created", is_error=False)
-    result.extra = {"artifact_state": {"id": "a1"}}
 
-    message = result.to_message(ToolCall(id="call-1", name="tool"))
+    with pytest.raises(AttributeError):
+        cast(Any, response).extra = {"provider_state": {"cursor": "abc"}}
 
-    assert message.to_dict()["artifact_state"] == {"id": "a1"}
-
-
-def test_extra_fields_cannot_override_reserved_protocol_fields() -> None:
-    with pytest.raises(ValueError, match="reserved"):
-        ContentPart.text_part("hello", extra={"type": "image"})
-
-    with pytest.raises(ValueError, match="reserved"):
-        Message.assistant_text("hello", extra={"role": "user"})
-
-    with pytest.raises(ValueError, match="reserved"):
-        ModelResponse(parts=[ContentPart.text_part("hello")], extra={"parts": []})
-
-    response = ModelResponse.text("hello")
-    response.extra = {"parts": []}
-    with pytest.raises(ValueError, match="reserved"):
-        response.to_dict()
-
-    request = ModelRequest(messages=(Message.user_text("hello"),))
-    request.extra = {"messages": []}
-    with pytest.raises(ValueError, match="reserved"):
-        request.to_dict()
+    with pytest.raises(AttributeError):
+        cast(Any, result).extra = {"artifact_state": {"id": "a1"}}

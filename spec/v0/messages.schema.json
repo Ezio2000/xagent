@@ -20,6 +20,7 @@
     },
     "tool_calls": {
       "type": "array",
+      "$comment": "Assistant tool call ids must be unique within this array. JSON Schema cannot portably express uniqueness by object field; SDKs must enforce it.",
       "items": {
         "$ref": "#/$defs/tool_call"
       }
@@ -28,6 +29,45 @@
       "type": "object"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "role": { "const": "tool" } },
+        "required": ["role"]
+      },
+      "then": {
+        "required": ["tool_call_id"],
+        "properties": {
+          "tool_call_id": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "role": { "not": { "const": "tool" } } },
+        "required": ["role"]
+      },
+      "then": {
+        "not": {
+          "required": ["tool_call_id"],
+          "properties": {
+            "tool_call_id": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "role": { "not": { "const": "assistant" } } },
+        "required": ["role"]
+      },
+      "then": {
+        "properties": {
+          "tool_calls": { "maxItems": 0 }
+        }
+      }
+    }
+  ],
   "$defs": {
     "content_part": {
       "type": "object",
@@ -45,19 +85,31 @@
         "data": { "type": "object" },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "text" } },
+            "required": ["type"]
+          },
+          "then": { "required": ["text"] }
+        },
+        {
+          "not": { "required": ["uri", "ref"] }
+        }
+      ],
+      "additionalProperties": false
     },
     "tool_call": {
       "type": "object",
       "required": ["id", "name", "arguments"],
       "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
         "arguments": { "type": "object" },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

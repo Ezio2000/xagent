@@ -1,0 +1,48 @@
+{
+  "name": "resume_planning_checkpoint",
+  "case_type": "resume",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "echo",
+          "arguments": {
+            "text": "a"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "initial done"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_tool_calls": 1,
+  "resume_checkpoint_status": "planning",
+  "resume_checkpoint_total_tool_calls": 1,
+  "resume_model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "resumed planning"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_resume_status": "completed",
+  "expected_resume_final_text": "resumed planning",
+  "expected_resume_tool_calls": 1,
+  "expected_resume_message_roles": ["user", "assistant", "tool", "assistant"],
+  "expected_resume_tool_texts": ["a"],
+  "expected_resume_trace_prefix": ["resume", "run_started"]
+}

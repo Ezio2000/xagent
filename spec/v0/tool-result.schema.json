@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-runtime.local/spec/v0/tool-result.schema.json",
+  "title": "Agent Runtime ToolResult",
+  "type": "object",
+  "required": ["parts", "is_error"],
+  "properties": {
+    "parts": {
+      "type": "array",
+      "items": {
+        "$ref": "messages.schema.json#/$defs/content_part"
+      }
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "is_error": {
+      "type": "boolean"
+    },
+    "pause": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/pause_request" }
+      ]
+    }
+  },
+  "$defs": {
+    "pause_request": {
+      "type": "object",
+      "required": ["reason", "source", "wait_id", "metadata", "interrupt"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "wait_id": {
+          "type": ["string", "null"]
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "interrupt": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

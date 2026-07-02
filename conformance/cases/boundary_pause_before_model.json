@@ -1,0 +1,21 @@
+{
+  "name": "boundary_pause_before_model",
+  "pause_request": {
+    "reason": "host_requested",
+    "source": "host",
+    "wait_id": null,
+    "metadata": {},
+    "interrupt": false
+  },
+  "model_steps": [],
+  "expected_status": "paused",
+  "expected_tool_calls": 0,
+  "expected_message_roles": ["user"],
+  "expected_pause": {
+    "reason": "host_requested",
+    "resume_status": "planning",
+    "source": "host",
+    "wait_id": null,
+    "metadata": {}
+  }
+}

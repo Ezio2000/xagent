@@ -1,0 +1,39 @@
+{
+  "name": "tool_error_stop_on_tool_error",
+  "limits": {
+    "stop_on_tool_error": true
+  },
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "fail",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "should not recover"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "failed",
+  "expected_tool_calls": 1,
+  "forbidden_checkpoint_status_tool_counts": [
+    {
+      "status": "planning",
+      "total_tool_calls": 1
+    },
+    {
+      "status": "executing_tools",
+      "total_tool_calls": 1
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "resume_terminal_checkpoint_rejected",
+  "case_type": "resume",
+  "model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "done"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_tool_calls": 0,
+  "resume_checkpoint_status": "completed",
+  "expected_resume_error": "terminal"
+}

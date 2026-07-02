@@ -46,6 +46,15 @@ model-provided tool-call order. Serial calls may commit and checkpoint one at a
 time. Parallel batches must commit and checkpoint atomically after every call in
 the batch has completed.
 
+If a committed tool result requests an external wait, SDKs must transition to
+`paused` only after committing the tool observation. SDKs must not emit an
+intermediate checkpoint that can be resumed without the external-wait decision;
+the paused checkpoint is the durable resume point for that committed tool
+result. The paused snapshot records the wait metadata; host applications own
+external task execution and callback handling. If multiple results in one
+committed batch request pause, the first result in model-provided tool-call order
+is applied and later pause requests in the batch are ignored.
+
 `checkpoint` events represent durable resume points. For a parallel batch, tool
 results are not durable until every call in the batch completes and the batch is
 committed in model-provided order. If a timeout or other runtime limit interrupts

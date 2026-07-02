@@ -6,10 +6,12 @@ The Python SDK implements the v0.1 agent loop runtime.
 
 ```bash
 uv sync
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
+uv run pytest -q -p no:cacheprovider
+uv run ruff check . ../../examples/python
+uv run ruff format --check . ../../examples/python
 uv run pyright
+uv run python ../../examples/python/basic_tool_loop.py
+uv run python ../../examples/python/pause_resume_trace.py
 ```
 
 ## Minimal Usage
@@ -22,7 +24,10 @@ from agent_runtime import (
     Message,
     ModelOptions,
     ModelResponse,
+    PauseController,
+    replay_trace,
     ResponseFormat,
+    ResumeInput,
     RuntimeContext,
     RuntimeHook,
     RunSnapshot,
@@ -58,7 +63,9 @@ async def complete(request, context):
     return ModelResponse.text(request.messages[-1].text)
 ```
 
-Tools expose a neutral `ToolSpec` and receive the same context:
+Tools expose a neutral `ToolSpec` and receive the same context values. Each tool
+execution receives its own `RuntimeContext` copy, so parallel tools cannot share
+mutable context state through the runtime:
 
 ```python
 class EchoTool:
@@ -112,6 +119,11 @@ class ProgressHook(RuntimeHook):
             emitter.emit("custom_progress", {"phase": "model"})
 ```
 
+If `on_event` returns a replacement event for a non-core event, the runtime keeps
+the original envelope (`run_id`, `sequence`, timestamp, schema version) and uses
+only the replacement `type` and `data`. Use `emitter.emit(...)` for ordinary
+custom progress events.
+
 If a model adapter implements `stream(request, context)`, callers can enable
 live model deltas. The method must return an async iterator directly, usually
 because it is an async generator.
@@ -135,8 +147,61 @@ Storage is host-owned; resume with `run_snapshot` or `run_snapshot_events`.
 
 ```python
 snapshot = RunSnapshot.from_dict(saved_payload)
-result = await agent.run_snapshot(snapshot)
+result = await agent.run_snapshot(ResumeInput(snapshot=snapshot))
 ```
+
+Paused snapshots can be resumed with a strict `ResumeInput`. Hosts may append
+callback or user messages only when the paused snapshot resumes to `planning`:
+
+```python
+resume = ResumeInput(
+    snapshot=snapshot,
+    append_messages=[Message.user_text("callback complete")],
+)
+result = await agent.run_snapshot(resume)
+```
+
+`completed`, `failed`, and `limit_exceeded` snapshots are invocation-terminal and
+are rejected as resume inputs. `AgentResult.trace` contains a compact `RunTrace`
+for the current invocation; `replay_trace(result.trace)` validates the semantic
+path without calling live models or tools. Trace metadata records key summaries,
+not raw host metadata values.
+
+## Pause And Interrupt
+
+Hosts can request that a run stop at the next durable boundary:
+
+```python
+controller = PauseController()
+controller.request_pause(reason="operator_requested")
+result = await agent.run(messages, pause_controller=controller)
+assert result.status == "paused"
+```
+
+For streaming model output that should be abandoned, hosts can interrupt the
+model call. Any emitted `model_delta` values remain live progress only; no
+partial assistant message is checkpointed.
+
+```python
+controller.interrupt(reason="user_interrupted")
+```
+
+Tools can pause the run after committing an observation when they start external
+work and need a callback:
+
+```python
+return ToolResult.waiting(
+    "external job started",
+    wait_id="job-123",
+    reason="external_callback",
+)
+```
+
+The paused snapshot records `pause.reason`, `pause.source`, `pause.wait_id`, and
+`pause.resume_status`, and `pause.metadata`. The host owns storage, callback
+handling, and any messages or metadata it adds through `ResumeInput` before
+calling `run_snapshot()`. `ResumeInput.metadata` is host-owned bookkeeping; put
+callback data in appended messages when the model should see it.
 
 ## Multimodal Messages
 

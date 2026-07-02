@@ -11,6 +11,9 @@ The core SDK owns:
 - loop limits;
 - event stream emission;
 - runtime context, hook slots, and serializable run snapshots.
+- core run-control boundaries for pause, interrupt, and external wait.
+- strict resume input validation, compact run traces, and deterministic replay
+  validation.
 
 Host applications own:
 
@@ -23,6 +26,13 @@ Host applications own:
 The v0.1 runtime intentionally excludes concrete checkpoint stores, approval
 UIs, memory implementations, sandboxing, MCP, subagents, and concrete provider
 adapters. Those are extension concerns. The core exposes neutral hooks, context,
-model protocols, and state serialization so host applications can add those
-behaviors without changing the loop. Durable progress is represented as
-`RunSnapshot`; storage and retention policy stay outside the core SDK.
+model protocols, pause metadata, and state serialization so host applications
+can add those behaviors without changing the loop. Durable progress is
+represented as `RunSnapshot`; storage, callback transport, user-message policy,
+trace persistence, and retention policy stay outside the core SDK. `RunTrace`
+records semantic runtime steps for replay and conformance, but it is not a log
+store, queue, callback transport, or monitoring system. It carries compact
+metadata key summaries, not raw host or provider metadata values.
+Raw durable metadata is limited to explicit host-owned fields such as
+`RuntimeContext.metadata`, pause metadata, and resume metadata. Model and tool
+provider metadata is not copied into durable message history or trace payloads.

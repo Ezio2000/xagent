@@ -111,7 +111,7 @@ class ToolScheduler:
                 done, _pending = await asyncio.wait(
                     set(active.keys()), return_when=asyncio.FIRST_COMPLETED
                 )
-                done_tasks = tuple(done)
+                done_tasks = tuple(sorted(done, key=lambda task: active[task][0]))
                 for task in done_tasks:
                     index, call = active.pop(task)
                     result = await task

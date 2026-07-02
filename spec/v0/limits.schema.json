@@ -25,5 +25,5 @@
       "description": "Maximum active tool calls in a parallel-safe batch. A value of 1 is serial execution."
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

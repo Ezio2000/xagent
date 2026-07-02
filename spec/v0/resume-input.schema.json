@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-runtime.local/spec/v0/resume-input.schema.json",
+  "title": "Agent Runtime Resume Input",
+  "type": "object",
+  "required": ["snapshot", "append_messages", "expected_pause", "metadata"],
+  "properties": {
+    "snapshot": {
+      "$ref": "run-snapshot.schema.json"
+    },
+    "append_messages": {
+      "type": "array",
+      "items": {
+        "$ref": "messages.schema.json"
+      }
+    },
+    "expected_pause": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/pause_selector" }
+      ]
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "pause_selector": {
+      "type": "object",
+      "required": ["reason", "source", "wait_id", "metadata"],
+      "properties": {
+        "reason": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "source": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "wait_id": {
+          "type": ["string", "null"]
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "reason": { "type": "string" }
+          },
+          "required": ["reason"]
+        },
+        {
+          "properties": {
+            "source": { "type": "string" }
+          },
+          "required": ["source"]
+        },
+        {
+          "properties": {
+            "wait_id": { "type": "string" }
+          },
+          "required": ["wait_id"]
+        },
+        {
+          "properties": {
+            "metadata": { "minProperties": 1 }
+          },
+          "required": ["metadata"]
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "not": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "status": {
+                    "enum": ["completed", "failed", "limit_exceeded"]
+                  }
+                },
+                "required": ["status"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["snapshot"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "status": {
+                    "const": "planning"
+                  }
+                },
+                "required": ["status"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["snapshot"]
+      },
+      "then": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "pending_tool_calls": {
+                    "maxItems": 0
+                  }
+                },
+                "required": ["pending_tool_calls"]
+              }
+            },
+            "required": ["state"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "status": {
+                    "const": "executing_tools"
+                  }
+                },
+                "required": ["status"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["snapshot"]
+      },
+      "then": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "pending_tool_calls": {
+                    "minItems": 1
+                  }
+                },
+                "required": ["pending_tool_calls"]
+              }
+            },
+            "required": ["state"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "status": {
+                    "const": "paused"
+                  },
+                  "pause": {
+                    "properties": {
+                      "resume_status": {
+                        "const": "planning"
+                      }
+                    },
+                    "required": ["resume_status"]
+                  }
+                },
+                "required": ["status", "pause"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["snapshot"]
+      },
+      "then": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "pending_tool_calls": {
+                    "maxItems": 0
+                  }
+                },
+                "required": ["pending_tool_calls"]
+              }
+            },
+            "required": ["state"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "status": {
+                    "const": "paused"
+                  },
+                  "pause": {
+                    "properties": {
+                      "resume_status": {
+                        "const": "executing_tools"
+                      }
+                    },
+                    "required": ["resume_status"]
+                  }
+                },
+                "required": ["status", "pause"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["snapshot"]
+      },
+      "then": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "pending_tool_calls": {
+                    "minItems": 1
+                  }
+                },
+                "required": ["pending_tool_calls"]
+              }
+            },
+            "required": ["state"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "status": {
+                    "enum": ["planning", "executing_tools"]
+                  }
+                },
+                "required": ["status"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["snapshot"]
+      },
+      "then": {
+        "properties": {
+          "append_messages": {
+            "maxItems": 0
+          },
+          "expected_pause": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "snapshot": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "status": {
+                    "const": "paused"
+                  },
+                  "pause": {
+                    "properties": {
+                      "resume_status": {
+                        "const": "executing_tools"
+                      }
+                    },
+                    "required": ["resume_status"]
+                  }
+                },
+                "required": ["status", "pause"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["snapshot"]
+      },
+      "then": {
+        "properties": {
+          "append_messages": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

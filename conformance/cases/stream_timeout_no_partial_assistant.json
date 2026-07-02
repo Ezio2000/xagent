@@ -10,7 +10,8 @@
         {
           "type": "text_delta",
           "index": 0,
-          "text_delta": "partial"
+          "text_delta": "partial",
+          "part_type": "text"
         },
         {
           "type": "sleep",

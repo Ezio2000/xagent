@@ -1,0 +1,60 @@
+{
+  "name": "resume_paused_with_append_messages",
+  "case_type": "resume",
+  "pause_request": {
+    "reason": "external_callback",
+    "source": "tool",
+    "wait_id": "job-1",
+    "metadata": {
+      "tenant": "acme"
+    },
+    "interrupt": false
+  },
+  "model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "unused"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 0,
+  "resume_checkpoint_status": "paused",
+  "resume_append_messages": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "callback complete"
+        }
+      ]
+    }
+  ],
+  "resume_expected_pause": {
+    "reason": null,
+    "source": null,
+    "wait_id": "job-1",
+    "metadata": {}
+  },
+  "resume_model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "resumed"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_resume_status": "completed",
+  "expected_resume_final_text": "resumed",
+  "expected_resume_tool_calls": 0,
+  "expected_resume_message_roles": ["user", "user", "assistant"],
+  "expected_resume_trace_prefix": ["resume", "run_started"]
+}

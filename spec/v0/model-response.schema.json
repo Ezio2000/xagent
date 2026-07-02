@@ -13,6 +13,7 @@
     },
     "tool_calls": {
       "type": "array",
+      "$comment": "Tool call ids must be unique within this array. JSON Schema cannot portably express uniqueness by object field; SDKs must enforce it.",
       "items": {
         "$ref": "messages.schema.json#/$defs/tool_call"
       }
@@ -32,7 +33,7 @@
         "cache_write_tokens": { "type": ["integer", "null"], "minimum": 0 },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "model": {
       "type": ["string", "null"],
@@ -46,5 +47,5 @@
       "type": "object"
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

@@ -35,7 +35,7 @@
         "seed": { "type": ["integer", "null"] },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "tool_choice": {
       "type": "object",
@@ -70,7 +70,7 @@
           }
         }
       ],
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "response_format": {
       "type": ["object", "null"],
@@ -105,11 +105,11 @@
           }
         }
       ],
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "metadata": {
       "type": "object"
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

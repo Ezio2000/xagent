@@ -1,0 +1,23 @@
+{
+  "name": "boundary_pause_during_final_model_call_completes",
+  "pause_request": {
+    "reason": "host_requested",
+    "source": "host",
+    "wait_id": null,
+    "metadata": {},
+    "interrupt": false
+  },
+  "pause_request_timing": "during_model_call",
+  "model_steps": [
+    {
+      "parts": [{ "type": "text", "text": "done" }],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "done",
+  "expected_tool_calls": 0,
+  "expected_message_roles": ["user", "assistant"],
+  "forbidden_event_types": ["pause_requested", "run_paused"],
+  "forbidden_checkpoint_statuses": ["paused"]
+}

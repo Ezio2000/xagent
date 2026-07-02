@@ -1,0 +1,55 @@
+{
+  "name": "resume_executing_tools_checkpoint",
+  "case_type": "resume",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "echo",
+          "arguments": {
+            "text": "a"
+          }
+        },
+        {
+          "id": "call-2",
+          "name": "echo",
+          "arguments": {
+            "text": "b"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "initial done"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_tool_calls": 2,
+  "resume_checkpoint_status": "executing_tools",
+  "resume_checkpoint_total_tool_calls": 0,
+  "resume_model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "resumed done"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_resume_status": "completed",
+  "expected_resume_final_text": "resumed done",
+  "expected_resume_tool_calls": 2,
+  "expected_resume_tool_texts": ["a", "b"],
+  "expected_resume_message_roles": ["user", "assistant", "tool", "tool", "assistant"],
+  "expected_resume_trace_prefix": ["resume", "run_started"]
+}

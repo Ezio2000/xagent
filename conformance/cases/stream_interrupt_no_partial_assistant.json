@@ -1,0 +1,50 @@
+{
+  "name": "stream_interrupt_no_partial_assistant",
+  "pause_request": {
+    "reason": "user_interrupted",
+    "source": "host",
+    "wait_id": null,
+    "metadata": {},
+    "interrupt": true
+  },
+  "pause_request_timing": "stream_event",
+  "model_steps": [],
+  "stream_model_steps": [
+    {
+      "events": [
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "partial",
+          "part_type": "text"
+        },
+        {
+          "type": "pause_request"
+        },
+        {
+          "type": "sleep",
+          "seconds": 1
+        }
+      ]
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 0,
+  "expected_model_deltas": [
+    {
+      "kind": "text_delta",
+      "index": 0,
+      "text_delta": "partial",
+      "part_type": "text"
+    }
+  ],
+  "expected_message_roles": ["user"],
+  "expected_pause": {
+    "reason": "user_interrupted",
+    "resume_status": "planning",
+    "source": "host",
+    "wait_id": null,
+    "metadata": {}
+  },
+  "forbidden_checkpoint_message_roles": [["user", "assistant"]]
+}

@@ -15,9 +15,17 @@ call controls:
 - `response_format`: text, JSON object, or strict JSON schema.
 
 `ModelResponse` contains final content parts, tool calls, finish reason, usage,
-model id, response id, and provider metadata. Common finish reasons include
-`end_turn`, `tool_calls`, `max_tokens`, `stop_sequence`, `refusal`,
-`content_filter`, and `error`; the field remains an open string.
+model id, response id, and provider metadata. Provider metadata is visible to
+hooks and adapters during the current invocation, but it is not copied into
+durable assistant messages, checkpoints, or trace payloads. Common finish
+reasons include `end_turn`, `tool_calls`, `max_tokens`, `stop_sequence`,
+`refusal`, `content_filter`, and `error`; the field remains an open string.
+
+Python adapters may raise `ModelProviderError(ModelErrorInfo(...))` for
+structured provider failures. `ModelErrorInfo` is runtime exception detail for
+the current SDK invocation; checkpoint state records the portable error message,
+not provider metadata or request objects. The portable structured error shape is
+specified in `spec/v0/model-error.schema.json`.
 
 Model adapters may expose capabilities through a `capabilities` value or method.
 The core recognizes streaming, tools, tool choice, parallel tool calls,

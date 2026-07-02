@@ -10,12 +10,13 @@
     "iterations",
     "total_tool_calls",
     "final_parts",
-    "error"
+    "error",
+    "pause"
   ],
   "properties": {
     "status": {
       "type": "string",
-      "enum": ["planning", "executing_tools", "completed", "failed", "limit_exceeded"]
+      "enum": ["planning", "executing_tools", "paused", "completed", "failed", "limit_exceeded"]
     },
     "messages": {
       "type": "array",
@@ -45,7 +46,60 @@
     },
     "error": {
       "type": ["string", "null"]
+    },
+    "pause": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/pause_state" }
+      ]
     }
   },
-  "additionalProperties": true
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "paused" }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "pause": { "$ref": "#/$defs/pause_state" }
+        }
+      },
+      "else": {
+        "properties": {
+          "pause": { "type": "null" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "pause_state": {
+      "type": "object",
+      "required": ["reason", "resume_status", "source", "wait_id", "metadata"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resume_status": {
+          "type": "string",
+          "enum": ["planning", "executing_tools"]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "wait_id": {
+          "type": ["string", "null"]
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
 }

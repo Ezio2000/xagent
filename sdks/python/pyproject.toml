@@ -20,6 +20,7 @@ package = true
 
 [dependency-groups]
 dev = [
+  "jsonschema>=4.23.0",
   "pyright>=1.1.407",
   "pytest>=8.4.0",
   "pytest-asyncio>=1.2.0",
@@ -38,6 +39,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "../../examples/python"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"

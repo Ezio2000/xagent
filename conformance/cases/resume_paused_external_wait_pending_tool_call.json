@@ -1,0 +1,48 @@
+{
+  "name": "resume_paused_external_wait_pending_tool_call",
+  "case_type": "resume",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "wait",
+          "arguments": {
+            "text": "external wait started",
+            "wait_id": "job-1",
+            "reason": "external_callback"
+          }
+        },
+        {
+          "id": "call-2",
+          "name": "echo",
+          "arguments": {
+            "text": "after wait"
+          }
+        }
+      ]
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 1,
+  "resume_checkpoint_status": "paused",
+  "resume_checkpoint_total_tool_calls": 1,
+  "resume_model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "resumed after wait"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_resume_status": "completed",
+  "expected_resume_final_text": "resumed after wait",
+  "expected_resume_tool_calls": 2,
+  "expected_resume_tool_texts": ["external wait started", "after wait"],
+  "expected_resume_message_roles": ["user", "assistant", "tool", "tool", "assistant"],
+  "expected_resume_trace_prefix": ["resume", "run_started"]
+}

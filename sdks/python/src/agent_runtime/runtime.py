@@ -15,16 +15,48 @@ def _empty_metadata() -> Mapping[str, Any]:
 
 
 def _copy_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
-    return deepcopy(dict(value or {}))
+    if value is None:
+        return {}
+    return deepcopy(dict(_expect_mapping(value, "mapping")))
 
 
-def _copy_extra(value: Mapping[str, Any] | None, reserved: set[str], label: str) -> dict[str, Any]:
-    extra = _copy_mapping(value)
-    conflicts = reserved & extra.keys()
-    if conflicts:
-        names = ", ".join(sorted(conflicts))
-        raise ValueError(f"{label} extra cannot override reserved field(s): {names}")
-    return extra
+def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must be a mapping")
+    return cast(Mapping[str, Any], value)
+
+
+def _expect_str(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    return value
+
+
+def _expect_number(value: object, label: str) -> float:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise TypeError(f"{label} must be a number")
+    return float(value)
+
+
+def _expect_optional_number(value: object, label: str) -> float | None:
+    if value is None:
+        return None
+    return _expect_number(value, label)
+
+
+def _expect_int(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{label} must be an integer")
+    if value < 0:
+        raise ValueError(f"{label} must be >= 0")
+    return value
+
+
+def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise ValueError(f"{label} has unknown field(s): {names}")
 
 
 @dataclass(slots=True)
@@ -40,33 +72,30 @@ class RuntimeContext:
     started_at: float = field(default_factory=time)
     deadline: float | None = None
     metadata: Mapping[str, Any] = field(default_factory=_empty_metadata)
-    extra: Mapping[str, Any] = field(default_factory=_empty_metadata)
     _sequence: int = 0
 
     def __post_init__(self) -> None:
+        self.run_id = _expect_str(self.run_id, "runtime context run_id")
+        self.started_at = _expect_number(self.started_at, "runtime context started_at")
+        self.deadline = _expect_optional_number(self.deadline, "runtime context deadline")
         if not self.run_id:
             raise ValueError("run_id must not be empty")
         if self.deadline is not None and self.deadline <= self.started_at:
             raise ValueError("deadline must be after started_at")
         self.metadata = _copy_mapping(self.metadata)
-        self.extra = _copy_extra(
-            self.extra,
-            {"run_id", "started_at", "deadline", "metadata", "sequence"},
-            "runtime context",
-        )
+        self._sequence = _expect_int(self._sequence, "runtime context sequence")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> RuntimeContext:
         known = {"run_id", "started_at", "deadline", "metadata", "sequence"}
-        deadline = value.get("deadline")
+        _reject_unknown_keys(value, known, "runtime context")
         context = cls(
-            run_id=str(value["run_id"]),
-            started_at=float(value["started_at"]),
-            deadline=None if deadline is None else float(deadline),
-            metadata=cast(Mapping[str, Any], value.get("metadata") or {}),
-            extra={key: deepcopy(item) for key, item in value.items() if key not in known},
+            run_id=_expect_str(value["run_id"], "runtime context run_id"),
+            started_at=_expect_number(value["started_at"], "runtime context started_at"),
+            deadline=_expect_optional_number(value["deadline"], "runtime context deadline"),
+            metadata=_expect_mapping(value["metadata"], "runtime context metadata"),
         )
-        context._sequence = int(value.get("sequence", 0))
+        context._sequence = _expect_int(value["sequence"], "runtime context sequence")
         return context
 
     def next_sequence(self) -> int:
@@ -79,31 +108,18 @@ class RuntimeContext:
 
     @sequence.setter
     def sequence(self, value: int) -> None:
-        if value < 0:
-            raise ValueError("sequence must be >= 0")
-        self._sequence = value
+        self._sequence = _expect_int(value, "runtime context sequence")
 
     def remaining_seconds(self) -> float | None:
         if self.deadline is None:
             return None
         return max(0.0, self.deadline - time())
 
-    def snapshot(self) -> dict[str, Any]:
-        return self.to_dict()
-
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
+        return {
             "run_id": self.run_id,
             "started_at": self.started_at,
             "deadline": self.deadline,
             "metadata": _copy_mapping(self.metadata),
             "sequence": self._sequence,
         }
-        data.update(
-            _copy_extra(
-                self.extra,
-                {"run_id", "started_at", "deadline", "metadata", "sequence"},
-                "runtime context",
-            )
-        )
-        return data

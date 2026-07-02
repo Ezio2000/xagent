@@ -10,15 +10,21 @@ future SDKs.
 
 `agent-runtime` focuses on the reusable runtime layer:
 
-- Agent loop state machine: `planning`, `executing_tools`, `completed`,
-  `failed`, and `limit_exceeded`.
+- Agent loop state machine: `planning`, `executing_tools`, `paused`,
+  `completed`, `failed`, and `limit_exceeded`.
 - Provider-neutral model protocol: messages, tools, model options, tool choice,
   response format, usage, capabilities, structured provider errors, and
   streaming deltas.
 - Event stream: `run_started`, `model_started`, `model_delta`,
   `model_completed`, `tool_started`, `tool_completed`, `state_changed`,
-  `checkpoint`, `final`, `error`, and `run_completed`.
+  `pause_requested`, `checkpoint`, `final`, `error`, `run_paused`, and
+  `run_completed`.
 - Durable checkpoints and snapshots for host-owned persistence and resume.
+- Run-control primitives for pausing at durable boundaries, interrupting model
+  generation without committing partial output, and pausing for external
+  callbacks.
+- Strict resume input validation, compact run traces, and deterministic replay
+  checks for core runtime behavior.
 - Tool scheduling, including conservative parallel execution for explicitly
   safe, read-only, idempotent tools.
 - Hooks for observing or rewriting model/tool boundaries.
@@ -32,7 +38,9 @@ runtime. Those should layer on top of the SDK through stable protocols.
 
 The runtime is a state machine plus an ordered event stream. `checkpoint` is the
 durable resume boundary. `model_delta` is live rendering progress only and must
-not be required for resume.
+not be required for resume. A paused run is represented by a `paused` snapshot
+with pause metadata and a `resume_status`; `run_snapshot(ResumeInput(...))`
+restores that status and continues from the durable boundary.
 
 Tool execution is serial by default. If `LoopLimits.max_parallel_tool_calls > 1`,
 the scheduler may run a consecutive batch concurrently only when every tool in
@@ -45,7 +53,7 @@ that batch declares:
 Parallel batches commit tool observations atomically in model-provided order.
 If a timeout interrupts a parallel batch, the next checkpoint remains at the last
 fully committed boundary; observed but uncommitted idempotent calls may be rerun
-on resume.
+when resuming from that prior non-terminal checkpoint.
 
 ## Quick Start
 
@@ -53,6 +61,7 @@ on resume.
 cd sdks/python
 uv sync
 uv run python ../../examples/python/basic_tool_loop.py
+uv run python ../../examples/python/pause_resume_trace.py
 ```
 
 Minimal model:
@@ -79,8 +88,9 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-For tool usage, streaming, multimodal messages, and snapshots, see
-`sdks/python/README.md` and `examples/python/basic_tool_loop.py`.
+For tool usage, streaming, multimodal messages, snapshots, pause/resume, and
+run traces, see `sdks/python/README.md`, `examples/python/basic_tool_loop.py`,
+and `examples/python/pause_resume_trace.py`.
 
 ## Model Protocol
 
@@ -102,13 +112,15 @@ commits `AgentState` only after a complete `ModelResponse` exists.
 
 Provider adapters should translate `ModelOptions`, `ToolChoice`,
 `ResponseFormat`, multimodal `ContentPart` values, and `ModelCapabilities` into
-their concrete provider API. Adapter-specific fields belong in `extra` or
-`metadata` rather than in runtime control flow.
+their concrete provider API. Adapter-specific data must stay in adapter-owned
+objects or explicit `metadata` fields; it must not become runtime control flow,
+checkpoint state, message wire fields, or trace replay data.
 
 ## Project Structure
 
 - `spec/v0`: cross-language contracts for state, messages, events, tools,
-  limits, snapshots, model requests, model responses, and streaming.
+  limits, snapshots, resume input, run control, run trace, model requests, model
+  responses, model errors, and streaming.
 - `conformance/cases`: shared behavior cases every SDK should pass.
 - `docs`: design notes for architecture, event streams, state machine, model
   protocol, and tool protocol.
@@ -142,10 +154,11 @@ packages.
 cd sdks/python
 uv sync
 uv run pytest -q -p no:cacheprovider
-uv run ruff check .
-uv run ruff format --check .
+uv run ruff check . ../../examples/python
+uv run ruff format --check . ../../examples/python
 uv run pyright
 uv run python ../../examples/python/basic_tool_loop.py
+uv run python ../../examples/python/pause_resume_trace.py
 ```
 
 When JSON spec or conformance files change, also parse them:
@@ -177,6 +190,19 @@ review materially improves confidence. Prompts should include:
 - The validation commands it should run.
 - The required report format: `Must-Fix`, `Should-Fix`, and `Looks Good`.
 
+For core runtime changes, use five fixed review lanes:
+
+- Runtime semantics: state transitions, checkpoint/resume safety, pause and
+  interrupt behavior, timeout priority, event order, and streaming durability.
+- Contracts, docs, and conformance: `spec/v0`, `docs`, portable fixtures, and
+  cross-SDK behavior expectations.
+- Extensibility boundary: provider neutrality, host-owned integrations, public
+  API shape, and whether the design leaves room for future SDKs.
+- Code quality: strict typing, data validation, immutability, focused tests,
+  maintainability, and local style.
+- Historical baggage: compatibility shims, deprecated aliases, transitional
+  APIs, duplicate paths, or adapter-specific exceptions that should be removed.
+
 Severity:
 
 - `Must-Fix`: correctness bugs, broken resumability, contract/spec mismatch,
@@ -186,6 +212,23 @@ Severity:
   non-blocking design inconsistencies.
 - `Looks Good`: confirmed invariants, commands run, and residual risks.
 
-Do not treat sub-agent output as a substitute for local validation. Fix every
-credible `Must-Fix` before handoff, rerun validation, request narrow re-review
-when the risk is subtle, and close completed sub-agents after consuming reports.
+Core CR loop:
+
+1. Run baseline validation before review when the tree is runnable.
+2. Start the five review lanes as read-only sub-agents unless a lane owns a
+   clearly disjoint write scope.
+3. Triage every report into credible `Must-Fix`, credible `Should-Fix`,
+   accepted residual risk, stale finding, or rejected finding with reason.
+4. Fix every credible `Must-Fix` before handoff. Add or update focused tests
+   for runtime semantics, checkpoint/resume, limits, streaming, tool scheduling,
+   event order, and contract changes.
+5. Rerun local validation after fixes, then rerun targeted lanes for changed or
+   subtle risk areas.
+6. Repeat until there are no credible `Must-Fix` findings. Repeated
+   `Should-Fix` findings may remain only when they are documented as accepted
+   residual risk with a concrete reason.
+7. Close completed sub-agents after consuming reports and include the final
+   validation commands in the handoff.
+
+Do not treat sub-agent output as a substitute for local validation. The final
+handoff must be based on the repository state, not only on review reports.

@@ -25,7 +25,9 @@ def _empty_tool_calls() -> list[ToolCall]:
 
 
 def _copy_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
-    return deepcopy(dict(value or {}))
+    if value is None:
+        return {}
+    return deepcopy(dict(_expect_mapping(value, "mapping")))
 
 
 def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
@@ -34,13 +36,44 @@ def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], value)
 
 
-def _copy_extra(value: Mapping[str, Any] | None, reserved: set[str], label: str) -> dict[str, Any]:
-    extra = _copy_mapping(value)
-    conflicts = reserved & extra.keys()
-    if conflicts:
-        names = ", ".join(sorted(conflicts))
-        raise ValueError(f"{label} extra cannot override reserved field(s): {names}")
-    return extra
+def _expect_sequence(value: object, label: str) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise TypeError(f"{label} must be an array")
+    return cast(Sequence[object], value)
+
+
+def _expect_str(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    return value
+
+
+def _expect_optional_str(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string or null")
+    return value
+
+
+def _expect_present_optional_str(
+    value: Mapping[str, Any],
+    key: str,
+    label: str,
+) -> str | None:
+    if key not in value:
+        return None
+    raw = value[key]
+    if not isinstance(raw, str):
+        raise TypeError(f"{label} must be a string")
+    return raw
+
+
+def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise ValueError(f"{label} has unknown field(s): {names}")
 
 
 @dataclass(slots=True)
@@ -61,9 +94,14 @@ class ContentPart:
     name: str | None = None
     data: Mapping[str, Any] = field(default_factory=_empty_mapping)
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
-    extra: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
     def __post_init__(self) -> None:
+        self.type = _expect_str(self.type, "content part type")
+        self.text = _expect_optional_str(self.text, "content part text")
+        self.uri = _expect_optional_str(self.uri, "content part uri")
+        self.ref = _expect_optional_str(self.ref, "content part ref")
+        self.media_type = _expect_optional_str(self.media_type, "content part media_type")
+        self.name = _expect_optional_str(self.name, "content part name")
         if not self.type:
             raise ValueError("part type must be a non-empty string")
         if self.type == "text" and self.text is None:
@@ -72,11 +110,6 @@ class ContentPart:
             raise ValueError("content part cannot set both uri and ref")
         self.data = _copy_mapping(self.data)
         self.metadata = _copy_mapping(self.metadata)
-        self.extra = _copy_extra(
-            self.extra,
-            {"type", "text", "uri", "ref", "media_type", "name", "data", "metadata"},
-            "content part",
-        )
 
     @classmethod
     def text_part(
@@ -84,9 +117,8 @@ class ContentPart:
         text: str,
         *,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> ContentPart:
-        return cls(type="text", text=text, metadata=metadata or {}, extra=extra or {})
+        return cls(type="text", text=text, metadata=metadata or {})
 
     @classmethod
     def image_uri(
@@ -96,7 +128,6 @@ class ContentPart:
         media_type: str | None = None,
         name: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> ContentPart:
         return cls(
             type="image",
@@ -104,7 +135,6 @@ class ContentPart:
             media_type=media_type,
             name=name,
             metadata=metadata or {},
-            extra=extra or {},
         )
 
     @classmethod
@@ -115,7 +145,6 @@ class ContentPart:
         media_type: str | None = None,
         name: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> ContentPart:
         return cls(
             type="image",
@@ -123,7 +152,6 @@ class ContentPart:
             media_type=media_type,
             name=name,
             metadata=metadata or {},
-            extra=extra or {},
         )
 
     @classmethod
@@ -134,7 +162,6 @@ class ContentPart:
         media_type: str | None = None,
         name: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> ContentPart:
         return cls(
             type="file",
@@ -142,7 +169,6 @@ class ContentPart:
             media_type=media_type,
             name=name,
             metadata=metadata or {},
-            extra=extra or {},
         )
 
     @classmethod
@@ -153,7 +179,6 @@ class ContentPart:
         media_type: str | None = None,
         name: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> ContentPart:
         return cls(
             type="file",
@@ -161,22 +186,23 @@ class ContentPart:
             media_type=media_type,
             name=name,
             metadata=metadata or {},
-            extra=extra or {},
         )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ContentPart:
         known = {"type", "text", "uri", "ref", "media_type", "name", "data", "metadata"}
+        _reject_unknown_keys(value, known, "content part")
+        raw_data: object = value.get("data", {})
+        raw_metadata: object = value.get("metadata", {})
         return cls(
-            type=str(value["type"]),
-            text=cast(str | None, value.get("text")),
-            uri=cast(str | None, value.get("uri")),
-            ref=cast(str | None, value.get("ref")),
-            media_type=cast(str | None, value.get("media_type")),
-            name=cast(str | None, value.get("name")),
-            data=_expect_mapping(value.get("data") or {}, "content part data"),
-            metadata=_expect_mapping(value.get("metadata") or {}, "content part metadata"),
-            extra={key: deepcopy(item) for key, item in value.items() if key not in known},
+            type=_expect_str(value["type"], "content part type"),
+            text=_expect_present_optional_str(value, "text", "content part text"),
+            uri=_expect_present_optional_str(value, "uri", "content part uri"),
+            ref=_expect_present_optional_str(value, "ref", "content part ref"),
+            media_type=_expect_present_optional_str(value, "media_type", "content part media_type"),
+            name=_expect_present_optional_str(value, "name", "content part name"),
+            data=_expect_mapping(raw_data, "content part data"),
+            metadata=_expect_mapping(raw_metadata, "content part metadata"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -195,13 +221,6 @@ class ContentPart:
             data["data"] = _copy_mapping(self.data)
         if self.metadata:
             data["metadata"] = _copy_mapping(self.metadata)
-        data.update(
-            _copy_extra(
-                self.extra,
-                {"type", "text", "uri", "ref", "media_type", "name", "data", "metadata"},
-                "content part",
-            )
-        )
         return data
 
 
@@ -213,30 +232,27 @@ class ToolCall:
     name: str
     arguments: Mapping[str, Any] = field(default_factory=_empty_mapping)
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
-    extra: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
     def __post_init__(self) -> None:
+        self.id = _expect_str(self.id, "tool call id")
+        self.name = _expect_str(self.name, "tool call name")
         if not self.id:
             raise ValueError("tool call id must not be empty")
         if not self.name:
             raise ValueError("tool call name must not be empty")
         self.arguments = _copy_mapping(self.arguments)
         self.metadata = _copy_mapping(self.metadata)
-        self.extra = _copy_extra(
-            self.extra,
-            {"id", "name", "arguments", "metadata"},
-            "tool call",
-        )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ToolCall:
         known = {"id", "name", "arguments", "metadata"}
+        _reject_unknown_keys(value, known, "tool call")
+        raw_metadata: object = value.get("metadata", {})
         return cls(
-            id=str(value["id"]),
-            name=str(value["name"]),
-            arguments=_expect_mapping(value.get("arguments") or {}, "tool call arguments"),
-            metadata=_expect_mapping(value.get("metadata") or {}, "tool call metadata"),
-            extra={key: deepcopy(item) for key, item in value.items() if key not in known},
+            id=_expect_str(value["id"], "tool call id"),
+            name=_expect_str(value["name"], "tool call name"),
+            arguments=_expect_mapping(value["arguments"], "tool call arguments"),
+            metadata=_expect_mapping(raw_metadata, "tool call metadata"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -247,13 +263,6 @@ class ToolCall:
         }
         if self.metadata:
             data["metadata"] = _copy_mapping(self.metadata)
-        data.update(
-            _copy_extra(
-                self.extra,
-                {"id", "name", "arguments", "metadata"},
-                "tool call",
-            )
-        )
         return data
 
 
@@ -266,9 +275,10 @@ class Message:
     tool_calls: list[ToolCall] = field(default_factory=_empty_tool_calls)
     tool_call_id: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
-    extra: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
     def __post_init__(self) -> None:
+        self.role = cast(Role, _expect_str(self.role, "message role"))
+        self.tool_call_id = _expect_optional_str(self.tool_call_id, "message tool_call_id")
         if self.role not in KNOWN_ROLES:
             raise ValueError(f"unsupported message role: {self.role}")
         if self.role == "tool" and not self.tool_call_id:
@@ -279,12 +289,10 @@ class Message:
             raise ValueError("only assistant messages may include tool_calls")
         self.parts = [ContentPart.from_dict(part.to_dict()) for part in self.parts]
         self.tool_calls = [ToolCall.from_dict(call.to_dict()) for call in self.tool_calls]
+        tool_call_ids = [call.id for call in self.tool_calls]
+        if len(tool_call_ids) != len(set(tool_call_ids)):
+            raise ValueError("assistant tool_call ids must be unique")
         self.metadata = _copy_mapping(self.metadata)
-        self.extra = _copy_extra(
-            self.extra,
-            {"role", "parts", "tool_call_id", "tool_calls", "metadata"},
-            "message",
-        )
 
     @classmethod
     def system(
@@ -313,14 +321,12 @@ class Message:
         tool_calls: Sequence[ToolCall] | None = None,
         *,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> Message:
         return cls(
             role="assistant",
             parts=list(parts),
             tool_calls=list(tool_calls or ()),
             metadata=metadata or {},
-            extra=extra or {},
         )
 
     @classmethod
@@ -330,13 +336,11 @@ class Message:
         tool_calls: Sequence[ToolCall] | None = None,
         *,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> Message:
         return cls.assistant(
             [ContentPart.text_part(text)],
             tool_calls,
             metadata=metadata,
-            extra=extra,
         )
 
     @classmethod
@@ -346,14 +350,12 @@ class Message:
         tool_call_id: str,
         *,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> Message:
         return cls(
             role="tool",
             parts=list(parts),
             tool_call_id=tool_call_id,
             metadata=metadata or {},
-            extra=extra or {},
         )
 
     @classmethod
@@ -363,34 +365,34 @@ class Message:
         tool_call_id: str,
         *,
         metadata: Mapping[str, Any] | None = None,
-        extra: Mapping[str, Any] | None = None,
     ) -> Message:
         return cls.tool(
             [ContentPart.text_part(text)],
             tool_call_id,
             metadata=metadata,
-            extra=extra,
         )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> Message:
         known = {"role", "parts", "tool_call_id", "tool_calls", "metadata"}
-        role = str(value["role"])
+        _reject_unknown_keys(value, known, "message")
+        role = _expect_str(value["role"], "message role")
         if role not in KNOWN_ROLES:
             raise ValueError(f"unsupported message role: {role}")
+        raw_tool_calls: object = value.get("tool_calls", [])
+        raw_metadata: object = value.get("metadata", {})
         return cls(
             role=cast(Role, role),
             parts=[
                 ContentPart.from_dict(_expect_mapping(part, "message part"))
-                for part in cast(Sequence[object], value.get("parts") or ())
+                for part in _expect_sequence(value["parts"], "message parts")
             ],
             tool_calls=[
                 ToolCall.from_dict(_expect_mapping(call, "message tool call"))
-                for call in cast(Sequence[object], value.get("tool_calls") or ())
+                for call in _expect_sequence(raw_tool_calls, "message tool_calls")
             ],
-            tool_call_id=cast(str | None, value.get("tool_call_id")),
-            metadata=_expect_mapping(value.get("metadata") or {}, "message metadata"),
-            extra={key: deepcopy(item) for key, item in value.items() if key not in known},
+            tool_call_id=_expect_optional_str(value.get("tool_call_id"), "message tool_call_id"),
+            metadata=_expect_mapping(raw_metadata, "message metadata"),
         )
 
     @property
@@ -408,13 +410,6 @@ class Message:
             data["tool_calls"] = [call.to_dict() for call in self.tool_calls]
         if self.metadata:
             data["metadata"] = _copy_mapping(self.metadata)
-        data.update(
-            _copy_extra(
-                self.extra,
-                {"role", "parts", "tool_call_id", "tool_calls", "metadata"},
-                "message",
-            )
-        )
         return data
 
 
@@ -433,3 +428,19 @@ def content_parts_summary(parts: Sequence[ContentPart]) -> dict[str, Any]:
         "part_types": types,
         "text_length": text_length,
     }
+
+
+def content_part_without_metadata(part: ContentPart) -> ContentPart:
+    """Return a content part with model-visible fields but no host metadata."""
+
+    data = part.to_dict()
+    data.pop("metadata", None)
+    return ContentPart.from_dict(data)
+
+
+def tool_call_without_metadata(call: ToolCall) -> ToolCall:
+    """Return a tool call with model-visible fields but no host metadata."""
+
+    data = call.to_dict()
+    data.pop("metadata", None)
+    return ToolCall.from_dict(data)

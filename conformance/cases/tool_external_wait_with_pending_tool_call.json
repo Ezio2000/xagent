@@ -1,0 +1,39 @@
+{
+  "name": "tool_external_wait_with_pending_tool_call",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "wait",
+          "arguments": {
+            "text": "external wait started",
+            "wait_id": "job-1",
+            "reason": "external_callback"
+          }
+        },
+        {
+          "id": "call-2",
+          "name": "echo",
+          "arguments": {
+            "text": "after wait"
+          }
+        }
+      ]
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 1,
+  "expected_message_roles": ["user", "assistant", "tool"],
+  "expected_tool_texts": ["external wait started"],
+  "expected_pending_tool_call_ids": ["call-2"],
+  "expected_pause": {
+    "reason": "external_callback",
+    "resume_status": "executing_tools",
+    "source": "tool",
+    "wait_id": "job-1",
+    "metadata": {}
+  },
+  "forbidden_unpaused_checkpoint_tool_counts": [1]
+}

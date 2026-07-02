@@ -13,10 +13,12 @@ Durable state is still committed only after a complete `ModelResponse` is
 available. SDKs must not append partial assistant messages, partial tool-call
 arguments, or partial reasoning to `AgentState`.
 
-If streaming is interrupted by timeout, cancellation, or provider error, the
-next checkpoint remains at the last stable pre-model state. Any observed
+If streaming is interrupted before a complete response exists, any observed
 `model_delta` events are non-durable UI progress and must not be required for
-resume.
+resume. Timeout or provider-error handling may end the invocation with a
+terminal `limit_exceeded` or `failed` checkpoint, but that checkpoint must
+preserve the last stable pre-model message history and must not commit a partial
+assistant message.
 
 Known `model_delta` payload shapes:
 

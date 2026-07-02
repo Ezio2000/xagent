@@ -1,0 +1,37 @@
+{
+  "name": "boundary_pause_during_tool_call_model_response",
+  "pause_request": {
+    "reason": "host_requested",
+    "source": "host",
+    "wait_id": null,
+    "metadata": {},
+    "interrupt": false
+  },
+  "pause_request_timing": "during_model_call",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "echo",
+          "arguments": {
+            "text": "hello"
+          }
+        }
+      ]
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 0,
+  "expected_message_roles": ["user", "assistant"],
+  "expected_pending_tool_call_ids": ["call-1"],
+  "expected_pause": {
+    "reason": "host_requested",
+    "resume_status": "executing_tools",
+    "source": "host",
+    "wait_id": null,
+    "metadata": {}
+  },
+  "forbidden_checkpoint_statuses": ["executing_tools"]
+}

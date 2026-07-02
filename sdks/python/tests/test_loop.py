@@ -3,18 +3,20 @@ from __future__ import annotations
 import asyncio
 import gc
 import time as time_module
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from time import monotonic
 from time import time as wall_time
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+import agent_runtime.loop as loop_module
 from agent_runtime import (
     AgentEvent,
     AgentLoop,
     AgentState,
     AgentStatus,
+    ContentPart,
     EventEmitter,
     EventTypes,
     LoopLimits,
@@ -26,6 +28,11 @@ from agent_runtime import (
     ModelRequest,
     ModelResponse,
     ModelToolCallDelta,
+    PauseController,
+    PauseRequest,
+    PauseSelector,
+    PauseState,
+    ResumeInput,
     RunSnapshot,
     RuntimeContext,
     RuntimeHook,
@@ -33,7 +40,10 @@ from agent_runtime import (
     ToolChoice,
     ToolResult,
     ToolSpec,
+    TraceStepKinds,
+    replay_trace,
 )
+from agent_runtime.loop import RunControlState
 
 
 class ScriptedModel:
@@ -44,7 +54,7 @@ class ScriptedModel:
     async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
         _ = request, context
         if self.calls >= len(self._steps):
-            return ModelResponse.text("fallback")
+            raise AssertionError("scripted model exhausted")
         response = self._steps[self.calls]
         self.calls += 1
         return response
@@ -91,6 +101,26 @@ class StreamingToolModel:
         yield ModelContentDelta(index=0, text_delta="done")
 
 
+class StreamingToolThenSlowModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise AssertionError("stream path should not call complete")
+
+    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
+        _ = context
+        self.calls += 1
+        if self.calls == 1:
+            yield ModelToolCallDelta(index=0, id="call-1", name="echo")
+            yield ModelToolCallDelta(index=0, arguments_delta='{"text":"hello"}')
+            return
+        assert request.messages[-1].role == "tool"
+        yield ModelContentDelta(index=0, text_delta="partial")
+        await asyncio.sleep(1)
+
+
 class SlowStreamingModel:
     async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
         _ = request, context
@@ -100,6 +130,36 @@ class SlowStreamingModel:
         _ = request, context
         yield ModelContentDelta(index=0, text_delta="partial")
         await asyncio.sleep(1)
+
+
+class FastStreamingModel:
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise AssertionError("stream path should not call complete")
+
+    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
+        _ = request, context
+        yield ModelContentDelta(index=0, text_delta="first")
+        yield ModelContentDelta(index=0, text_delta="second")
+
+
+class CloseTrackingStreamingModel:
+    def __init__(self) -> None:
+        self.next_chunk_started = asyncio.Event()
+        self.closed = asyncio.Event()
+
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        raise AssertionError("stream path should not call complete")
+
+    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
+        _ = request, context
+        try:
+            yield ModelContentDelta(index=0, text_delta="partial")
+            self.next_chunk_started.set()
+            await asyncio.sleep(1)
+        finally:
+            self.closed.set()
 
 
 class ProviderErrorModel:
@@ -115,6 +175,20 @@ class ProviderErrorModel:
                 request_id="req-1",
             )
         )
+
+
+class ClearingReadPauseController(PauseController):
+    def __init__(self, request: PauseRequest) -> None:
+        super().__init__()
+        self._request_copy = request
+        self.reads = 0
+
+    @property
+    def request(self) -> PauseRequest | None:
+        self.reads += 1
+        if self.reads == 1:
+            return self._request_copy
+        return None
 
 
 class StreamingProviderErrorModel:
@@ -188,6 +262,28 @@ class TimedTool:
             self.active -= 1
 
 
+class ContextMutatingParallelTool:
+    spec = ToolSpec(
+        name="context_mutator",
+        description="Mutate context metadata while running in parallel.",
+        input_schema={"type": "object", "properties": {}},
+        annotations={"parallel_safe": True, "read_only": True, "idempotent": True},
+    )
+
+    def __init__(self) -> None:
+        self.writer_started = asyncio.Event()
+
+    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+        call_id = str(arguments["id"])
+        if call_id == "writer":
+            cast(dict[str, Any], context.metadata)["leaked"] = "yes"
+            self.writer_started.set()
+            await asyncio.sleep(0.01)
+            return ToolResult.text("writer")
+        await self.writer_started.wait()
+        return ToolResult.text(str(context.metadata.get("leaked", "missing")))
+
+
 class MaybeErrorTimedTool(TimedTool):
     async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
         text = await super().execute(arguments, context)
@@ -251,6 +347,55 @@ class EchoTool:
         return ToolResult.text(str(arguments.get("text", "")))
 
 
+class MetadataTool:
+    spec = ToolSpec(
+        name="metadata_tool",
+        description="Return metadata-bearing content.",
+        input_schema={"type": "object", "properties": {}},
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+        _ = arguments, context
+        return ToolResult(
+            parts=[ContentPart.text_part("tool", metadata={"secret": "part"})],
+            metadata={"secret": "result"},
+        )
+
+
+class WaitingTool:
+    spec = ToolSpec(
+        name="wait",
+        description="Start external work and pause the run.",
+        input_schema={"type": "object", "properties": {}},
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+        _ = context
+        return ToolResult.waiting(
+            "external job started",
+            wait_id=str(arguments["wait_id"]),
+            reason="external_callback",
+        )
+
+
+class ParallelWaitingTool:
+    spec = ToolSpec(
+        name="parallel_wait",
+        description="Start external work and pause the run.",
+        input_schema={"type": "object", "properties": {}},
+        annotations={"parallel_safe": True, "read_only": True, "idempotent": True},
+    )
+
+    async def execute(self, arguments: dict[str, Any], context: RuntimeContext) -> ToolResult:
+        _ = context
+        await asyncio.sleep(float(arguments.get("delay", 0)))
+        return ToolResult.waiting(
+            str(arguments["wait_id"]),
+            wait_id=str(arguments["wait_id"]),
+            reason="external_callback",
+        )
+
+
 class FailTool:
     spec = ToolSpec(
         name="fail",
@@ -281,6 +426,30 @@ class SlowModel:
         _ = request, context
         await asyncio.sleep(1)
         return ModelResponse.text("late")
+
+
+class GateFinalModel:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        self.started.set()
+        await self.release.wait()
+        return ModelResponse.text("done")
+
+
+class SelfPausingToolCallModel:
+    def __init__(self, controller: PauseController) -> None:
+        self.controller = controller
+
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        self.controller.request_pause(reason="manual_pause")
+        return ModelResponse(
+            tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "hello"})]
+        )
 
 
 class AdapterTimeoutModel:
@@ -372,6 +541,25 @@ class ReplacingEventHook(RuntimeHook):
         return None
 
 
+class CoreEventEmittingHook(RuntimeHook):
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context
+        if event.type == EventTypes.MODEL_STARTED:
+            emitter.emit(EventTypes.MODEL_COMPLETED, {"summary": "host-emitted"})
+
+
+class FailingQueuedEventAfterHook(RuntimeHook):
+    def __init__(self, event_type: str) -> None:
+        self.event_type = event_type
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context
+        if event.type == self.event_type:
+            emitter.emit("custom_after_core_event", {})
+        if event.type == "custom_after_core_event":
+            raise RuntimeError("custom event failed")
+
+
 class MutatingEventContextHook(RuntimeHook):
     def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
         _ = event, emitter
@@ -396,14 +584,14 @@ class MutatingTransitionHook(RuntimeHook):
 class BadAfterModelHook(RuntimeHook):
     def after_model(self, response: ModelResponse, context: RuntimeContext) -> ModelResponse:
         _ = context
-        response.extra = {"finish_reason": "shadow"}
+        response.finish_reason = cast(Any, 123)
         return response
 
 
 class BadAfterToolHook(RuntimeHook):
     def after_tool(self, result: ToolResult, context: RuntimeContext) -> ToolResult:
         _ = context
-        result.extra = {"is_error": True}
+        result.is_error = cast(Any, "yes")
         return result
 
 
@@ -440,6 +628,49 @@ class RaisingEventHook(RuntimeHook):
         raise RuntimeError("event hook failed")
 
 
+class RaisingOnEventHook(RuntimeHook):
+    def __init__(self, event_type: str) -> None:
+        self.event_type = event_type
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context, emitter
+        if event.type == self.event_type:
+            raise RuntimeError(f"{self.event_type} hook failed")
+
+
+class RequestPauseOnEventHook(RuntimeHook):
+    def __init__(self, event_type: str, controller: PauseController) -> None:
+        self.event_type = event_type
+        self.controller = controller
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context, emitter
+        if event.type == self.event_type:
+            self.controller.request_pause(reason="leftover")
+
+
+class RequestPauseOnStateChangeHook(RuntimeHook):
+    def __init__(
+        self,
+        from_status: AgentStatus,
+        to_status: AgentStatus,
+        controller: PauseController,
+    ) -> None:
+        self.from_status = from_status
+        self.to_status = to_status
+        self.controller = controller
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context, emitter
+        if event.type != EventTypes.STATE_CHANGED:
+            return
+        if (
+            event.data.get("from") == self.from_status.value
+            and event.data.get("to") == self.to_status.value
+        ):
+            self.controller.request_pause(reason="leftover")
+
+
 class BlockingAfterModelHook(RuntimeHook):
     def after_model(self, response: ModelResponse, context: RuntimeContext) -> ModelResponse:
         _ = context
@@ -447,24 +678,60 @@ class BlockingAfterModelHook(RuntimeHook):
         return response
 
 
-class BadModelResponseExtraHook(RuntimeHook):
+class BadModelResponseShapeHook(RuntimeHook):
     def after_model(self, response: ModelResponse, context: RuntimeContext) -> ModelResponse:
         _ = context
-        response.extra = {"role": "user"}
+        response.response_id = cast(Any, 123)
         return response
 
 
-class BadToolResultExtraHook(RuntimeHook):
+class BadToolResultShapeHook(RuntimeHook):
     def after_tool(self, result: ToolResult, context: RuntimeContext) -> ToolResult:
         _ = context
-        result.extra = {"role": "assistant"}
+        result.is_error = cast(Any, "yes")
         return result
 
 
 async def collect_events(
-    agent: AgentLoop, messages: Sequence[Message], *, stream: bool = False
+    agent: AgentLoop,
+    messages: Sequence[Message],
+    *,
+    stream: bool = False,
+    pause_controller: PauseController | None = None,
 ) -> list[AgentEvent]:
-    return [event async for event in agent.run_events(messages, stream=stream)]
+    return [
+        event
+        async for event in agent.run_events(
+            messages,
+            stream=stream,
+            pause_controller=pause_controller,
+        )
+    ]
+
+
+class PauseExposingLoop(AgentLoop):
+    async def await_model_for_test(
+        self,
+        awaitable: Awaitable[ModelResponse],
+        control: RunControlState,
+    ) -> ModelResponse:
+        return await self._await_model_with_interrupt(awaitable, control)
+
+    async def apply_pause_for_test(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        request: PauseRequest,
+    ) -> tuple[AgentEvent, ...]:
+        return await self._pause(
+            state,
+            context,
+            control,
+            request,
+            resume_status=AgentStatus.EXECUTING_TOOLS,
+            origin="control",
+        )
 
 
 def parts_text(parts: Sequence[Any]) -> str:
@@ -552,6 +819,156 @@ async def test_stream_timeout_discards_partial_assistant_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_interrupt_pauses_without_partial_assistant_message() -> None:
+    controller = PauseController()
+    events: list[AgentEvent] = []
+
+    async for event in AgentLoop(model=SlowStreamingModel()).run_events(
+        [Message.user_text("stream slow")],
+        stream=True,
+        pause_controller=controller,
+    ):
+        events.append(event)
+        if event.type == EventTypes.MODEL_DELTA:
+            controller.interrupt(reason="user_interrupted")
+
+    checkpoints = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+    paused = checkpoints[-1]
+
+    assert EventTypes.RUN_PAUSED in [event.type for event in events]
+    assert EventTypes.ERROR not in [event.type for event in events]
+    assert paused.state.status is AgentStatus.PAUSED
+    assert paused.state.pause is not None
+    assert paused.state.pause.reason == "user_interrupted"
+    assert paused.state.pause.resume_status is AgentStatus.PLANNING
+    assert [message.role for message in paused.state.messages] == ["user"]
+
+    resumed_model = ScriptedModel([ModelResponse.text("fresh answer")])
+    result = await AgentLoop(model=resumed_model).run_snapshot(ResumeInput(snapshot=paused))
+
+    assert result.status is AgentStatus.COMPLETED
+    assert resumed_model.calls == 1
+    assert parts_text(result.final_parts) == "fresh answer"
+
+
+@pytest.mark.asyncio
+async def test_stream_interrupt_does_not_consume_durable_iteration() -> None:
+    controller = PauseController()
+    events: list[AgentEvent] = []
+
+    async for event in AgentLoop(
+        model=SlowStreamingModel(),
+        limits=LoopLimits(max_iterations=1),
+    ).run_events(
+        [Message.user_text("stream slow")],
+        stream=True,
+        pause_controller=controller,
+    ):
+        events.append(event)
+        if event.type == EventTypes.MODEL_DELTA:
+            controller.interrupt(reason="user_interrupted")
+
+    paused = RunSnapshot.from_dict(
+        [event for event in events if event.type == EventTypes.CHECKPOINT][-1].data
+    )
+    resumed = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("fresh answer")]),
+        limits=LoopLimits(max_iterations=1),
+    ).run_snapshot(ResumeInput(snapshot=paused))
+
+    assert paused.state.status is AgentStatus.PAUSED
+    assert paused.state.iterations == 0
+    assert resumed.status is AgentStatus.COMPLETED
+    assert parts_text(resumed.final_parts) == "fresh answer"
+
+
+@pytest.mark.asyncio
+async def test_stream_interrupt_wins_over_immediately_ready_next_delta() -> None:
+    controller = PauseController()
+    events: list[AgentEvent] = []
+
+    async for event in AgentLoop(model=FastStreamingModel()).run_events(
+        [Message.user_text("stream fast")],
+        stream=True,
+        pause_controller=controller,
+    ):
+        events.append(event)
+        if event.type == EventTypes.MODEL_DELTA:
+            controller.interrupt(reason="user_interrupted")
+
+    event_types = [event.type for event in events]
+    paused = RunSnapshot.from_dict(
+        [event for event in events if event.type == EventTypes.CHECKPOINT][-1].data
+    )
+
+    assert event_types.count(EventTypes.MODEL_DELTA) == 1
+    assert EventTypes.MODEL_COMPLETED not in event_types
+    assert paused.state.status is AgentStatus.PAUSED
+    assert paused.state.messages == [Message.user_text("stream fast")]
+
+
+@pytest.mark.asyncio
+async def test_later_stream_timeout_trace_uses_last_checkpoint_as_partial_baseline() -> None:
+    result = await AgentLoop(
+        model=StreamingToolThenSlowModel(),
+        tools=[EchoTool()],
+        limits=LoopLimits(timeout_seconds=0.02),
+    ).run(
+        [Message.user_text("stream after tool")],
+        stream=True,
+    )
+
+    assert result.status is AgentStatus.LIMIT_EXCEEDED
+    assert [message.role for message in result.messages] == ["user", "assistant", "tool"]
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.LIMIT_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_closes_stream_iterator() -> None:
+    model = CloseTrackingStreamingModel()
+    events: list[AgentEvent] = []
+
+    async def collect() -> None:
+        async for event in AgentLoop(model=model).run_events(
+            [Message.user_text("stream")],
+            stream=True,
+        ):
+            events.append(event)
+
+    task = asyncio.create_task(collect())
+    await model.next_chunk_started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [event.type for event in events] == [
+        EventTypes.RUN_STARTED,
+        EventTypes.MODEL_STARTED,
+        EventTypes.MODEL_DELTA,
+    ]
+    assert model.closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_early_event_consumer_close_closes_stream_iterator() -> None:
+    model = CloseTrackingStreamingModel()
+    iterator = AgentLoop(model=model).run_events(
+        [Message.user_text("stream")],
+        stream=True,
+    )
+
+    async for event in iterator:
+        if event.type == EventTypes.MODEL_DELTA:
+            break
+    await cast(Any, iterator).aclose()
+
+    assert model.closed.is_set()
+
+
+@pytest.mark.asyncio
 async def test_stream_flag_falls_back_to_complete_for_non_streaming_model() -> None:
     events = await collect_events(
         AgentLoop(model=ScriptedModel([ModelResponse.text("done")])),
@@ -564,15 +981,14 @@ async def test_stream_flag_falls_back_to_complete_for_non_streaming_model() -> N
 
 
 @pytest.mark.asyncio
-async def test_model_provider_error_is_structured_in_failed_checkpoint() -> None:
+async def test_model_provider_error_sets_failed_checkpoint_error() -> None:
     result = await AgentLoop(model=ProviderErrorModel()).run([Message.user_text("fail")])
 
     assert result.status is AgentStatus.FAILED
     assert result.error == "provider unavailable"
-    assert result.state is not None
-    assert result.state.extra["model_error"]["provider"] == "test-provider"
-    assert result.state.extra["model_error"]["code"] == "rate_limit"
-    assert result.state.extra["model_error"]["retryable"] is True
+    assert result.snapshot is not None
+    assert result.snapshot.state.error == "provider unavailable"
+    assert "error_details" not in result.snapshot.state.to_dict()
 
 
 @pytest.mark.asyncio
@@ -592,8 +1008,7 @@ async def test_stream_provider_error_discards_partial_assistant_message() -> Non
     assert checkpoints[-1].state.status is AgentStatus.FAILED
     assert checkpoints[-1].state.error == "provider unavailable"
     assert [message.role for message in checkpoints[-1].state.messages] == ["user"]
-    assert checkpoints[-1].state.extra["model_error"]["provider"] == "test-provider"
-    assert checkpoints[-1].state.extra["model_error"]["retryable"] is True
+    assert "error_details" not in checkpoints[-1].state.to_dict()
 
 
 @pytest.mark.asyncio
@@ -605,6 +1020,57 @@ async def test_model_direct_final() -> None:
     assert parts_text(result.final_parts) == "done"
     assert result.iterations == 1
     assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_model_response_metadata_is_not_persisted_in_checkpoint_state() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    parts=[ContentPart.text_part("done", metadata={"secret": "part"})],
+                    metadata={"secret": "response"},
+                )
+            ]
+        )
+    ).run([Message.user_text("finish")])
+
+    assert result.snapshot is not None
+    assert result.final_parts[0].metadata == {}
+    assert result.snapshot.state.final_parts[0].metadata == {}
+    assert result.snapshot.state.messages[-1].parts[0].metadata == {}
+    assert "secret" not in result.snapshot.state.messages[-1].metadata
+
+
+@pytest.mark.asyncio
+async def test_tool_result_metadata_is_not_persisted_in_checkpoint_message() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(tool_calls=[ToolCall(id="call-1", name="metadata_tool", arguments={})]),
+            ModelResponse.text("done"),
+        ]
+    )
+    result = await AgentLoop(model=model, tools=[MetadataTool()]).run([Message.user_text("tool")])
+
+    tool_message = next(message for message in result.messages if message.role == "tool")
+    assert tool_message.parts[0].metadata == {}
+    assert tool_message.metadata == {}
+
+
+@pytest.mark.asyncio
+async def test_result_snapshot_is_last_durable_checkpoint() -> None:
+    result = await AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run(
+        [Message.user_text("finish")]
+    )
+
+    assert result.snapshot is not None
+    assert result.trace is not None
+    checkpoint_step = next(
+        step for step in reversed(result.trace.steps) if step.kind == TraceStepKinds.CHECKPOINT
+    )
+    completed_step = result.trace.steps[-1]
+    assert result.snapshot.context.sequence == checkpoint_step.references["event_sequence"]
+    assert result.snapshot.context.sequence < completed_step.references["event_sequence"]
 
 
 @pytest.mark.asyncio
@@ -625,6 +1091,252 @@ async def test_one_tool_then_final() -> None:
     assert result.total_tool_calls == 1
     assert result.messages[-2].role == "tool"
     assert result.messages[-2].text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_pause_controller_pauses_before_model_call_and_snapshot_resumes() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause")
+    model = ScriptedModel([ModelResponse.text("done")])
+
+    result = await AgentLoop(model=model).run(
+        [Message.user_text("finish")],
+        pause_controller=controller,
+    )
+
+    assert result.status is AgentStatus.PAUSED
+    assert model.calls == 0
+    assert controller.request is None
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is not None
+    assert result.snapshot.state.pause.reason == "manual_pause"
+    assert result.snapshot.state.pause.resume_status is AgentStatus.PLANNING
+
+    resumed = await AgentLoop(model=model).run_snapshot(
+        ResumeInput(snapshot=result.snapshot or raise_assertion())
+    )
+
+    assert resumed.status is AgentStatus.COMPLETED
+    assert model.calls == 1
+    assert parts_text(resumed.final_parts) == "done"
+
+
+@pytest.mark.asyncio
+async def test_pause_request_is_captured_once_before_applying_pause() -> None:
+    controller = ClearingReadPauseController(PauseRequest(reason="manual_pause"))
+
+    result = await AgentLoop(model=ScriptedModel([ModelResponse.text("unused")])).run(
+        [Message.user_text("finish")],
+        pause_controller=controller,
+    )
+
+    assert result.status is AgentStatus.PAUSED
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is not None
+    assert result.snapshot.state.pause.reason == "manual_pause"
+    assert controller.reads >= 2
+
+
+@pytest.mark.asyncio
+async def test_pause_during_tool_call_model_response_has_no_executing_checkpoint() -> None:
+    controller = PauseController()
+    events = await collect_events(
+        AgentLoop(model=SelfPausingToolCallModel(controller), tools=[EchoTool()]),
+        [Message.user_text("call tool")],
+        pause_controller=controller,
+    )
+    checkpoints = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+    paused = checkpoints[-1]
+
+    assert paused.state.status is AgentStatus.PAUSED
+    assert paused.state.pause is not None
+    assert paused.state.pause.resume_status is AgentStatus.EXECUTING_TOOLS
+    assert paused.state.pending_tool_calls == [
+        ToolCall(id="call-1", name="echo", arguments={"text": "hello"})
+    ]
+    assert AgentStatus.EXECUTING_TOOLS not in {snapshot.state.status for snapshot in checkpoints}
+
+    resumed = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        tools=[EchoTool()],
+    ).run_snapshot(ResumeInput(snapshot=paused))
+
+    assert resumed.status is AgentStatus.COMPLETED
+    assert [message.text for message in resumed.messages if message.role == "tool"] == ["hello"]
+
+
+def test_pause_payloads_reject_schema_invalid_types() -> None:
+    controller = PauseController()
+
+    with pytest.raises(TypeError, match="pause request metadata"):
+        controller.request_pause(metadata=cast(Any, []))
+    with pytest.raises(TypeError, match="pause request metadata"):
+        controller.interrupt(metadata=cast(Any, []))
+
+    with pytest.raises(TypeError, match="pause interrupt"):
+        PauseRequest.from_dict(
+            {
+                "reason": "manual_pause",
+                "source": "host",
+                "wait_id": None,
+                "metadata": {},
+                "interrupt": "false",
+            }
+        )
+
+    with pytest.raises(TypeError, match="pause reason"):
+        PauseState.from_dict(
+            {
+                "reason": 123,
+                "resume_status": "planning",
+                "source": "host",
+                "wait_id": None,
+                "metadata": {},
+            }
+        )
+
+
+def test_pause_controller_exposes_defensive_request_copies() -> None:
+    controller = PauseController()
+    returned = controller.request_pause(metadata={"nested": {"value": 1}})
+    cast(dict[str, Any], returned.metadata)["nested"]["value"] = 2
+
+    stored = controller.request
+    assert stored is not None
+    assert stored.metadata == {"nested": {"value": 1}}
+
+    cast(dict[str, Any], stored.metadata)["nested"]["value"] = 3
+
+    stored_again = controller.request
+    assert stored_again is not None
+    assert stored_again.metadata == {"nested": {"value": 1}}
+
+
+def test_agent_state_from_dict_rejects_schema_invalid_required_fields() -> None:
+    payload = AgentState(status=AgentStatus.PLANNING, messages=[]).to_dict()
+    del payload["pause"]
+    with pytest.raises(KeyError):
+        AgentState.from_dict(payload)
+
+    payload = AgentState(status=AgentStatus.PLANNING, messages=[]).to_dict()
+    payload["messages"] = None
+    with pytest.raises(TypeError, match="messages"):
+        AgentState.from_dict(payload)
+
+    payload = AgentState(status=AgentStatus.PLANNING, messages=[]).to_dict()
+    payload["iterations"] = True
+    with pytest.raises(TypeError, match="iterations"):
+        AgentState.from_dict(payload)
+
+
+@pytest.mark.asyncio
+async def test_expired_deadline_wins_over_pause_request() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause")
+    model = ScriptedModel([ModelResponse.text("done")])
+    now = wall_time()
+
+    result = await AgentLoop(model=model).run(
+        [Message.user_text("finish")],
+        context=RuntimeContext(started_at=now - 2, deadline=now - 1),
+        pause_controller=controller,
+    )
+
+    assert result.status is AgentStatus.LIMIT_EXCEEDED
+    assert result.error == "timeout_seconds"
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is None
+    assert model.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_final_completion_wins_over_pause_requested_during_model_call() -> None:
+    controller = PauseController()
+    model = GateFinalModel()
+    run_task = asyncio.create_task(
+        AgentLoop(model=model).run(
+            [Message.user_text("finish")],
+            pause_controller=controller,
+        )
+    )
+    await model.started.wait()
+
+    controller.request_pause(reason="manual_pause")
+    model.release.set()
+    result = await run_task
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is None
+    assert controller.request is None
+    assert parts_text(result.final_parts) == "done"
+
+
+@pytest.mark.asyncio
+async def test_completed_model_task_wins_same_turn_interrupt_race() -> None:
+    controller = PauseController()
+    controller.interrupt(reason="race_interrupt")
+    loop = PauseExposingLoop(model=ScriptedModel([]))
+    future: asyncio.Future[ModelResponse] = asyncio.get_running_loop().create_future()
+    future.set_result(ModelResponse.text("done"))
+
+    response = await loop.await_model_for_test(
+        future,
+        RunControlState(
+            run_id="race-run",
+            started_at=wall_time(),
+            pause_controller=controller,
+        ),
+    )
+
+    assert parts_text(response.parts) == "done"
+
+
+def test_pause_controller_can_be_reused_across_event_loops() -> None:
+    class SlowFinalModel:
+        async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+            _ = request, context
+            await asyncio.sleep(0.01)
+            return ModelResponse.text("done")
+
+    async def run_once(controller: PauseController) -> AgentStatus:
+        result = await AgentLoop(model=SlowFinalModel()).run(
+            [Message.user_text("finish")],
+            pause_controller=controller,
+        )
+        return result.status
+
+    controller = PauseController()
+
+    assert asyncio.run(run_once(controller)) is AgentStatus.COMPLETED
+    assert asyncio.run(run_once(controller)) is AgentStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_interrupt_from_worker_thread_pauses_inflight_model_call() -> None:
+    controller = PauseController()
+    model = GateFinalModel()
+    run_task = asyncio.create_task(
+        AgentLoop(model=model).run(
+            [Message.user_text("finish")],
+            pause_controller=controller,
+        )
+    )
+    await model.started.wait()
+
+    await asyncio.to_thread(controller.interrupt, reason="thread_interrupt")
+    result = await run_task
+
+    assert result.status is AgentStatus.PAUSED
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is not None
+    assert result.snapshot.state.pause.reason == "thread_interrupt"
+
+
+def raise_assertion() -> RunSnapshot:
+    raise AssertionError("expected result snapshot")
 
 
 @pytest.mark.asyncio
@@ -678,6 +1390,28 @@ async def test_max_total_tool_calls_does_not_block_direct_final() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_call_limit_takes_precedence_over_pause_after_model_response() -> None:
+    controller = PauseController()
+    events = await collect_events(
+        AgentLoop(
+            model=SelfPausingToolCallModel(controller),
+            tools=[EchoTool()],
+            limits=LoopLimits(max_total_tool_calls=0),
+        ),
+        [Message.user_text("echo")],
+        pause_controller=controller,
+    )
+
+    assert events[-1].data["state"]["status"] == AgentStatus.LIMIT_EXCEEDED.value
+    assert EventTypes.RUN_PAUSED not in [event.type for event in events]
+    assert AgentStatus.PAUSED.value not in [
+        RunSnapshot.from_dict(event.data).state.status.value
+        for event in events
+        if event.type == EventTypes.CHECKPOINT
+    ]
+
+
+@pytest.mark.asyncio
 async def test_tool_error_recovery_by_default() -> None:
     model = ScriptedModel(
         [
@@ -692,6 +1426,183 @@ async def test_tool_error_recovery_by_default() -> None:
     assert result.total_tool_calls == 1
     assert result.messages[-2].role == "tool"
     assert "tool failed" in result.messages[-2].text
+
+
+@pytest.mark.asyncio
+async def test_waiting_tool_result_pauses_after_tool_commit_and_resumes() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall(id="call-1", name="wait", arguments={"wait_id": "job-1"})]
+            ),
+            ModelResponse.text("should not be called before resume"),
+        ]
+    )
+
+    result = await AgentLoop(model=model, tools=[WaitingTool()]).run(
+        [Message.user_text("start external work")]
+    )
+
+    assert result.status is AgentStatus.PAUSED
+    assert result.total_tool_calls == 1
+    assert model.calls == 1
+    assert [message.role for message in result.messages] == ["user", "assistant", "tool"]
+    assert result.messages[-1].text == "external job started"
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is not None
+    assert result.snapshot.state.pause.reason == "external_callback"
+    assert result.snapshot.state.pause.source == "tool"
+    assert result.snapshot.state.pause.wait_id == "job-1"
+    assert result.snapshot.state.pause.resume_status is AgentStatus.PLANNING
+
+    resumed_model = ScriptedModel([ModelResponse.text("external job complete")])
+    resumed = await AgentLoop(model=resumed_model, tools=[WaitingTool()]).run_snapshot(
+        ResumeInput(snapshot=result.snapshot or raise_assertion())
+    )
+
+    assert resumed.status is AgentStatus.COMPLETED
+    assert resumed_model.calls == 1
+    assert parts_text(resumed.final_parts) == "external job complete"
+
+
+@pytest.mark.asyncio
+async def test_external_wait_has_no_resumable_checkpoint_before_paused_decision() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall(id="call-1", name="wait", arguments={"wait_id": "job-1"})]
+            ),
+        ]
+    )
+
+    events = await collect_events(
+        AgentLoop(model=model, tools=[WaitingTool()]),
+        [Message.user_text("start external work")],
+    )
+    snapshots = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+    committed_tool_snapshots = [
+        snapshot for snapshot in snapshots if snapshot.state.total_tool_calls == 1
+    ]
+
+    assert committed_tool_snapshots
+    assert {snapshot.state.status for snapshot in committed_tool_snapshots} == {AgentStatus.PAUSED}
+    assert committed_tool_snapshots[-1].state.pause is not None
+    assert committed_tool_snapshots[-1].state.pause.wait_id == "job-1"
+
+    resumed = await AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run_snapshot(
+        ResumeInput(snapshot=committed_tool_snapshots[-1])
+    )
+
+    assert resumed.status is AgentStatus.COMPLETED
+    assert parts_text(resumed.final_parts) == "done"
+
+
+@pytest.mark.asyncio
+async def test_host_pause_during_tool_completion_replaces_unpaused_commit_checkpoint() -> None:
+    controller = PauseController()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "hello"})]
+            )
+        ]
+    )
+
+    events = await collect_events(
+        AgentLoop(
+            model=model,
+            tools=[EchoTool()],
+            hooks=[RequestPauseOnEventHook(EventTypes.TOOL_COMPLETED, controller)],
+        ),
+        [Message.user_text("run tool")],
+        pause_controller=controller,
+    )
+    committed_tool_snapshots = [
+        RunSnapshot.from_dict(event.data)
+        for event in events
+        if event.type == EventTypes.CHECKPOINT
+        and RunSnapshot.from_dict(event.data).state.total_tool_calls == 1
+    ]
+
+    assert committed_tool_snapshots
+    assert {snapshot.state.status for snapshot in committed_tool_snapshots} == {AgentStatus.PAUSED}
+    paused = committed_tool_snapshots[-1].state.pause
+    assert paused is not None
+    assert paused.resume_status is AgentStatus.PLANNING
+
+
+@pytest.mark.asyncio
+async def test_parallel_waiting_tool_results_commit_batch_and_first_pause_wins() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="parallel_wait",
+                        arguments={"wait_id": "job-1", "delay": 0.02},
+                    ),
+                    ToolCall(
+                        id="call-2",
+                        name="parallel_wait",
+                        arguments={"wait_id": "job-2", "delay": 0},
+                    ),
+                ]
+            ),
+        ]
+    )
+
+    result = await AgentLoop(
+        model=model,
+        tools=[ParallelWaitingTool()],
+        limits=LoopLimits(max_parallel_tool_calls=2),
+    ).run([Message.user_text("start external work")])
+
+    assert result.status is AgentStatus.PAUSED
+    assert result.total_tool_calls == 2
+    assert [message.tool_call_id for message in result.messages if message.role == "tool"] == [
+        "call-1",
+        "call-2",
+    ]
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is not None
+    assert result.snapshot.state.pause.wait_id == "job-1"
+    assert result.snapshot.state.pause.resume_status is AgentStatus.PLANNING
+
+
+@pytest.mark.asyncio
+async def test_external_wait_pause_respects_expired_deadline() -> None:
+    now = wall_time()
+    context = RuntimeContext(run_id="expired-wait", started_at=now - 2, deadline=now - 1)
+    control = RunControlState(
+        run_id=context.run_id,
+        started_at=context.started_at,
+        deadline=context.deadline,
+        monotonic_deadline=monotonic() - 1,
+    )
+    state = AgentState(
+        status=AgentStatus.EXECUTING_TOOLS,
+        messages=[Message.user_text("wait")],
+    )
+
+    events = await PauseExposingLoop(model=ScriptedModel([])).apply_pause_for_test(
+        state,
+        context,
+        control,
+        PauseRequest(
+            reason="external_callback",
+            source="tool",
+            wait_id="job-1",
+            metadata={},
+        ),
+    )
+
+    assert state.status is AgentStatus.LIMIT_EXCEEDED
+    assert state.error == "timeout_seconds"
+    assert state.pause is None
+    assert EventTypes.PAUSE_REQUESTED not in [event.type for event in events]
 
 
 @pytest.mark.asyncio
@@ -710,6 +1621,34 @@ async def test_stop_on_tool_error() -> None:
     assert result.total_tool_calls == 1
     assert result.messages[-1].role == "tool"
     assert result.messages[-1].metadata["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_stop_on_tool_error_has_no_resumable_checkpoint_before_failed_decision() -> None:
+    model = ScriptedModel(
+        [ModelResponse(tool_calls=[ToolCall(id="call-1", name="fail", arguments={})])]
+    )
+
+    events = await collect_events(
+        AgentLoop(
+            model=model,
+            tools=[FailTool()],
+            limits=LoopLimits(stop_on_tool_error=True),
+        ),
+        [Message.user_text("fail")],
+    )
+    snapshots = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+    committed_tool_snapshots = [
+        snapshot for snapshot in snapshots if snapshot.state.total_tool_calls == 1
+    ]
+
+    assert committed_tool_snapshots
+    assert {snapshot.state.status for snapshot in committed_tool_snapshots} == {AgentStatus.FAILED}
+
+    with pytest.raises(ValueError, match="terminal"):
+        ResumeInput(snapshot=committed_tool_snapshots[-1])
 
 
 @pytest.mark.asyncio
@@ -879,6 +1818,197 @@ async def test_generic_exception_terminal_events_are_ordered() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event_type",
+    [EventTypes.FINAL, EventTypes.RUN_COMPLETED],
+)
+async def test_post_completed_event_hook_failure_does_not_rewrite_terminal_checkpoint(
+    event_type: str,
+) -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(event_type)],
+        ),
+        [Message.user_text("finish")],
+    )
+    checkpoints = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+
+    assert checkpoints
+    assert {snapshot.state.status for snapshot in checkpoints} == {AgentStatus.COMPLETED}
+    assert events[-2].type == EventTypes.ERROR
+    assert events[-2].data["status"] == AgentStatus.COMPLETED.value
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    assert events[-1].data["state"]["status"] == AgentStatus.COMPLETED.value
+
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RaisingOnEventHook(event_type)],
+    ).run([Message.user_text("finish")])
+
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_model_completed_event_hook_failure_rolls_back_uncheckpointed_transition() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RaisingOnEventHook(EventTypes.MODEL_COMPLETED)],
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.FAILED
+    assert [message.role for message in result.messages] == ["user"]
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+    transitions = [step for step in result.trace.steps if step.kind == TraceStepKinds.STATE_CHANGED]
+    assert transitions[-1].before_status is AgentStatus.PLANNING
+    assert transitions[-1].after_status is AgentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_run_started_event_hook_failure_trace_still_replays() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RaisingOnEventHook(EventTypes.RUN_STARTED)],
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.trace is not None
+    assert result.trace.steps[0].kind == TraceStepKinds.RUN_STARTED
+    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_event_hook_failure_rolls_back_uncheckpointed_trace() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RaisingOnEventHook(EventTypes.CHECKPOINT)],
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+    transitions = [step for step in result.trace.steps if step.kind == TraceStepKinds.STATE_CHANGED]
+    assert transitions == [
+        step for step in transitions if step.after_status is not AgentStatus.COMPLETED
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_run_completed_hook_failure_trace_still_replays() -> None:
+    result = await AgentLoop(
+        model=ProviderErrorModel(),
+        hooks=[RaisingOnEventHook(EventTypes.RUN_COMPLETED)],
+    ).run([Message.user_text("fail")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_custom_event_failure_rolls_back_trace_durability() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[FailingQueuedEventAfterHook(EventTypes.CHECKPOINT)],
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+    assert result.snapshot is not None
+    assert result.snapshot.state.status is AgentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_run_completed_custom_event_failure_trace_still_replays() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[FailingQueuedEventAfterHook(EventTypes.RUN_COMPLETED)],
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_post_paused_event_hook_failure_does_not_rewrite_terminal_checkpoint() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause")
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(EventTypes.RUN_PAUSED)],
+        ),
+        [Message.user_text("finish")],
+        pause_controller=controller,
+    )
+    checkpoints = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+
+    assert checkpoints
+    assert {snapshot.state.status for snapshot in checkpoints} == {AgentStatus.PAUSED}
+    assert events[-2].type == EventTypes.ERROR
+    assert events[-2].data["status"] == AgentStatus.PAUSED.value
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    assert events[-1].data["state"]["status"] == AgentStatus.PAUSED.value
+
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause")
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RaisingOnEventHook(EventTypes.RUN_PAUSED)],
+    ).run(
+        [Message.user_text("finish")],
+        pause_controller=controller,
+    )
+
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_pause_request_made_during_run_paused_is_cleared_at_invocation_end() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause")
+
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RequestPauseOnEventHook(EventTypes.RUN_PAUSED, controller)],
+    ).run(
+        [Message.user_text("finish")],
+        pause_controller=controller,
+    )
+
+    assert result.status is AgentStatus.PAUSED
+    assert controller.request is None
+
+
+@pytest.mark.asyncio
+async def test_pause_requested_event_hook_failure_clears_controller() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause")
+
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(EventTypes.PAUSE_REQUESTED)],
+        ),
+        [Message.user_text("finish")],
+        pause_controller=controller,
+    )
+
+    assert controller.request is None
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+
+
+@pytest.mark.asyncio
 async def test_sync_blocking_hook_timeout_is_runtime_limit() -> None:
     started_at = monotonic()
     result = await AgentLoop(
@@ -935,6 +2065,211 @@ async def test_tool_call_limit_leaves_only_unexecuted_pending_calls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_response_checkpoint_rechecks_timeout_after_state_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expired = False
+
+    def fake_monotonic() -> float:
+        return 2.0 if expired else 0.0
+
+    class ExpireAfterModelTransitionHook(RuntimeHook):
+        def on_event(
+            self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter
+        ) -> None:
+            nonlocal expired
+            _ = context, emitter
+            if (
+                event.type == EventTypes.STATE_CHANGED
+                and event.data["from"] == AgentStatus.PLANNING.value
+                and event.data["to"] == AgentStatus.EXECUTING_TOOLS.value
+            ):
+                expired = True
+
+    monkeypatch.setattr(loop_module, "monotonic", fake_monotonic)
+    now = wall_time()
+    model = ScriptedModel(
+        [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "late"})])]
+    )
+
+    events = [
+        event
+        async for event in AgentLoop(
+            model=model,
+            tools=[EchoTool()],
+            hooks=[ExpireAfterModelTransitionHook()],
+        ).run_events(
+            [Message.user_text("echo")],
+            context=RuntimeContext(started_at=now, deadline=now + 1),
+        )
+    ]
+
+    checkpoint_statuses = [
+        RunSnapshot.from_dict(event.data).state.status
+        for event in events
+        if event.type == EventTypes.CHECKPOINT
+    ]
+    assert AgentStatus.EXECUTING_TOOLS not in checkpoint_statuses
+    assert events[-1].data["state"]["status"] == AgentStatus.LIMIT_EXCEEDED.value
+    assert events[-1].data["state"]["error"] == "timeout_seconds"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_limit_wins_over_tool_result_pause() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(id="call-1", name="wait", arguments={"wait_id": "job-1"}),
+                    ToolCall(id="call-2", name="echo", arguments={"text": "after"}),
+                ]
+            )
+        ]
+    )
+
+    result = await AgentLoop(
+        model=model,
+        tools=[WaitingTool(), EchoTool()],
+        limits=LoopLimits(max_total_tool_calls=1),
+    ).run([Message.user_text("wait then echo")])
+
+    assert result.status is AgentStatus.LIMIT_EXCEEDED
+    assert result.error == "max_total_tool_calls"
+    assert result.total_tool_calls == 1
+    assert result.snapshot is not None
+    assert [call.id for call in result.snapshot.state.pending_tool_calls] == ["call-2"]
+    assert result.snapshot.state.pause is None
+    assert result.trace is not None
+    assert TraceStepKinds.PAUSE_REQUESTED not in [step.kind for step in result.trace.steps]
+
+
+@pytest.mark.asyncio
+async def test_tool_call_limit_wins_over_pause_requested_after_tool_completed() -> None:
+    controller = PauseController()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(id="call-1", name="echo", arguments={"text": "a"}),
+                    ToolCall(id="call-2", name="echo", arguments={"text": "b"}),
+                ]
+            )
+        ]
+    )
+
+    events = await collect_events(
+        AgentLoop(
+            model=model,
+            tools=[EchoTool()],
+            hooks=[RequestPauseOnEventHook(EventTypes.TOOL_COMPLETED, controller)],
+            limits=LoopLimits(max_total_tool_calls=1),
+        ),
+        [Message.user_text("echo twice")],
+        pause_controller=controller,
+    )
+
+    assert events[-1].data["state"]["status"] == AgentStatus.LIMIT_EXCEEDED.value
+    assert events[-1].data["state"]["error"] == "max_total_tool_calls"
+    assert EventTypes.PAUSE_REQUESTED not in [event.type for event in events]
+
+
+@pytest.mark.asyncio
+async def test_tool_result_pause_loses_to_iteration_limit_after_final_tool() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall(id="call-1", name="wait", arguments={"wait_id": "job-1"})]
+            )
+        ]
+    )
+
+    result = await AgentLoop(
+        model=model,
+        tools=[WaitingTool()],
+        limits=LoopLimits(max_iterations=1),
+    ).run([Message.user_text("wait")])
+
+    assert result.status is AgentStatus.LIMIT_EXCEEDED
+    assert result.error == "max_iterations"
+    assert result.snapshot is not None
+    assert result.snapshot.state.pause is None
+    assert result.trace is not None
+    assert TraceStepKinds.PAUSE_REQUESTED not in [step.kind for step in result.trace.steps]
+
+
+@pytest.mark.asyncio
+async def test_tool_final_planning_boundary_applies_pause_before_checkpoint() -> None:
+    controller = PauseController()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "done"})]
+            ),
+            ModelResponse.text("unused"),
+        ]
+    )
+
+    events = await collect_events(
+        AgentLoop(
+            model=model,
+            tools=[EchoTool()],
+            hooks=[
+                RequestPauseOnStateChangeHook(
+                    AgentStatus.EXECUTING_TOOLS,
+                    AgentStatus.PLANNING,
+                    controller,
+                )
+            ],
+        ),
+        [Message.user_text("echo")],
+        pause_controller=controller,
+    )
+    event_types = [event.type for event in events]
+    planning_transition_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.type == EventTypes.STATE_CHANGED
+        and event.data["from"] == AgentStatus.EXECUTING_TOOLS.value
+        and event.data["to"] == AgentStatus.PLANNING.value
+    )
+    pause_index = event_types.index(EventTypes.PAUSE_REQUESTED)
+
+    assert events[-1].data["state"]["status"] == AgentStatus.PAUSED.value
+    assert events[-1].data["state"]["pause"]["resume_status"] == AgentStatus.PLANNING.value
+    assert EventTypes.CHECKPOINT not in event_types[planning_transition_index + 1 : pause_index]
+    assert model.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_iteration_limit_wins_over_pause_requested_after_final_tool() -> None:
+    controller = PauseController()
+    model = ScriptedModel(
+        [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "done"})])]
+    )
+
+    events = await collect_events(
+        AgentLoop(
+            model=model,
+            tools=[EchoTool()],
+            hooks=[
+                RequestPauseOnStateChangeHook(
+                    AgentStatus.EXECUTING_TOOLS,
+                    AgentStatus.PLANNING,
+                    controller,
+                )
+            ],
+            limits=LoopLimits(max_iterations=1),
+        ),
+        [Message.user_text("echo")],
+        pause_controller=controller,
+    )
+
+    assert events[-1].data["state"]["status"] == AgentStatus.LIMIT_EXCEEDED.value
+    assert events[-1].data["state"]["error"] == "max_iterations"
+    assert EventTypes.PAUSE_REQUESTED not in [event.type for event in events]
+
+
+@pytest.mark.asyncio
 async def test_parallel_safe_tools_default_to_serial_execution() -> None:
     tool = TimedTool("timed", parallel_safe=True)
     model = ScriptedModel(
@@ -988,6 +2323,63 @@ async def test_parallel_safe_tools_obey_max_parallel_tool_calls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_parallel_tool_context_mutation_is_isolated_per_call() -> None:
+    tool = ContextMutatingParallelTool()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call-writer",
+                        name="context_mutator",
+                        arguments={"id": "writer"},
+                    ),
+                    ToolCall(
+                        id="call-reader",
+                        name="context_mutator",
+                        arguments={"id": "reader"},
+                    ),
+                ]
+            ),
+            ModelResponse.text("done"),
+        ]
+    )
+
+    result = await AgentLoop(
+        model=model,
+        tools=[tool],
+        limits=LoopLimits(max_parallel_tool_calls=2),
+    ).run([Message.user_text("run")])
+    tool_messages = [message.text for message in result.messages if message.role == "tool"]
+
+    assert result.status is AgentStatus.COMPLETED
+    assert tool_messages == ["writer", "missing"]
+
+
+@pytest.mark.asyncio
+async def test_tool_batch_ids_reset_for_each_run_on_reused_loop() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})]),
+            ModelResponse.text("first"),
+            ModelResponse(tool_calls=[ToolCall(id="call-2", name="echo", arguments={})]),
+            ModelResponse.text("second"),
+        ]
+    )
+    agent = AgentLoop(model=model, tools=[EchoTool()])
+
+    first_events = await collect_events(agent, [Message.user_text("first")])
+    second_events = await collect_events(agent, [Message.user_text("second")])
+
+    assert [
+        event.data["batch_id"] for event in first_events if event.type == EventTypes.TOOL_STARTED
+    ] == ["tool-batch-1"]
+    assert [
+        event.data["batch_id"] for event in second_events if event.type == EventTypes.TOOL_STARTED
+    ] == ["tool-batch-1"]
+
+
+@pytest.mark.asyncio
 async def test_parallel_completion_events_can_be_out_of_order_but_history_is_ordered() -> None:
     tool = TimedTool("timed", parallel_safe=True)
     model = ScriptedModel(
@@ -1025,6 +2417,37 @@ async def test_parallel_completion_events_can_be_out_of_order_but_history_is_ord
 
 
 @pytest.mark.asyncio
+async def test_parallel_same_tick_completion_events_are_index_ordered() -> None:
+    tool = TimedTool("timed", parallel_safe=True)
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(id=f"call-{index}", name="timed", arguments={"id": str(index)})
+                    for index in range(3)
+                ]
+            ),
+            ModelResponse.text("done"),
+        ]
+    )
+
+    events = await collect_events(
+        AgentLoop(
+            model=model,
+            tools=[tool],
+            limits=LoopLimits(max_parallel_tool_calls=3),
+        ),
+        [Message.user_text("timed")],
+    )
+
+    assert [event.data["id"] for event in events if event.type == EventTypes.TOOL_COMPLETED] == [
+        "call-0",
+        "call-1",
+        "call-2",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_parallel_checkpoint_waits_for_completed_order_gap() -> None:
     tool = TimedTool("timed", parallel_safe=True)
     model = ScriptedModel(
@@ -1047,17 +2470,26 @@ async def test_parallel_checkpoint_waits_for_completed_order_gap() -> None:
         ),
         [Message.user_text("timed")],
     )
+    snapshots = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
     tool_snapshots = [
-        RunSnapshot.from_dict(event.data)
-        for event in events
-        if event.type == EventTypes.CHECKPOINT
-        and RunSnapshot.from_dict(event.data).state.status is AgentStatus.EXECUTING_TOOLS
-        and RunSnapshot.from_dict(event.data).state.total_tool_calls > 0
+        snapshot
+        for snapshot in snapshots
+        if snapshot.state.status is AgentStatus.PLANNING and snapshot.state.total_tool_calls == 2
+    ]
+    invalid_tool_snapshots = [
+        snapshot
+        for snapshot in snapshots
+        if snapshot.state.status is AgentStatus.EXECUTING_TOOLS
+        and not snapshot.state.pending_tool_calls
     ]
 
     assert tool_snapshots
     assert tool_snapshots[0].state.total_tool_calls == 2
     assert tool_snapshots[0].state.pending_tool_calls == []
+    assert invalid_tool_snapshots == []
+    assert ResumeInput(snapshot=tool_snapshots[0]).snapshot.to_dict() == tool_snapshots[0].to_dict()
     assert [
         message.tool_call_id
         for message in tool_snapshots[0].state.messages
@@ -1317,7 +2749,9 @@ async def test_model_tool_checkpoint_resumes_into_tool_execution_without_recalli
     resumed_model = ScriptedModel([ModelResponse.text("resumed done")])
     resumed_tool = RecordingTool()
 
-    result = await AgentLoop(model=resumed_model, tools=[resumed_tool]).run_snapshot(snapshot)
+    result = await AgentLoop(model=resumed_model, tools=[resumed_tool]).run_snapshot(
+        ResumeInput(snapshot=snapshot)
+    )
 
     assert snapshot.state.status is AgentStatus.EXECUTING_TOOLS
     assert resumed_tool.calls == ["call-1", "call-2"]
@@ -1326,7 +2760,7 @@ async def test_model_tool_checkpoint_resumes_into_tool_execution_without_recalli
 
 
 @pytest.mark.asyncio
-async def test_model_final_checkpoint_resume_does_not_recall_model() -> None:
+async def test_terminal_snapshot_resume_is_rejected() -> None:
     events = await collect_events(
         AgentLoop(model=ScriptedModel([ModelResponse.text("first-final")])),
         [Message.user_text("finish")],
@@ -1335,11 +2769,10 @@ async def test_model_final_checkpoint_resume_does_not_recall_model() -> None:
     snapshot = RunSnapshot.from_dict(first_checkpoint.data)
     resumed_model = ScriptedModel([ModelResponse.text("second-final")])
 
-    result = await AgentLoop(model=resumed_model).run_snapshot(snapshot)
-
     assert snapshot.state.status is AgentStatus.COMPLETED
+    with pytest.raises(ValueError, match="terminal"):
+        ResumeInput(snapshot=snapshot)
     assert resumed_model.calls == 0
-    assert parts_text(result.final_parts) == "first-final"
 
 
 @pytest.mark.asyncio
@@ -1370,7 +2803,6 @@ async def test_context_metadata_and_run_id_are_injected() -> None:
     context = RuntimeContext(
         run_id="run-test",
         metadata={"tenant": "acme"},
-        extra={"trace": {"id": "trace-1"}},
     )
     events = await collect_events(
         AgentLoop(model=ContextInspectingModel()),
@@ -1383,9 +2815,9 @@ async def test_context_metadata_and_run_id_are_injected() -> None:
 
     assert parts_text(result.final_parts) == "acme"
     assert result.run_id == "run-test"
-    assert result.context is not None
-    assert result.context.run_id == "run-test"
-    assert result.context.extra == {"trace": {"id": "trace-1"}}
+    assert result.snapshot is not None
+    assert result.snapshot.context.run_id == "run-test"
+    assert result.snapshot.context.metadata == {"tenant": "acme"}
     assert all(event.run_id for event in events)
 
 
@@ -1397,11 +2829,11 @@ async def test_runtime_context_uses_wall_clock_checkpoint_deadline() -> None:
         limits=LoopLimits(timeout_seconds=10),
     ).run([Message.user_text("hello")])
 
-    assert result.context is not None
-    assert result.context.started_at >= started_at
-    assert result.context.deadline is not None
-    assert result.context.deadline > wall_time()
-    assert result.context.deadline - result.context.started_at <= 10.1
+    assert result.snapshot is not None
+    assert result.snapshot.context.started_at >= started_at
+    assert result.snapshot.context.deadline is not None
+    assert result.snapshot.context.deadline > wall_time()
+    assert result.snapshot.context.deadline - result.snapshot.context.started_at <= 10.1
 
 
 @pytest.mark.asyncio
@@ -1428,26 +2860,16 @@ async def test_result_uses_runtime_control_identity_after_context_mutation() -> 
     ).run([Message.user_text("hello")], context=RuntimeContext(run_id="stable-run"))
 
     assert result.run_id == "stable-run"
-    assert result.context is not None
-    assert result.context.run_id == "stable-run"
-    assert result.context.sequence > 0
+    assert result.snapshot is not None
+    assert result.snapshot.context.run_id == "stable-run"
+    assert result.snapshot.context.sequence > 0
 
 
-@pytest.mark.asyncio
-async def test_state_round_trip_and_resume() -> None:
-    state = AgentState(
-        status=AgentStatus.PLANNING,
-        messages=[Message.user_text("finish")],
-        extra={"checkpoint": {"owner": "host"}},
-    )
-    restored = AgentState.from_dict(state.to_dict())
-    result = await AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run_state(restored)
+def test_raw_state_runner_is_not_public_resume_api() -> None:
+    agent = AgentLoop(model=ScriptedModel([ModelResponse.text("done")]))
 
-    assert result.status is AgentStatus.COMPLETED
-    assert parts_text(result.final_parts) == "done"
-    assert result.state is not None
-    assert result.state.to_dict()["status"] == "completed"
-    assert result.state.extra == {"checkpoint": {"owner": "host"}}
+    assert not hasattr(agent, "run_state")
+    assert not hasattr(agent, "run_state_events")
 
 
 @pytest.mark.asyncio
@@ -1456,20 +2878,413 @@ async def test_run_snapshot_round_trip_and_resume() -> None:
         state=AgentState(
             status=AgentStatus.PLANNING,
             messages=[Message.user_text("finish")],
-            extra={"checkpoint": {"owner": "host"}},
         ),
         context=RuntimeContext(run_id="snapshot-run", metadata={"tenant": "acme"}),
     )
     restored = RunSnapshot.from_dict(snapshot.to_dict())
     result = await AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run_snapshot(
-        restored
+        ResumeInput(snapshot=restored)
     )
 
     assert result.status is AgentStatus.COMPLETED
     assert result.run_id == "snapshot-run"
     assert result.snapshot is not None
     assert result.snapshot.context.run_id == "snapshot-run"
-    assert result.snapshot.state.extra == {"checkpoint": {"owner": "host"}}
+    assert result.snapshot.context.metadata == {"tenant": "acme"}
+
+
+@pytest.mark.asyncio
+async def test_run_snapshot_requires_resume_input() -> None:
+    snapshot = RunSnapshot(
+        state=AgentState(status=AgentStatus.PLANNING, messages=[Message.user_text("finish")]),
+        context=RuntimeContext(run_id="snapshot-run"),
+    )
+
+    with pytest.raises(TypeError, match="ResumeInput"):
+        await AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run_snapshot(
+            cast(Any, snapshot)
+        )
+
+    iterator = AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run_snapshot_events(
+        cast(Any, snapshot)
+    )
+    with pytest.raises(TypeError, match="ResumeInput"):
+        await anext(iterator)
+
+
+@pytest.mark.asyncio
+async def test_resume_input_appends_messages_and_matches_expected_pause() -> None:
+    controller = PauseController()
+    controller.request_pause(
+        reason="external_callback",
+        source="tool",
+        wait_id="job-1",
+        metadata={"tenant": "acme"},
+    )
+    paused = await AgentLoop(model=ScriptedModel([ModelResponse.text("unused")])).run(
+        [Message.user_text("start")],
+        pause_controller=controller,
+    )
+    model = RequestCapturingModel()
+
+    result = await AgentLoop(model=model).run_snapshot(
+        ResumeInput(
+            snapshot=paused.snapshot or raise_assertion(),
+            append_messages=[Message.user_text("callback complete")],
+            expected_pause=PauseSelector(
+                source="tool", wait_id="job-1", metadata={"tenant": "acme"}
+            ),
+            metadata={"resumed_by": "test"},
+        )
+    )
+
+    assert result.status is AgentStatus.COMPLETED
+    assert model.request is not None
+    assert [message.text for message in model.request.messages] == [
+        "start",
+        "callback complete",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_controller_pause_source_tool_replays_as_control_origin() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause", source="tool", wait_id="job-1")
+
+    result = await AgentLoop(model=ScriptedModel([ModelResponse.text("unused")])).run(
+        [Message.user_text("start")],
+        pause_controller=controller,
+    )
+
+    assert result.status is AgentStatus.PAUSED
+    assert result.trace is not None
+    pause_steps = [
+        step for step in result.trace.steps if step.kind == TraceStepKinds.PAUSE_REQUESTED
+    ]
+    assert pause_steps[-1].payload["origin"] == "control"
+    assert replay_trace(result.trace).final_status is AgentStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_resume_input_rejects_append_messages_when_resuming_pending_tools() -> None:
+    paused = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="call-1", name="wait", arguments={"wait_id": "job-1"}),
+                        ToolCall(id="call-2", name="echo", arguments={"text": "after"}),
+                    ]
+                )
+            ]
+        ),
+        tools=[WaitingTool(), EchoTool()],
+    ).run([Message.user_text("start")])
+
+    assert paused.snapshot is not None
+    assert paused.snapshot.state.status is AgentStatus.PAUSED
+    assert paused.snapshot.state.pause is not None
+    assert paused.snapshot.state.pause.resume_status is AgentStatus.EXECUTING_TOOLS
+    with pytest.raises(ValueError, match="resumes to planning"):
+        ResumeInput(
+            snapshot=paused.snapshot,
+            append_messages=[Message.user_text("callback complete")],
+        )
+
+
+def test_resume_input_rejects_inconsistent_pending_tool_snapshots() -> None:
+    pending_call = ToolCall(id="call-1", name="echo", arguments={})
+    second_pending_call = ToolCall(id="call-2", name="echo", arguments={})
+
+    with pytest.raises(ValueError, match="planning.*pending tool calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PLANNING,
+                    messages=[Message.user_text("start")],
+                    pending_tool_calls=[pending_call],
+                ),
+                context=RuntimeContext(run_id="planning-pending"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="executing_tools.*pending tool calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.EXECUTING_TOOLS,
+                    messages=[Message.user_text("start")],
+                ),
+                context=RuntimeContext(run_id="executing-empty"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="matching tool messages"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PLANNING,
+                    messages=[
+                        Message.user_text("start"),
+                        Message.assistant([], tool_calls=[pending_call]),
+                    ],
+                ),
+                context=RuntimeContext(run_id="planning-orphan-tool-call"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="preceding assistant tool_calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PLANNING,
+                    messages=[
+                        Message.user_text("start"),
+                        Message.tool_text("orphan", tool_call_id="call-1"),
+                    ],
+                ),
+                context=RuntimeContext(run_id="planning-orphan-tool-message"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="assistant tool_calls history"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.EXECUTING_TOOLS,
+                    messages=[Message.user_text("start")],
+                    pending_tool_calls=[pending_call],
+                ),
+                context=RuntimeContext(run_id="executing-orphan-pending"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="contiguous tool messages"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.EXECUTING_TOOLS,
+                    messages=[
+                        Message.user_text("start"),
+                        Message.assistant([], tool_calls=[pending_call]),
+                        Message.user_text("interleaved"),
+                    ],
+                    pending_tool_calls=[pending_call],
+                ),
+                context=RuntimeContext(run_id="executing-interleaved-pending"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="tool call order"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PLANNING,
+                    messages=[
+                        Message.user_text("start"),
+                        Message.assistant(
+                            [],
+                            tool_calls=[pending_call, second_pending_call],
+                        ),
+                        Message.tool_text("second", tool_call_id="call-2"),
+                        Message.tool_text("first", tool_call_id="call-1"),
+                    ],
+                ),
+                context=RuntimeContext(run_id="planning-tool-message-order-mismatch"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="unresolved assistant tool calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.EXECUTING_TOOLS,
+                    messages=[
+                        Message.user_text("start"),
+                        Message.assistant(
+                            [],
+                            tool_calls=[pending_call, second_pending_call],
+                        ),
+                        Message.tool_text("first", tool_call_id="call-1"),
+                    ],
+                    pending_tool_calls=[pending_call],
+                ),
+                context=RuntimeContext(run_id="executing-pending-suffix-mismatch"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="preceding assistant tool_calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.EXECUTING_TOOLS,
+                    messages=[
+                        Message.user_text("start"),
+                        Message.tool_text("orphan", tool_call_id="orphan-call"),
+                        Message.assistant([], tool_calls=[pending_call]),
+                    ],
+                    pending_tool_calls=[pending_call],
+                ),
+                context=RuntimeContext(run_id="executing-mixed-orphan-tool-message"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="resumes to planning.*pending tool calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PAUSED,
+                    messages=[Message.user_text("start")],
+                    pending_tool_calls=[pending_call],
+                    pause=PauseState(
+                        reason="manual_pause",
+                        resume_status=AgentStatus.PLANNING,
+                    ),
+                ),
+                context=RuntimeContext(run_id="paused-planning-pending"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="contiguous tool messages"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PAUSED,
+                    messages=[
+                        Message.user_text("start"),
+                        Message.assistant([], tool_calls=[pending_call]),
+                    ],
+                    pause=PauseState(
+                        reason="manual_pause",
+                        resume_status=AgentStatus.PLANNING,
+                    ),
+                ),
+                context=RuntimeContext(run_id="paused-planning-orphan-tool-call"),
+            ),
+            append_messages=[Message.user_text("callback complete")],
+        )
+
+    with pytest.raises(ValueError, match="preceding assistant tool_calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PAUSED,
+                    messages=[Message.user_text("start")],
+                    pause=PauseState(
+                        reason="manual_pause",
+                        resume_status=AgentStatus.PLANNING,
+                    ),
+                ),
+                context=RuntimeContext(run_id="paused-planning-append-orphan-tool-message"),
+            ),
+            append_messages=[Message.tool_text("orphan", tool_call_id="call-1")],
+        )
+
+    with pytest.raises(ValueError, match="resumes to executing_tools.*pending tool calls"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PAUSED,
+                    messages=[Message.user_text("start")],
+                    pause=PauseState(
+                        reason="external_wait",
+                        resume_status=AgentStatus.EXECUTING_TOOLS,
+                        source="tool",
+                        wait_id="job-1",
+                    ),
+                ),
+                context=RuntimeContext(run_id="paused-executing-empty"),
+            )
+        )
+
+    with pytest.raises(ValueError, match="assistant tool_calls history"):
+        ResumeInput(
+            snapshot=RunSnapshot(
+                state=AgentState(
+                    status=AgentStatus.PAUSED,
+                    messages=[Message.user_text("start")],
+                    pending_tool_calls=[pending_call],
+                    pause=PauseState(
+                        reason="external_wait",
+                        resume_status=AgentStatus.EXECUTING_TOOLS,
+                        source="tool",
+                        wait_id="job-1",
+                    ),
+                ),
+                context=RuntimeContext(run_id="paused-executing-orphan-pending"),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_resume_input_rejects_unexpected_pause() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause", wait_id="pause-1")
+    paused = await AgentLoop(model=ScriptedModel([ModelResponse.text("unused")])).run(
+        [Message.user_text("start")],
+        pause_controller=controller,
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        ResumeInput(
+            snapshot=paused.snapshot or raise_assertion(),
+            expected_pause=PauseSelector(wait_id="other"),
+        )
+
+
+def test_resume_input_rejects_unknown_fields_and_empty_selector_text() -> None:
+    snapshot = RunSnapshot(
+        state=AgentState(status=AgentStatus.PLANNING, messages=[Message.user_text("finish")]),
+        context=RuntimeContext(run_id="snapshot-run"),
+    )
+    payload = ResumeInput(snapshot=snapshot).to_dict()
+    payload["legacy"] = True
+
+    with pytest.raises(ValueError, match="unknown"):
+        ResumeInput.from_dict(payload)
+    with pytest.raises(ValueError, match="reason"):
+        PauseSelector(reason="")
+    with pytest.raises(ValueError, match="source"):
+        PauseSelector(source="")
+
+
+@pytest.mark.asyncio
+async def test_result_trace_replays_completed_run() -> None:
+    result = await AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run(
+        [Message.user_text("finish")]
+    )
+
+    assert result.trace is not None
+    replay = replay_trace(result.trace)
+    assert replay.valid is True
+    assert replay.final_status is AgentStatus.COMPLETED
+    assert [step.kind for step in result.trace.steps][-4:] == [
+        TraceStepKinds.STATE_CHANGED,
+        TraceStepKinds.CHECKPOINT,
+        TraceStepKinds.FINAL,
+        TraceStepKinds.RUN_COMPLETED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_trace_starts_with_resume_step() -> None:
+    controller = PauseController()
+    controller.request_pause(reason="manual_pause")
+    paused = await AgentLoop(model=ScriptedModel([ModelResponse.text("unused")])).run(
+        [Message.user_text("start")],
+        pause_controller=controller,
+    )
+
+    result = await AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run_snapshot(
+        ResumeInput(snapshot=paused.snapshot or raise_assertion())
+    )
+
+    assert result.trace is not None
+    assert [step.kind for step in result.trace.steps[:2]] == [
+        TraceStepKinds.RESUME,
+        TraceStepKinds.RUN_STARTED,
+    ]
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -1484,22 +3299,22 @@ async def test_transition_hook_cannot_mutate_live_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_after_model_hook_reserved_extra_is_rejected() -> None:
+async def test_after_model_hook_invalid_response_is_rejected() -> None:
     result = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("done")]),
         hooks=[BadAfterModelHook()],
     ).run([Message.user_text("hello")])
 
     assert result.status is AgentStatus.FAILED
-    assert "reserved" in (result.error or "")
+    assert "finish_reason" in (result.error or "")
 
 
 @pytest.mark.asyncio
-async def test_model_completed_event_is_not_emitted_if_assistant_message_commit_fails() -> None:
+async def test_model_completed_event_is_not_emitted_if_after_model_result_is_invalid() -> None:
     events = await collect_events(
         AgentLoop(
             model=ScriptedModel([ModelResponse.text("done")]),
-            hooks=[BadModelResponseExtraHook()],
+            hooks=[BadModelResponseShapeHook()],
         ),
         [Message.user_text("hello")],
     )
@@ -1509,7 +3324,7 @@ async def test_model_completed_event_is_not_emitted_if_assistant_message_commit_
 
 
 @pytest.mark.asyncio
-async def test_after_tool_hook_reserved_extra_is_rejected() -> None:
+async def test_after_tool_hook_invalid_result_is_rejected() -> None:
     model = ScriptedModel(
         [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "x"})])]
     )
@@ -1520,16 +3335,16 @@ async def test_after_tool_hook_reserved_extra_is_rejected() -> None:
     ).run([Message.user_text("hello")])
 
     assert result.status is AgentStatus.FAILED
-    assert "reserved" in (result.error or "")
+    assert "is_error" in (result.error or "")
 
 
 @pytest.mark.asyncio
-async def test_tool_completed_event_is_not_emitted_if_tool_message_commit_fails() -> None:
+async def test_tool_completed_event_is_not_emitted_if_after_tool_result_is_invalid() -> None:
     model = ScriptedModel(
         [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "x"})])]
     )
     events = await collect_events(
-        AgentLoop(model=model, tools=[EchoTool()], hooks=[BadToolResultExtraHook()]),
+        AgentLoop(model=model, tools=[EchoTool()], hooks=[BadToolResultShapeHook()]),
         [Message.user_text("hello")],
     )
 
@@ -1559,15 +3374,56 @@ async def test_before_tool_argument_rewrite_updates_assistant_history() -> None:
 
 
 @pytest.mark.asyncio
-async def test_event_replacement_cannot_change_runtime_envelope() -> None:
+async def test_event_replacement_cannot_change_core_runtime_events() -> None:
     events = await collect_events(
-        AgentLoop(model=ScriptedModel([ModelResponse.text("done")]), hooks=[ReplacingEventHook()]),
+        AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[ReplacingEventHook()],
+        ),
         [Message.user_text("hello")],
     )
-    renamed = next(event for event in events if event.type == "renamed_model_started")
 
-    assert renamed.run_id != "bad"
-    assert renamed.sequence == 2
+    assert "renamed_model_started" not in [event.type for event in events]
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_hook_emitted_events_cannot_use_core_event_types() -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[CoreEventEmittingHook()],
+        ),
+        [Message.user_text("hello")],
+    )
+
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_custom_hook_events_do_not_pollute_runtime_trace() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RewritingHook()],
+    ).run([Message.user_text("hello")])
+
+    assert result.trace is not None
+    assert "custom_progress" not in [step.kind for step in result.trace.steps]
+    model_call_events = [
+        step.references["event_type"]
+        for step in result.trace.steps
+        if step.kind == TraceStepKinds.MODEL_CALL
+    ]
+    assert model_call_events == [EventTypes.MODEL_STARTED]
+    model_result_events = [
+        step.references["event_type"]
+        for step in result.trace.steps
+        if step.kind == TraceStepKinds.MODEL_RESULT
+    ]
+    assert model_result_events == [EventTypes.MODEL_COMPLETED]
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -1593,7 +3449,6 @@ async def test_event_order_is_stable() -> None:
         EventTypes.CHECKPOINT,
         EventTypes.TOOL_STARTED,
         EventTypes.TOOL_COMPLETED,
-        EventTypes.CHECKPOINT,
         EventTypes.STATE_CHANGED,
         EventTypes.CHECKPOINT,
         EventTypes.MODEL_STARTED,

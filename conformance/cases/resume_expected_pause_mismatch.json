@@ -1,0 +1,32 @@
+{
+  "name": "resume_expected_pause_mismatch",
+  "case_type": "resume",
+  "pause_request": {
+    "reason": "manual_pause",
+    "source": "host",
+    "wait_id": "pause-1",
+    "metadata": {},
+    "interrupt": false
+  },
+  "model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "unused"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 0,
+  "resume_checkpoint_status": "paused",
+  "resume_expected_pause": {
+    "reason": "manual_pause",
+    "source": "host",
+    "wait_id": "other",
+    "metadata": {}
+  },
+  "expected_resume_error": "does not match"
+}

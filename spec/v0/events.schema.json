@@ -13,7 +13,8 @@
       "type": "object"
     },
     "run_id": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "sequence": {
       "type": "integer",
@@ -23,10 +24,50 @@
       "type": "number"
     },
     "schema_version": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "run_started" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/run_state_summary_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "state_changed" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/state_changed_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "model_started" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/model_started_data" }
+        }
+      }
+    },
     {
       "if": {
         "properties": {
@@ -39,9 +80,418 @@
           "data": { "$ref": "#/$defs/model_delta_data" }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "model_completed" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/model_completed_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "tool_started" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/tool_started_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "tool_completed" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/tool_completed_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "pause_requested" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/pause_requested_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "checkpoint" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "run-snapshot.schema.json" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "final" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/final_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "error" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/error_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "run_paused" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/run_paused_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "run_completed" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/run_state_summary_data" }
+        }
+      }
     }
   ],
   "$defs": {
+    "status": {
+      "type": "string",
+      "enum": ["planning", "executing_tools", "paused", "completed", "failed", "limit_exceeded"]
+    },
+    "content_summary": {
+      "type": "object",
+      "required": ["part_count", "part_types", "text_length"],
+      "properties": {
+        "part_count": { "type": "integer", "minimum": 0 },
+        "part_types": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "text_length": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "output_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "total_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "reasoning_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cache_read_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "cache_write_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "pause_state": {
+      "type": "object",
+      "required": ["reason", "resume_status", "source", "wait_id", "metadata"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "resume_status": { "type": "string", "enum": ["planning", "executing_tools"] },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "pause_request": {
+      "type": "object",
+      "required": ["reason", "source", "wait_id", "metadata", "interrupt"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata": { "type": "object" },
+        "interrupt": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "tool_pause_request": {
+      "type": "object",
+      "required": ["reason", "source", "wait_id", "metadata", "interrupt"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata": { "type": "object" },
+        "interrupt": { "const": false }
+      },
+      "additionalProperties": false
+    },
+    "pause_requested_data": {
+      "type": "object",
+      "required": ["request", "resume_status", "origin"],
+      "properties": {
+        "request": { "$ref": "#/$defs/pause_request" },
+        "resume_status": { "type": "string", "enum": ["planning", "executing_tools"] },
+        "origin": { "type": "string", "enum": ["control", "tool_result"] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "origin": { "const": "tool_result" } },
+            "required": ["origin"]
+          },
+          "then": {
+            "properties": {
+              "request": { "$ref": "#/$defs/tool_pause_request" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "run_paused_data": {
+      "type": "object",
+      "required": ["pause"],
+      "properties": {
+        "pause": { "$ref": "#/$defs/pause_state" }
+      },
+      "additionalProperties": false
+    },
+    "state_summary": {
+      "type": "object",
+      "required": [
+        "status",
+        "message_count",
+        "message_roles",
+        "pending_tool_call_count",
+        "pending_tool_call_ids",
+        "iterations",
+        "total_tool_calls",
+        "has_final",
+        "final_part_count",
+        "error",
+        "pause"
+      ],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "message_count": { "type": "integer", "minimum": 0 },
+        "message_roles": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "pending_tool_call_count": { "type": "integer", "minimum": 0 },
+        "pending_tool_call_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "iterations": { "type": "integer", "minimum": 0 },
+        "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "has_final": { "type": "boolean" },
+        "final_part_count": { "type": "integer", "minimum": 0 },
+        "error": { "type": ["string", "null"] },
+        "pause": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/pause_state" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "final_part_count": { "const": 0 } },
+            "required": ["final_part_count"]
+          },
+          "then": { "properties": { "has_final": { "const": false } } }
+        },
+        {
+          "if": {
+            "properties": { "final_part_count": { "minimum": 1 } },
+            "required": ["final_part_count"]
+          },
+          "then": { "properties": { "has_final": { "const": true } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "run_state_summary_data": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "$ref": "#/$defs/state_summary" }
+      },
+      "additionalProperties": false
+    },
+    "state_changed_data": {
+      "type": "object",
+      "required": ["from", "to", "iterations", "total_tool_calls", "error", "pause"],
+      "properties": {
+        "from": { "$ref": "#/$defs/status" },
+        "to": { "$ref": "#/$defs/status" },
+        "iterations": { "type": "integer", "minimum": 0 },
+        "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "error": { "type": ["string", "null"] },
+        "pause": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/pause_state" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "model_started_data": {
+      "type": "object",
+      "required": ["iteration"],
+      "properties": {
+        "iteration": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "model_completed_data": {
+      "type": "object",
+      "required": ["part_count", "part_types", "text_length", "tool_call_count", "has_tool_calls"],
+      "properties": {
+        "part_count": { "type": "integer", "minimum": 0 },
+        "part_types": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "text_length": { "type": "integer", "minimum": 0 },
+        "tool_call_count": { "type": "integer", "minimum": 0 },
+        "has_tool_calls": { "type": "boolean" },
+        "finish_reason": { "type": "string", "minLength": 1 },
+        "usage": { "$ref": "#/$defs/usage" },
+        "model": { "type": "string", "minLength": 1 },
+        "response_id": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "tool_call_count": { "const": 0 } },
+            "required": ["tool_call_count"]
+          },
+          "then": { "properties": { "has_tool_calls": { "const": false } } }
+        },
+        {
+          "if": {
+            "properties": { "tool_call_count": { "minimum": 1 } },
+            "required": ["tool_call_count"]
+          },
+          "then": { "properties": { "has_tool_calls": { "const": true } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "tool_started_data": {
+      "type": "object",
+      "required": ["id", "name", "arguments", "batch_id", "parallel", "index"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "object" },
+        "batch_id": { "type": "string", "minLength": 1 },
+        "parallel": { "type": "boolean" },
+        "index": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "tool_result_summary": {
+      "type": "object",
+      "required": ["part_count", "part_types", "text_length", "is_error", "metadata", "pause"],
+      "properties": {
+        "part_count": { "type": "integer", "minimum": 0 },
+        "part_types": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "text_length": { "type": "integer", "minimum": 0 },
+        "is_error": { "type": "boolean" },
+        "metadata": { "type": "object" },
+        "pause": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/tool_pause_request" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "tool_completed_data": {
+      "type": "object",
+      "required": ["id", "name", "batch_id", "parallel", "index", "result"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "batch_id": { "type": "string", "minLength": 1 },
+        "parallel": { "type": "boolean" },
+        "index": { "type": "integer", "minimum": 0 },
+        "result": { "$ref": "#/$defs/tool_result_summary" }
+      },
+      "additionalProperties": false
+    },
+    "final_data": {
+      "type": "object",
+      "required": ["parts", "summary"],
+      "properties": {
+        "parts": {
+          "type": "array",
+          "items": { "$ref": "messages.schema.json#/$defs/content_part" }
+        },
+        "summary": { "$ref": "#/$defs/content_summary" }
+      },
+      "additionalProperties": false
+    },
+    "error_data": {
+      "type": "object",
+      "required": ["status", "message"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "model_delta_data": {
       "oneOf": [
         { "$ref": "#/$defs/text_delta" },
@@ -60,7 +510,7 @@
         "part_type": { "type": "string", "minLength": 1 },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "tool_call_delta": {
       "type": "object",
@@ -73,7 +523,7 @@
         "arguments_delta": { "type": "string" },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "reasoning_delta": {
       "type": "object",
@@ -84,7 +534,7 @@
         "text_delta": { "type": "string" },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     },
     "usage_delta": {
       "type": "object",
@@ -102,12 +552,12 @@
             "cache_write_tokens": { "type": ["integer", "null"], "minimum": 0 },
             "metadata": { "type": "object" }
           },
-          "additionalProperties": true
+          "additionalProperties": false
         },
         "metadata": { "type": "object" }
       },
-      "additionalProperties": true
+      "additionalProperties": false
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }
