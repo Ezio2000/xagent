@@ -28,28 +28,92 @@ When `resume` is present:
 Replay validators must validate a trace without calling live models or tools.
 Recorded model and tool results are inputs to replay; they are not regenerated.
 
-Replay must validate:
+Replay must validate the invariants below. A JSON-valid trace that violates any
+of these rules is semantically invalid.
+
+### Status And Step Invariants
 
 - status transitions match the state machine;
 - each `state_changed.before_status` matches the current replay status;
+- each `state_changed` payload `from` and `to` value matches the step
+  `before_status` and `after_status`;
+- after `run_started` establishes the replay status, each non-transition step
+  with `before_status` or `after_status` preserves the current replay status;
 - `planning` may transition only to `executing_tools`, `paused`,
   `completed`, `failed`, or `limit_exceeded`;
 - `executing_tools` may transition only to `planning`, `paused`, `failed`, or
   `limit_exceeded`;
+- `run_started` establishes the initial replay status and must report the same
+  status in its payload;
+- `resume`, when present, restores only `planning` or `executing_tools`, and
+  its restored status must match the following `run_started`.
+
+### Model Invariants
+
 - `model_call`, `model_delta`, and `model_result` occur only while `planning`,
   and model deltas/results must belong to an open model call;
 - `planning -> completed` and `planning -> executing_tools` transitions require
   a preceding, closed `model_result` after the last planning checkpoint;
+- `planning -> completed` requires a `model_result` with zero tool calls;
+- `planning -> executing_tools` requires a `model_result` with at least one tool
+  call;
+- after `planning -> executing_tools`, the next checkpoint of any status must
+  report `pending_tool_call_ids` whose count matches the preceding
+  `model_result.tool_call_count`;
+- no `tool_call` step may appear before that checkpoint obligation has been
+  satisfied. This includes a host pause that converts the first durable boundary
+  into a `paused` checkpoint instead of an `executing_tools` checkpoint;
+- compact `model_result.has_tool_calls` must equal
+  `model_result.tool_call_count > 0`.
+
+### Tool Invariants
+
 - `tool_call` and `tool_result` occur only while `executing_tools`, and each
   tool result must match an open tool call;
+- a tool call id must not be opened twice in the same execution segment;
+- if `pending_tool_call_ids` are known from the last checkpoint, every
+  `tool_call` must belong to that pending set;
+- parallel tool results may be recorded in completion order, but the set of
+  completed result ids must match the pending calls before the runtime returns
+  from `executing_tools` to `planning`;
 - `executing_tools -> planning` transitions require a preceding, closed
   `tool_result` after the last executing-tools checkpoint;
-- a completed trace must not leave a model call or tool call open;
+- `executing_tools -> planning` must leave no open tool calls and must have
+  observed all pending tool results for the current execution segment;
+- if a tool result carries a pause request, that request must be applied before
+  returning to `planning`.
+
+### Checkpoint And Accounting Invariants
+
+- a trace whose final status is `completed` must not leave a model call or tool
+  call open;
 - each `checkpoint` status matches the current replay status;
 - paused checkpoints include pause payloads;
 - non-paused checkpoints do not include pause payloads;
 - the last checkpoint status matches the invocation-terminal status;
+- `checkpoint.message_count` must not advance durable history after a
+  `model_delta` unless a complete `model_result` has been recorded;
+- `pending_tool_call_ids` in compact checkpoint state must be unique;
+- `final.part_count` must match the final-part count in the completed
+  checkpoint;
+- `total_tool_calls` must not decrease across reported states;
+- `total_tool_calls` must not exceed the baseline from `run_started` plus the
+  number of observed `tool_result` steps;
+- at each successful commit boundary `executing_tools -> planning`,
+  `total_tool_calls` must exactly equal that baseline plus every `tool_result`
+  observed so far in the invocation;
+- paused, failed, or limit-exceeded traces may report fewer committed tool
+  calls than observed `tool_result` steps when those results were not followed
+  by a successful durable commit boundary.
+
+### Terminal Invariants
+
 - traces end with `run_completed`;
+- `run_completed` must be the final trace step and must report the current
+  invocation-terminal status when it carries a state summary;
+- `final` is valid only after `completed`;
+- `error` is valid only after an invocation-terminal state and its status must
+  match that state;
 - `pause_requested.origin` determines whether replay should match a controller
   pause (`control`) or a pause-bearing tool result (`tool_result`);
 - completed runs end with `state_changed`, `checkpoint`, `final`,
@@ -61,6 +125,12 @@ Replay must validate:
 - failed and limit-exceeded runs end with `state_changed`, `checkpoint`,
   `error`, `run_completed`, except that post-terminal hook failure may append a
   second `error` before `run_completed`.
+
+Paused traces may come from interrupted in-flight model activity, and failed or
+limit-exceeded traces may come from interrupted in-flight model or tool
+activity. Replay validators still require a terminal checkpoint, but they must
+not require paused, failed, or limit-exceeded traces to satisfy the same
+no-open-call rule as `completed` traces.
 
 ## Streaming
 

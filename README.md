@@ -120,10 +120,11 @@ checkpoint state, message wire fields, or trace replay data.
 
 - `spec/v0`: cross-language contracts for state, messages, events, tools,
   limits, snapshots, resume input, run control, run trace, model requests, model
-  responses, model errors, and streaming.
-- `conformance/cases`: shared behavior cases every SDK should pass.
+  responses, model errors, and streaming. Start with `spec/v0/README.md`.
+- `conformance/cases`: shared behavior cases every SDK should pass. Case types
+  and expectations are documented in `conformance/README.md`.
 - `docs`: design notes for architecture, event streams, state machine, model
-  protocol, and tool protocol.
+  protocol, tool protocol, and public API audit decisions.
 - `sdks/python`: reference SDK implementation managed with `uv`.
 - `sdks/typescript`: reserved TypeScript SDK location.
 - `sdks/go`: reserved Go SDK location.
@@ -169,9 +170,13 @@ uv run python - <<'PY'
 import json
 from pathlib import Path
 
+from jsonschema import Draft202012Validator
+
 for root in ["../../spec/v0", "../../conformance/cases"]:
     for path in sorted(Path(root).glob("*.json")):
-        json.loads(path.read_text())
+        data = json.loads(path.read_text())
+        if path.name.endswith(".schema.json"):
+            Draft202012Validator.check_schema(data)
 print("json ok")
 PY
 ```

@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-from agent_runtime import AgentEvent, EventEmitter, EventTypes
+from agent_runtime import AgentEvent, EventEmitter, EventTypes, QueuedEvent
 
 
 def test_event_to_dict() -> None:
@@ -55,6 +55,16 @@ def test_event_emitter_rejects_core_event_types() -> None:
 
     with pytest.raises(ValueError, match="runtime-owned"):
         emitter.emit(EventTypes.CHECKPOINT, {})
+
+
+def test_event_emitter_drains_queued_events() -> None:
+    emitter = EventEmitter()
+    emitter.emit("custom_progress", {"phase": "model"})
+
+    events = emitter.drain()
+
+    assert events == (QueuedEvent("custom_progress", {"phase": "model"}),)
+    assert emitter.drain() == ()
 
 
 def test_event_data_is_defensively_copied() -> None:

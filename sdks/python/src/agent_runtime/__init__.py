@@ -11,7 +11,7 @@ from agent_runtime.errors import (
     ModelProviderError,
     ToolError,
 )
-from agent_runtime.events import AgentEvent, EventEmitter, EventType, EventTypes
+from agent_runtime.events import AgentEvent, EventEmitter, EventType, EventTypes, QueuedEvent
 from agent_runtime.hooks import RuntimeHook
 from agent_runtime.limits import LoopLimits
 from agent_runtime.loop import AgentLoop, AgentResult
@@ -88,6 +88,7 @@ __all__ = [
     "PauseRequest",
     "PauseSelector",
     "PauseState",
+    "QueuedEvent",
     "ReplayError",
     "ReplayResult",
     "ResponseFormat",
