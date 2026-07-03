@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import pytest
 
+import agent_runtime.tools as tools_module
 from agent_runtime import (
     ContentPart,
     DuplicateToolError,
@@ -347,6 +348,26 @@ async def test_tool_registry_validates_arguments_against_input_schema() -> None:
         await ToolRegistry([tool]).invoke(call, RuntimeContext())
 
     assert tool.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_reuses_cached_input_schema_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ToolRegistry([StrictCountTool()])
+
+    def fail_validator(schema: object) -> Any:
+        _ = schema
+        raise AssertionError("validator must be cached at registration")
+
+    monkeypatch.setattr(tools_module, "Draft202012Validator", fail_validator)
+
+    result = await registry.invoke(
+        ToolCall(id="call-1", name="strict_count", arguments={"count": 3}),
+        RuntimeContext(),
+    )
+
+    assert result.text_content == "3"
 
 
 @pytest.mark.asyncio

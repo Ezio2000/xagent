@@ -574,13 +574,17 @@ class InvocableTool(Tool, Protocol):
 class ToolRegistry:
     """O(1) tool lookup with cached model-neutral specs."""
 
-    __slots__ = ("_specs", "_tools")
+    __slots__ = ("_argument_validators", "_specs", "_specs_by_name", "_tools")
 
+    _argument_validators: dict[str, Any]
     _specs: tuple[ToolSpec, ...]
+    _specs_by_name: dict[str, ToolSpec]
     _tools: dict[str, Tool]
 
     def __init__(self, tools: Sequence[Tool] | None = None) -> None:
         self._tools: dict[str, Tool] = {}
+        self._specs_by_name: dict[str, ToolSpec] = {}
+        self._argument_validators: dict[str, Any] = {}
         specs: list[ToolSpec] = []
         if tools:
             for tool in tools:
@@ -595,21 +599,24 @@ class ToolRegistry:
         return tuple(ToolSpec.from_dict(spec.to_dict()) for spec in self._specs)
 
     def spec_for(self, name: str) -> ToolSpec | None:
-        for spec in self._specs:
-            if spec.name == name:
-                return ToolSpec.from_dict(spec.to_dict())
+        spec = self._specs_by_name.get(name)
+        if spec is not None:
+            return ToolSpec.from_dict(spec.to_dict())
         return None
 
     async def invoke(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
         tool = self._tools.get(call.name)
         if tool is None:
             raise InvalidToolCall(f"unknown tool: {call.name}")
-        spec = self.spec_for(call.name)
+        spec = self._specs_by_name.get(call.name)
         if spec is None:
             raise InvalidToolCall(f"unknown tool: {call.name}")
         if not spec.supports(call.mode):
             raise InvalidToolCall(f"tool {call.name} does not support {call.mode} mode")
-        self._validate_arguments(spec, call)
+        validator = self._argument_validators.get(call.name)
+        if validator is None:
+            raise InvalidToolCall(f"unknown tool: {call.name}")
+        self._validate_arguments(validator, call)
 
         invocation = ToolInvocation.from_tool_call(call)
         tool_context = ToolExecutionContext.from_runtime_context(context)
@@ -673,13 +680,15 @@ class ToolRegistry:
         if custom_modes and not callable(getattr(tool, "invoke", None)):
             modes = ", ".join(sorted(custom_modes))
             raise TypeError(f"tool {spec.name} declares custom mode(s) without invoke: {modes}")
+        validator = _build_json_schema_validator(spec.input_schema)
         self._tools[spec.name] = tool
+        self._specs_by_name[spec.name] = spec
+        self._argument_validators[spec.name] = validator
         return spec
 
     @staticmethod
-    def _validate_arguments(spec: ToolSpec, call: ToolCall) -> None:
+    def _validate_arguments(validator: Any, call: ToolCall) -> None:
         try:
-            validator = cast(Any, Draft202012Validator(spec.input_schema))
             validator.validate(dict(call.arguments))
         except ValidationError as exc:
             raise InvalidToolCall(
@@ -696,3 +705,7 @@ def _validate_json_schema(schema: Mapping[str, Any], label: str) -> None:
         Draft202012Validator.check_schema(schema)
     except SchemaError as exc:
         raise ValueError(f"{label} must be a valid JSON Schema: {exc.message}") from exc
+
+
+def _build_json_schema_validator(schema: Mapping[str, Any]) -> Any:
+    return cast(Any, Draft202012Validator(schema))

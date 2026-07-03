@@ -38,6 +38,11 @@ Raw durable metadata is limited to explicit host-owned fields such as
 `RuntimeContext.metadata`, pause metadata, and resume metadata. Model and tool
 provider metadata is not copied into durable message history or trace payloads.
 
+The Python reference SDK treats JSON Schema validation as a core runtime
+dependency. It uses `jsonschema` to validate portable tool contracts and
+tool-call arguments before invoking tool implementations; this is runtime
+contract enforcement, not a provider adapter or conformance-only concern.
+
 Runtime hooks are invoked inside the active run deadline. Async hooks are
 awaited directly. Sync hooks in the Python reference SDK run in a worker thread
 so they do not block the event loop; if the run times out or is cancelled, the
