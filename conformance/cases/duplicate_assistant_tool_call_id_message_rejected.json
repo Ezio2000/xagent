@@ -1,0 +1,27 @@
+{
+  "name": "duplicate_assistant_tool_call_id_message_rejected",
+  "case_type": "message_negative",
+  "message": {
+    "role": "assistant",
+    "parts": [],
+    "tool_calls": [
+      {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "arguments": {
+          "text": "first"
+        }
+      },
+      {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "arguments": {
+          "text": "second"
+        }
+      }
+    ]
+  },
+  "expected_error": "unique"
+}

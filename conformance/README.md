@@ -3,8 +3,8 @@
 `conformance/cases` contains portable behavior fixtures for every SDK. Cases are
 JSON objects. Unknown keys are invalid so misspelled expectations fail early.
 
-`case_type` defaults to `run`. Current case types are `run`, `resume`, and
-`model_response_negative`.
+`case_type` defaults to `run`. Current case types are `run`, `resume`,
+`model_response_negative`, and `message_negative`.
 
 Run the Python reference runner from `sdks/python`:
 
@@ -26,8 +26,8 @@ A non-Python runner should provide the same deterministic harness:
 
 - Load every `*.json` case in sorted order and reject unknown keys.
 - Validate fixture fields that map to v0 schemas, plus runner-specific field
-  checks. During execution, validate emitted events, snapshots, resume input,
-  and traces against the v0 schemas.
+  checks. During execution, validate emitted events, snapshots, result messages,
+  resume input, and traces against the v0 schemas.
 - Convert `model_steps` and `resume_model_steps` into scripted model responses.
 - Emit stream events from `stream_model_steps` when the case requests streaming.
 - Provide the standard conformance tools: `echo`, `accept`, `fail`, `delayed_echo`,
@@ -37,6 +37,8 @@ A non-Python runner should provide the same deterministic harness:
   resuming through the SDK's resume-input value.
 - Execute `model_response_negative` cases by checking that the SDK rejects the
   schema-valid but semantically invalid model response.
+- Execute `message_negative` cases by checking that the SDK rejects the
+  schema-valid but semantically invalid message.
 - Assert every `expected_*` field and every `forbidden_*` field present in the
   case. Absence of an expectation means the runner should not assert it.
 
@@ -71,8 +73,9 @@ request must not be an interrupt, and their committed paused checkpoint is the
 durable resume boundary.
 
 When adding a new SDK, first make a minimal runner pass `final_only`,
-`one_tool_then_final`, and one `model_response_negative` case. Then broaden to
-resume, streaming, external wait, limits, and parallel scheduling cases.
+`one_tool_then_final`, one `model_response_negative` case, and one
+`message_negative` case. Then broaden to resume, streaming, external wait,
+limits, and parallel scheduling cases.
 
 ## Shared Conventions
 
@@ -239,6 +242,23 @@ Required keys:
 
 No other keys are allowed. Negative-only keys `model_response` and
 `expected_error` are invalid in `run` and `resume` cases.
+
+## `message_negative`
+
+`message_negative` cases validate portable message constructor rules that
+cannot be fully expressed in JSON Schema. The case's `message` must still match
+`messages.schema.json`, then the SDK must reject it with an error containing
+`expected_error`.
+
+Required keys:
+
+- `name`
+- `case_type`
+- `message`
+- `expected_error`
+
+No other keys are allowed. Negative-only keys `message` and `expected_error`
+are invalid in `run` and `resume` cases.
 
 ## Adding Cases
 

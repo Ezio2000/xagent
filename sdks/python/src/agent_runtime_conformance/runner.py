@@ -85,10 +85,11 @@ CASE_KEYS = {
     "forbidden_checkpoint_status_tool_counts",
     "forbidden_unpaused_checkpoint_tool_counts",
     "forbidden_checkpoint_message_roles",
+    "message",
     "model_response",
     "expected_error",
 }
-NEGATIVE_CASE_TYPES = {"model_response_negative"}
+NEGATIVE_CASE_TYPES = {"message_negative", "model_response_negative"}
 MODEL_STEP_RESPONSE_KEYS = {
     "parts",
     "tool_calls",
@@ -442,7 +443,7 @@ class ConformanceRunner:
         case_type = expect_case_str(case.get("case_type", "run"), f"{name}.case_type")
         if case_type not in {"run", "resume", *NEGATIVE_CASE_TYPES}:
             raise ValueError(f"{name} has invalid case_type")
-        if case_type in NEGATIVE_CASE_TYPES:
+        if case_type == "model_response_negative":
             for required in ("name", "model_response", "expected_error"):
                 if required not in case:
                     raise KeyError(f"{name} missing required key: {required}")
@@ -459,7 +460,24 @@ class ConformanceRunner:
                     f"{name} has invalid negative-case key(s): {', '.join(sorted(forbidden))}"
                 )
             return
-        negative_only_keys = {"model_response", "expected_error"} & set(case)
+        if case_type == "message_negative":
+            for required in ("name", "message", "expected_error"):
+                if required not in case:
+                    raise KeyError(f"{name} missing required key: {required}")
+            expect_case_str(case["name"], f"{name}.name")
+            expect_case_str(case["expected_error"], f"{name}.expected_error")
+            self.assert_matches_schema(
+                f"{name}.message",
+                self.validators.message,
+                cast(Mapping[str, Any], case["message"]),
+            )
+            forbidden = set(case) - {"name", "case_type", "message", "expected_error"}
+            if forbidden:
+                raise AssertionError(
+                    f"{name} has invalid negative-case key(s): {', '.join(sorted(forbidden))}"
+                )
+            return
+        negative_only_keys = {"message", "model_response", "expected_error"} & set(case)
         if negative_only_keys:
             raise AssertionError(
                 f"{name} has negative-only key(s): {', '.join(sorted(negative_only_keys))}"
@@ -551,7 +569,14 @@ class ConformanceRunner:
         ):
             self._validate_model_step(name, index, step, "resume_model_steps")
         raw_resume_messages = case.get("resume_append_messages", [])
-        for message in expect_case_list(raw_resume_messages, f"{name}.resume_append_messages"):
+        for index, message in enumerate(
+            expect_case_list(raw_resume_messages, f"{name}.resume_append_messages")
+        ):
+            self.assert_matches_schema(
+                f"{name}.resume_append_messages[{index}]",
+                self.validators.message,
+                message,
+            )
             Message.from_dict(message)
         if "resume_expected_pause" in case:
             raw_selector = case["resume_expected_pause"]
@@ -675,6 +700,18 @@ class ConformanceRunner:
                     ) from exc
                 return ConformanceCaseResult(name=name, case_type=case_type)
             raise AssertionError(f"{name} expected model response rejection")
+
+        if case_type == "message_negative":
+            try:
+                Message.from_dict(cast(Mapping[str, Any], case["message"]))
+            except (TypeError, ValueError, KeyError) as exc:
+                expected = expect_case_str(case["expected_error"], "expected_error")
+                if expected not in str(exc):
+                    raise AssertionError(
+                        f"{name} expected error containing {expected!r}, got {exc!r}"
+                    ) from exc
+                return ConformanceCaseResult(name=name, case_type=case_type)
+            raise AssertionError(f"{name} expected message rejection")
 
         if case_type == "resume":
             await self.assert_resume_conformance_case(case)
@@ -879,6 +916,26 @@ class ConformanceRunner:
                 "error must appear between terminal checkpoint and run_completed",
             )
 
+    def assert_result_schema_contracts(self, label: str, result: AgentResult) -> None:
+        for index, message in enumerate(result.messages):
+            self.assert_matches_schema(
+                f"{label} message[{index}]",
+                self.validators.message,
+                message.to_dict(),
+            )
+        if result.snapshot is not None:
+            self.assert_matches_schema(
+                f"{label} snapshot",
+                self.validators.run_snapshot,
+                result.snapshot.to_dict(),
+            )
+        if result.trace is not None:
+            self.assert_matches_schema(
+                f"{label} trace",
+                self.validators.run_trace,
+                result.trace.to_dict(),
+            )
+
     def assert_run_case_expectations(
         self,
         case: dict[str, Any],
@@ -891,11 +948,11 @@ class ConformanceRunner:
             result.total_tool_calls == case["expected_tool_calls"],
             f"expected {case['expected_tool_calls']} tool calls, got {result.total_tool_calls}",
         )
+        self.assert_result_schema_contracts("result", result)
         self.assert_event_stream_invariants(events, expected_status)
         trace = result.trace
         if trace is None:
             raise AssertionError("result trace is missing")
-        self.assert_matches_schema("run trace", self.validators.run_trace, trace.to_dict())
         check(
             replay_trace(trace).final_status is expected_status,
             "result trace final status mismatch",
@@ -927,12 +984,6 @@ class ConformanceRunner:
             missing_event = [kind for kind in expected_trace_kinds if kind not in event_kinds]
             check(not missing_result, f"result trace missing expected kind(s): {missing_result}")
             check(not missing_event, f"event trace missing expected kind(s): {missing_event}")
-        if result.snapshot is not None:
-            self.assert_matches_schema(
-                "result snapshot",
-                self.validators.run_snapshot,
-                result.snapshot.to_dict(),
-            )
         if "expected_message_roles" in case:
             snapshot = result.snapshot
             if snapshot is None:
@@ -1198,11 +1249,11 @@ class ConformanceRunner:
             resume_events[-1].data["state"]["total_tool_calls"] == expected_tool_calls,
             "resume run_completed total_tool_calls mismatch",
         )
+        self.assert_result_schema_contracts("resume result", result)
         self.assert_event_stream_invariants(resume_events, expected_status)
         trace = result.trace
         if trace is None:
             raise AssertionError("resume result trace is missing")
-        self.assert_matches_schema("resume run trace", self.validators.run_trace, trace.to_dict())
         check(
             replay_trace(trace).final_status is expected_status,
             "resume result trace final status mismatch",
@@ -1215,12 +1266,6 @@ class ConformanceRunner:
             replay_trace(resume_event_trace).final_status is expected_status,
             "resume event trace final status mismatch",
         )
-        if result.snapshot is not None:
-            self.assert_matches_schema(
-                "resume result snapshot",
-                self.validators.run_snapshot,
-                result.snapshot.to_dict(),
-            )
         if "expected_resume_trace_prefix" in case:
             actual_prefix = [step.kind for step in trace.steps][
                 : len(case["expected_resume_trace_prefix"])
