@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import time as time_module
-from collections.abc import AsyncIterator, Awaitable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from time import monotonic
 from time import time as wall_time
 from typing import Any, cast
@@ -42,8 +42,10 @@ from agent_runtime import (
     RuntimeHook,
     RunTrace,
     ToolAcceptance,
+    ToolBatch,
     ToolCall,
     ToolChoice,
+    ToolCompleted,
     ToolExecutionContext,
     ToolInvocation,
     ToolObservation,
@@ -52,6 +54,7 @@ from agent_runtime import (
     ToolRejection,
     ToolScheduler,
     ToolSpec,
+    ToolStarted,
     TraceStepKinds,
     replay_trace,
 )
@@ -873,6 +876,12 @@ class CoreEventEmittingHook(RuntimeHook):
             emitter.emit(EventTypes.MODEL_COMPLETED, {"summary": "host-emitted"})
 
 
+class RecursiveCustomEventHook(RuntimeHook):
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context
+        emitter.emit("recursive_custom_event", {"parent_type": event.type})
+
+
 class FailingQueuedEventAfterHook(RuntimeHook):
     def __init__(self, event_type: str) -> None:
         self.event_type = event_type
@@ -1002,6 +1011,42 @@ class BlockingAfterModelHook(RuntimeHook):
         _ = context
         time_module.sleep(0.05)
         return response
+
+
+class StandaloneSerialScheduler:
+    def __init__(self) -> None:
+        self.batch_count = 0
+
+    def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
+        if not calls:
+            return None
+        self.batch_count += 1
+        return ToolBatch(f"standalone-{self.batch_count}", (calls[0],), parallel=False)
+
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        for index, call in enumerate(batch.calls):
+            yield ToolStarted(batch=batch, index=index, call=call)
+            result = await execute(call)
+            yield ToolCompleted(batch=batch, index=index, call=call, result=result)
+            if stop_on_error and result.is_error:
+                return
+
+
+class KeyboardInterruptOnCloseIterator:
+    def __aiter__(self) -> KeyboardInterruptOnCloseIterator:
+        return self
+
+    async def __anext__(self) -> object:
+        raise StopAsyncIteration
+
+    def aclose(self) -> None:
+        raise KeyboardInterrupt
 
 
 class BadModelResponseShapeHook(RuntimeHook):
@@ -1296,6 +1341,15 @@ async def test_early_event_consumer_close_closes_stream_iterator() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_async_iterator_does_not_swallow_keyboard_interrupt() -> None:
+    loop = AgentLoop(model=ScriptedModel([ModelResponse.text("done")]))
+    close_async_iterator = object.__getattribute__(loop, "_close_async_iterator")
+
+    with pytest.raises(KeyboardInterrupt):
+        await close_async_iterator(KeyboardInterruptOnCloseIterator())
+
+
+@pytest.mark.asyncio
 async def test_stream_flag_falls_back_to_complete_for_non_streaming_model() -> None:
     events = await collect_events(
         AgentLoop(model=ScriptedModel([ModelResponse.text("done")])),
@@ -1470,12 +1524,38 @@ async def test_custom_tool_scheduler_factory_is_used_per_run() -> None:
 
 
 @pytest.mark.asyncio
+async def test_custom_tool_scheduler_factory_accepts_protocol_implementations() -> None:
+    schedulers: list[StandaloneSerialScheduler] = []
+
+    def factory(tools: ToolRegistry, runtime_limits: LoopLimits) -> StandaloneSerialScheduler:
+        _ = tools, runtime_limits
+        scheduler = StandaloneSerialScheduler()
+        schedulers.append(scheduler)
+        return scheduler
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})]),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[EchoTool()],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert len(schedulers) == 1
+    assert schedulers[0].batch_count == 1
+
+
+@pytest.mark.asyncio
 async def test_custom_tool_scheduler_factory_must_return_scheduler() -> None:
     def factory(tools: ToolRegistry, runtime_limits: LoopLimits) -> Any:
         _ = tools, runtime_limits
         return object()
 
-    with pytest.raises(TypeError, match="tool_scheduler_factory"):
+    with pytest.raises(TypeError, match="ToolSchedulerProtocol"):
         await AgentLoop(
             model=ScriptedModel([ModelResponse.text("done")]),
             tool_scheduler_factory=factory,
@@ -4389,6 +4469,21 @@ async def test_hook_emitted_events_cannot_use_core_event_types() -> None:
 
     assert events[-1].type == EventTypes.RUN_COMPLETED
     assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_custom_event_dispatch_chain_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(loop_module, "_MAX_DISPATCHED_EVENTS_PER_RUNTIME_EVENT", 4)
+
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RecursiveCustomEventHook()],
+    ).run([Message.user_text("hello")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == "custom event dispatch limit exceeded"
 
 
 @pytest.mark.asyncio

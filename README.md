@@ -146,6 +146,8 @@ Provider adapters should translate `ModelOptions`, `ToolChoice`,
 their concrete provider API. Adapter-specific data must stay in adapter-owned
 objects or explicit `metadata` fields; it must not become runtime control flow,
 checkpoint state, message wire fields, or trace replay data.
+`ToolChoice` and `ResponseFormat` names describe provider-neutral runtime
+intentions; they are not tied to any one provider's request shape.
 
 ## Project Structure
 

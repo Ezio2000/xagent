@@ -14,6 +14,11 @@ call controls:
   governed by `LoopLimits.max_parallel_tool_calls`.
 - `response_format`: text, JSON object, or strict JSON schema.
 
+`ToolChoice` and `ResponseFormat` names are provider-neutral runtime semantics,
+not bindings to a specific model API. Adapters translate those intentions into
+provider-specific request fields or reject unsupported combinations before
+calling the provider.
+
 `ModelResponse` contains final content parts, tool calls, finish reason, usage,
 model id, response id, and provider metadata. Provider metadata is visible to
 hooks and adapters during the current invocation, but it is not copied into
@@ -44,7 +49,9 @@ not streaming, and `LoopLimits.max_model_retries` still permits another attempt.
 Each failed attempt emits `model_error`; retry opens a fresh `model_started`
 attempt in the same planning iteration.
 Streaming model failures are not retried because emitted deltas may already
-have reached live consumers.
+have reached live consumers. If a hook returns `ModelErrorDecision(retry=True)`
+for a streaming failure, the runtime still emits `model_error` with
+`data.retry == false`.
 
 Model adapters may expose capabilities through a `capabilities` value or method.
 The core recognizes streaming, tools, tool choice, parallel tool calls,
@@ -57,7 +64,8 @@ coroutine that callers must await to obtain the iterator. If streaming is not
 advertised, `stream=True` callers use the normal `complete()` path.
 Stream deltas are emitted as `model_delta` events for live rendering only.
 Durable `AgentState` is committed after the complete `ModelResponse` is
-available.
+available. Reasoning deltas are included in this live-only stream surface; they
+are not appended to message history, checkpoints, or final response content.
 
 External inputs that arrive while a model call is in flight use run-control
 conversation insertion. The runtime cancels the in-flight model call, appends an

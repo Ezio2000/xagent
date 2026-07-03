@@ -98,6 +98,13 @@ When `LoopLimits.stop_on_tool_error` is enabled, tool execution is serial even i
 `max_parallel_tool_calls` is greater than `1`; this preserves fail-fast behavior
 and unambiguous checkpoints.
 
+Advanced hosts may replace the default scheduler by passing a
+`tool_scheduler_factory`. The factory result must implement the scheduler
+protocol: `next_batch(calls)` chooses the next ordered batch and
+`run_batch(batch, execute, stop_on_error=...)` yields `tool_started` and
+`tool_completed` progress. Implementations do not need to inherit from the
+default `ToolScheduler` class.
+
 Common scheduling annotations:
 
 ```python

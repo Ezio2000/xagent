@@ -31,6 +31,10 @@ If an SDK allows `on_event` to return a replacement for a non-core event, the
 runtime-owned envelope remains authoritative: `run_id`, `sequence`,
 `created_at`, and `schema_version` stay unchanged, and only the replacement
 `type` and `data` are used. Prefer `EventEmitter` for custom progress events.
+Custom events emitted by hooks are passed through `on_event` like any other
+event, so hooks can observe or rewrite custom event chains. SDKs should bound
+that cascade so a hook that emits a new event for every observed event cannot
+loop forever.
 
 `model_delta` is emitted only when model streaming is enabled and the model
 adapter supports it. It is live rendering progress, not durable state. Known

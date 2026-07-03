@@ -39,6 +39,7 @@
     },
     "tool_choice": {
       "type": "object",
+      "description": "Provider-neutral tool-use preference. Adapters translate these semantics to provider-specific request fields.",
       "required": ["mode"],
       "properties": {
         "mode": {
@@ -74,6 +75,7 @@
     },
     "response_format": {
       "type": ["object", "null"],
+      "description": "Provider-neutral response formatting request. Adapters translate these semantics to provider-specific request fields.",
       "required": ["type", "strict"],
       "properties": {
         "type": {

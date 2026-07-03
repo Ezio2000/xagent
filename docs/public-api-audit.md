@@ -94,7 +94,8 @@ not a value type.
 failures. `ModelErrorInfo` is the serializable payload. This keeps provider
 transport details out of `AgentState` while preserving useful diagnostics.
 `ToolSchedulerFactory` is public so advanced hosts can replace scheduling
-policy while keeping `ToolScheduler` as the default implementation.
+policy. Custom schedulers implement `ToolSchedulerProtocol`; `ToolScheduler`
+remains the default implementation.
 
 ## Public Versus Internal
 

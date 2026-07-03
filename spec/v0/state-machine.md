@@ -59,6 +59,11 @@ token fields in `AgentState.total_usage`; `max_total_tokens` is evaluated
 against cumulative `usage.total_tokens` after each model response. Later
 responses that omit usage or individual usage fields must not clear previously
 accumulated fields.
+Iteration and total-tool-call limits are capacity limits: once the committed
+counter is equal to the configured maximum, the runtime must not start another
+planning or tool step. `max_total_tokens` is a budget limit evaluated after a
+model response is committed; it trips only when cumulative `total_tokens` is
+greater than the configured maximum.
 
 SDKs must emit `state_changed` for every status transition, including
 invocation-terminal transitions to `paused`, `completed`, `failed`, and

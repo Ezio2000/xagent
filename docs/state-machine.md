@@ -87,6 +87,11 @@ accumulated in `AgentState.total_usage`; if `LoopLimits.max_total_tokens` is
 exceeded after a model response is committed, the run transitions to
 `limit_exceeded`. If a later response omits usage or omits an individual usage
 field, previously accumulated fields remain unchanged.
+Iteration and tool-call limits are capacity limits: when the committed counter
+equals the configured maximum, the runtime stops before starting the next
+planning or tool step. Token limits are budget limits: `max_total_tokens` trips
+only after cumulative `total_tokens` becomes greater than the configured
+maximum.
 
 During `executing_tools`, the runtime may run explicitly safe tool calls in
 parallel up to `LoopLimits.max_parallel_tool_calls`. Unsafe or undeclared tools

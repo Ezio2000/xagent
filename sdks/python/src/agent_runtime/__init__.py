@@ -38,7 +38,13 @@ from agent_runtime.models import (
 )
 from agent_runtime.resume import PauseSelector, ResumeInput
 from agent_runtime.runtime import RuntimeContext
-from agent_runtime.scheduler import ToolBatch, ToolCompleted, ToolScheduler, ToolStarted
+from agent_runtime.scheduler import (
+    ToolBatch,
+    ToolCompleted,
+    ToolScheduler,
+    ToolSchedulerProtocol,
+    ToolStarted,
+)
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentState, AgentStatus, PauseState
 from agent_runtime.tools import (
@@ -132,6 +138,7 @@ __all__ = [
     "ToolRejection",
     "ToolScheduler",
     "ToolSchedulerFactory",
+    "ToolSchedulerProtocol",
     "ToolSpec",
     "ToolStarted",
     "TraceStep",

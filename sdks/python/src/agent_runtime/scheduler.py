@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Protocol, TypeAlias, runtime_checkable
 
 from agent_runtime.messages import ToolCall
 from agent_runtime.tools import ToolOutput, ToolRegistry, ToolSpec
@@ -41,6 +41,25 @@ class ToolCompleted:
 
 ToolProgress: TypeAlias = ToolStarted | ToolCompleted
 ExecuteTool: TypeAlias = Callable[[ToolCall], Awaitable[ToolOutput]]
+
+
+@runtime_checkable
+class ToolSchedulerProtocol(Protocol):
+    """Minimal scheduler interface accepted by AgentLoop."""
+
+    def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
+        """Return the next batch of calls to execute, or None when no batch remains."""
+        ...
+
+    def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: ExecuteTool,
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolProgress]:
+        """Run one selected batch and yield tool progress events."""
+        ...
 
 
 class ToolScheduler:

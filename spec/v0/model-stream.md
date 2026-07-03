@@ -14,6 +14,8 @@ runtime may forward those deltas as `model_delta` events for live rendering.
 Durable state is still committed only after a complete `ModelResponse` is
 available. SDKs must not append partial assistant messages, partial tool-call
 arguments, or partial reasoning to `AgentState`.
+`reasoning_delta` events are live progress only. They must not be committed to
+durable messages, final response parts, snapshots, or resume input.
 
 If streaming is interrupted before a complete response exists, any observed
 `model_delta` events are non-durable UI progress and must not be required for

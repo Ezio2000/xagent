@@ -36,7 +36,7 @@ from agent_runtime.models import (
 )
 from agent_runtime.resume import ResumeInput
 from agent_runtime.runtime import RuntimeContext
-from agent_runtime.scheduler import ToolBatch, ToolScheduler, ToolStarted
+from agent_runtime.scheduler import ToolBatch, ToolScheduler, ToolSchedulerProtocol, ToolStarted
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentState, AgentStatus, PauseState
 from agent_runtime.tools import (
@@ -51,7 +51,8 @@ from agent_runtime.tools import (
 from agent_runtime.trace import RunTrace, TraceRecorder
 
 T = TypeVar("T")
-ToolSchedulerFactory: TypeAlias = Callable[[ToolRegistry, LoopLimits], ToolScheduler]
+ToolSchedulerFactory: TypeAlias = Callable[[ToolRegistry, LoopLimits], ToolSchedulerProtocol]
+_MAX_DISPATCHED_EVENTS_PER_RUNTIME_EVENT = 1000
 _USAGE_FIELDS = (
     "input_tokens",
     "output_tokens",
@@ -117,7 +118,7 @@ class RunControlState:
     monotonic_deadline: float | None = None
     run_controller: RunController | None = None
     trace: TraceRecorder | None = None
-    tool_scheduler: ToolScheduler | None = None
+    tool_scheduler: ToolSchedulerProtocol | None = None
     initial_snapshot: RunSnapshot | None = None
     last_checkpoint: RunSnapshot | None = None
     sequence: int = 0
@@ -1168,7 +1169,7 @@ class AgentLoop:
     async def _close_async_iterator(self, iterator: AsyncIterator[object]) -> None:
         aclose = getattr(iterator, "aclose", None)
         if callable(aclose):
-            with suppress(BaseException):
+            with suppress(Exception):
                 close_result = aclose()
                 if isawaitable(close_result):
                     await cast(Awaitable[object], close_result)
@@ -1199,8 +1200,8 @@ class AgentLoop:
         if runtime_context.deadline is not None:
             remaining = max(0.0, runtime_context.deadline - now_wall)
         tool_scheduler = self._tool_scheduler_factory(self._tools, self._limits)
-        if not isinstance(cast(object, tool_scheduler), ToolScheduler):
-            raise TypeError("tool_scheduler_factory must return ToolScheduler")
+        if not isinstance(cast(object, tool_scheduler), ToolSchedulerProtocol):
+            raise TypeError("tool_scheduler_factory must return ToolSchedulerProtocol")
         control = RunControlState(
             run_id=runtime_context.run_id,
             started_at=runtime_context.started_at,
@@ -1214,7 +1215,7 @@ class AgentLoop:
         return runtime_context, control
 
     @staticmethod
-    def _tool_scheduler(control: RunControlState) -> ToolScheduler:
+    def _tool_scheduler(control: RunControlState) -> ToolSchedulerProtocol:
         if control.tool_scheduler is None:
             raise RuntimeError("run control is missing a tool scheduler")
         return control.tool_scheduler
@@ -1545,7 +1546,11 @@ class AgentLoop:
         specs: list[tuple[AgentEvent, bool]] = [(first_event, True)]
         events: list[AgentEvent] = []
         pending_trace_events: list[AgentEvent] = []
+        dispatched_count = 0
         while specs:
+            dispatched_count += 1
+            if dispatched_count > _MAX_DISPATCHED_EVENTS_PER_RUNTIME_EVENT:
+                raise RuntimeError("custom event dispatch limit exceeded")
             event, runtime_owned = specs.pop(0)
             emitter = EventEmitter()
             runtime_event = event
