@@ -50,11 +50,14 @@ of these rules is semantically invalid.
 
 ### Model Invariants
 
-- `model_call`, `model_delta`, and `model_result` occur only while `planning`,
-  and model deltas/results must belong to an open model call;
+- `model_call`, `model_delta`, `model_error`, and `model_result` occur only
+  while `planning`, and model deltas/errors/results must belong to an open
+  model call;
 - `conversation_insert` occurs only while `planning`;
 - a `conversation_insert` may close an in-flight model call without a
   `model_result`, because the model output was cancelled and not made durable;
+- a retryable `model_error` closes the failed attempt; a later retry must open a
+  new `model_call`;
 - `planning -> completed` and `planning -> executing_tools` transitions require
   a preceding, closed `model_result` after the last planning checkpoint;
 - `planning -> completed` requires a `model_result` with zero tool calls;

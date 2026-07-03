@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import TypeAlias, TypeVar
+from dataclasses import dataclass
+from typing import TypeAlias, TypeVar, cast
 
+from agent_runtime.errors import ModelErrorInfo
 from agent_runtime.events import AgentEvent, EventEmitter
 from agent_runtime.messages import ToolCall
 from agent_runtime.models import ModelRequest, ModelResponse
@@ -14,6 +16,22 @@ from agent_runtime.tools import ToolOutput
 
 T = TypeVar("T")
 MaybeAwaitable: TypeAlias = T | Awaitable[T]
+
+
+@dataclass(slots=True, frozen=True)
+class ModelErrorDecision:
+    """Host decision for a provider-neutral model failure."""
+
+    retry: bool = False
+    message: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(cast(object, self.retry), bool):
+            raise TypeError("model error decision retry must be a boolean")
+        if self.message is not None and not isinstance(cast(object, self.message), str):
+            raise TypeError("model error decision message must be a string or None")
+        if self.message == "":
+            raise ValueError("model error decision message must not be empty")
 
 
 class RuntimeHook:
@@ -37,6 +55,15 @@ class RuntimeHook:
     def after_model(
         self, response: ModelResponse, context: RuntimeContext
     ) -> MaybeAwaitable[ModelResponse | None] | None:
+        return None
+
+    def on_model_error(
+        self,
+        error: ModelErrorInfo,
+        request: ModelRequest,
+        context: RuntimeContext,
+    ) -> MaybeAwaitable[ModelErrorDecision | None] | None:
+        _ = error, request, context
         return None
 
     def before_tool(

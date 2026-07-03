@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Any, NoReturn, cast
 
 from agent_runtime.messages import ContentPart, Message, ToolCall
+from agent_runtime.models import ModelUsage
 
 
 def _empty_pending_tool_calls() -> list[ToolCall]:
@@ -68,6 +69,16 @@ def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str
     if unknown:
         names = ", ".join(sorted(unknown))
         raise ValueError(f"{label} has unknown field(s): {names}")
+
+
+def _usage_to_dict(usage: ModelUsage | None) -> dict[str, Any] | None:
+    return None if usage is None else usage.to_dict()
+
+
+def _usage_from_value(value: object, label: str) -> ModelUsage | None:
+    if value is None:
+        return None
+    return ModelUsage.from_dict(_expect_mapping(value, label))
 
 
 class AgentStatus(StrEnum):
@@ -148,6 +159,7 @@ class AgentState:
     pending_tool_calls: list[ToolCall] = field(default_factory=_empty_pending_tool_calls)
     iterations: int = 0
     total_tool_calls: int = 0
+    total_usage: ModelUsage | None = None
     final_parts: list[ContentPart] = field(default_factory=_empty_final_parts)
     error: str | None = None
     pause: PauseState | None = None
@@ -169,6 +181,12 @@ class AgentState:
         ]
         self.iterations = _expect_int(self.iterations, "agent state iterations")
         self.total_tool_calls = _expect_int(self.total_tool_calls, "agent state total_tool_calls")
+        if self.total_usage is not None and not isinstance(
+            cast(object, self.total_usage), ModelUsage
+        ):
+            raise TypeError("agent state total_usage must be ModelUsage or None")
+        if self.total_usage is not None:
+            self.total_usage = ModelUsage.from_dict(self.total_usage.to_dict())
         self.final_parts = [
             ContentPart.from_dict(part.to_dict())
             if isinstance(cast(object, part), ContentPart)
@@ -191,6 +209,7 @@ class AgentState:
             "pending_tool_calls",
             "iterations",
             "total_tool_calls",
+            "total_usage",
             "final_parts",
             "error",
             "pause",
@@ -211,6 +230,7 @@ class AgentState:
             ],
             iterations=_expect_int(value["iterations"], "agent state iterations"),
             total_tool_calls=_expect_int(value["total_tool_calls"], "agent state total_tool_calls"),
+            total_usage=_usage_from_value(value["total_usage"], "agent state total_usage"),
             final_parts=[
                 ContentPart.from_dict(_expect_mapping(part, "agent state final part"))
                 for part in _expect_sequence(value["final_parts"], "agent state final_parts")
@@ -234,6 +254,7 @@ class AgentState:
             "pending_tool_call_ids": [call.id for call in self.pending_tool_calls],
             "iterations": self.iterations,
             "total_tool_calls": self.total_tool_calls,
+            "total_usage": _usage_to_dict(self.total_usage),
             "has_final": bool(self.final_parts),
             "final_part_count": len(self.final_parts),
             "error": self.error,
@@ -247,6 +268,7 @@ class AgentState:
             "pending_tool_calls": [call.to_dict() for call in self.pending_tool_calls],
             "iterations": self.iterations,
             "total_tool_calls": self.total_tool_calls,
+            "total_usage": _usage_to_dict(self.total_usage),
             "final_parts": [part.to_dict() for part in self.final_parts],
             "error": self.error,
             "pause": None if self.pause is None else self.pause.to_dict(),

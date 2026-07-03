@@ -58,6 +58,8 @@ from agent_runtime import (
     ContentPart,
     LoopLimits,
     Message,
+    ModelCapabilities,
+    ModelErrorDecision,
     ModelOptions,
     ModelResponse,
     replay_trace,
@@ -147,6 +149,12 @@ If `stop_on_tool_error=True`, tool execution is serial to preserve fail-fast
 semantics.
 
 Hooks subclass `RuntimeHook`. They can observe or rewrite model/tool boundaries.
+`on_model_error` can request a bounded non-streaming retry by returning
+`ModelErrorDecision(retry=True)` when `LoopLimits.max_model_retries` allows it.
+Failed attempts emit `model_error`; a retry emits a new `model_started` in the
+same planning iteration.
+Streaming model failures are not retried because partial deltas may already be
+visible to event consumers.
 `on_event` can append custom runtime events:
 
 ```python
@@ -161,9 +169,10 @@ the original envelope (`run_id`, `sequence`, timestamp, schema version) and uses
 only the replacement `type` and `data`. Use `emitter.emit(...)` for ordinary
 custom progress events.
 
-If a model adapter implements `stream(request, context)`, callers can enable
-live model deltas. The method must return an async iterator directly, usually
-because it is an async generator.
+If a model adapter implements `stream(request, context)` and advertises
+`ModelCapabilities(streaming=True)`, callers can enable live model deltas. The
+method must return an async iterator directly, usually because it is an async
+generator. If streaming is not advertised, `stream=True` uses `complete()`.
 
 ```python
 async for event in agent.run_events(messages, stream=True):
@@ -175,6 +184,12 @@ async for event in agent.run_events(messages, stream=True):
 
 `model_delta` is for live rendering only. Durable resume state is still carried
 only by `checkpoint` events after the complete model response is available.
+
+`AgentState.total_usage` and `AgentResult.total_usage` accumulate the standard
+token fields from `ModelResponse.usage` across model calls. Set
+`LoopLimits.max_total_tokens` to stop a run with `limit_exceeded` when
+cumulative `usage.total_tokens` exceeds a budget.
+Missing usage fields leave previously accumulated fields unchanged.
 
 `RunSnapshot.to_dict()` is the durable checkpoint boundary. It contains
 `AgentState` plus `RuntimeContext`; context timestamps are wall-clock epoch

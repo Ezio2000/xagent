@@ -30,8 +30,8 @@ these shapes, but the JSON form is the cross-language boundary.
 | `model-error.schema.json` | Structured model/provider failures. | Stable message, provider, error code, status code, retryability, request id, and error metadata boundary. |
 | `tools.schema.json` | Tool specifications exposed to models. | Tool name, description, supported invocation modes, input/output schema, scheduling annotations, and tool metadata boundary. |
 | `tool-result.schema.json` | Tool output. | Execute-mode observations, accept-mode acknowledgements or rejections, extension output kinds, content parts, error/pause boundaries, correlation ids, and output metadata boundary. |
-| `limits.schema.json` | Runtime limits and scheduling knobs. | Iteration limits, tool-call limits, timeout, stop-on-tool-error, and max parallel tool calls. |
-| `state.schema.json` | Durable agent state. | Status, messages, pending tool calls, counters, final parts, error summary, and pause state. |
+| `limits.schema.json` | Runtime limits and scheduling knobs. | Iteration limits, tool-call limits, token limits, timeout, stop-on-tool-error, model retry count, and max parallel tool calls. |
+| `state.schema.json` | Durable agent state. | Status, messages, pending tool calls, counters, cumulative model usage, final parts, error summary, and pause state. |
 | `runtime-context.schema.json` | Runtime invocation context. | Run id, start time, optional deadline, host metadata boundary, and event sequence. |
 | `run-snapshot.schema.json` | Durable resume checkpoint. | State plus context at a checkpoint boundary. |
 | `resume-input.schema.json` | Host-to-runtime resume boundary. | Snapshot, append-only messages, optional expected-pause selector, and resume metadata. |

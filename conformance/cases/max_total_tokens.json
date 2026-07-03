@@ -1,0 +1,18 @@
+{
+  "name": "max_total_tokens",
+  "limits": {
+    "max_total_tokens": 10
+  },
+  "model_steps": [
+    {
+      "parts": [{ "type": "text", "text": "over budget" }],
+      "tool_calls": [],
+      "usage": {
+        "total_tokens": 11
+      }
+    }
+  ],
+  "expected_status": "limit_exceeded",
+  "expected_tool_calls": 0,
+  "expected_message_roles": ["user", "assistant"]
+}

@@ -191,6 +191,7 @@ class TraceStepKinds:
     RESUME = "resume"
     MODEL_CALL = "model_call"
     MODEL_DELTA = "model_delta"
+    MODEL_ERROR = "model_error"
     MODEL_RESULT = "model_result"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
@@ -209,6 +210,7 @@ VALID_TRACE_STEP_KINDS = {
     TraceStepKinds.RESUME,
     TraceStepKinds.MODEL_CALL,
     TraceStepKinds.MODEL_DELTA,
+    TraceStepKinds.MODEL_ERROR,
     TraceStepKinds.MODEL_RESULT,
     TraceStepKinds.TOOL_CALL,
     TraceStepKinds.TOOL_RESULT,
@@ -246,6 +248,7 @@ EVENT_TRACE_KIND: Mapping[str, str] = {
     EventTypes.RUN_STARTED: TraceStepKinds.RUN_STARTED,
     EventTypes.MODEL_STARTED: TraceStepKinds.MODEL_CALL,
     EventTypes.MODEL_DELTA: TraceStepKinds.MODEL_DELTA,
+    EventTypes.MODEL_ERROR: TraceStepKinds.MODEL_ERROR,
     EventTypes.MODEL_COMPLETED: TraceStepKinds.MODEL_RESULT,
     EventTypes.TOOL_STARTED: TraceStepKinds.TOOL_CALL,
     EventTypes.TOOL_COMPLETED: TraceStepKinds.TOOL_RESULT,
@@ -505,6 +508,8 @@ def _validate_trace_payload(kind: str, payload: Mapping[str, Any]) -> None:
         _expect_int(data["iteration"], "model_call iteration")
     elif kind == TraceStepKinds.MODEL_DELTA:
         _validate_model_delta_payload(payload)
+    elif kind == TraceStepKinds.MODEL_ERROR:
+        _validate_model_error_payload(payload)
     elif kind == TraceStepKinds.MODEL_RESULT:
         data = _validate_object_shape(
             payload,
@@ -547,7 +552,7 @@ def _validate_trace_payload(kind: str, payload: Mapping[str, Any]) -> None:
     elif kind == TraceStepKinds.STATE_CHANGED:
         data = _validate_object_shape(
             payload,
-            {"from", "to", "iterations", "total_tool_calls", "error", "pause"},
+            {"from", "to", "iterations", "total_tool_calls", "total_usage", "error", "pause"},
             set(),
             "state_changed payload",
         )
@@ -555,6 +560,7 @@ def _validate_trace_payload(kind: str, payload: Mapping[str, Any]) -> None:
         _expect_status_value(data["to"], "state_changed to")
         _expect_nonnegative_int(data["iterations"], "state_changed iterations")
         _expect_nonnegative_int(data["total_tool_calls"], "state_changed total_tool_calls")
+        _validate_usage_or_null(data["total_usage"], "state_changed total_usage")
         _expect_optional_str(data["error"], "state_changed error")
         _validate_compact_pause_or_null(data["pause"], "state_changed pause")
     elif kind == TraceStepKinds.CHECKPOINT:
@@ -629,6 +635,7 @@ def _validate_compact_state(
         "pending_tool_call_ids",
         "iterations",
         "total_tool_calls",
+        "total_usage",
         "final_part_count",
         "error",
         "pause",
@@ -648,6 +655,7 @@ def _validate_compact_state(
         raise ValueError(f"{label} pending_tool_call_ids must be unique")
     _expect_nonnegative_int(data["iterations"], f"{label} iterations")
     _expect_nonnegative_int(data["total_tool_calls"], f"{label} total_tool_calls")
+    _validate_usage_or_null(data["total_usage"], f"{label} total_usage")
     _expect_nonnegative_int(data["final_part_count"], f"{label} final_part_count")
     _expect_optional_str(data["error"], f"{label} error")
     _validate_compact_pause_or_null(data["pause"], f"{label} pause")
@@ -724,6 +732,35 @@ def _validate_usage(value: object, label: str) -> None:
             _expect_nonnegative_int(data[field_name], f"{label} {field_name}")
     if "metadata_keys" in data:
         _expect_str_list(data["metadata_keys"], f"{label} metadata_keys")
+
+
+def _validate_model_error_payload(value: Mapping[str, Any]) -> None:
+    data = _validate_object_shape(
+        value,
+        {"message", "retry", "retryable", "metadata_keys"},
+        {"provider", "code", "status_code", "request_id"},
+        "model_error payload",
+    )
+    _expect_non_empty_str(data["message"], "model_error message")
+    _expect_bool(data["retry"], "model_error retry")
+    _expect_bool(data["retryable"], "model_error retryable")
+    if "provider" in data:
+        _expect_non_empty_str(data["provider"], "model_error provider")
+    if "code" in data:
+        _expect_non_empty_str(data["code"], "model_error code")
+    if "status_code" in data:
+        status_code = _expect_int(data["status_code"], "model_error status_code")
+        if status_code < 100:
+            raise ValueError("model_error status_code must be >= 100")
+    if "request_id" in data:
+        _expect_non_empty_str(data["request_id"], "model_error request_id")
+    _expect_str_list(data["metadata_keys"], "model_error metadata_keys")
+
+
+def _validate_usage_or_null(value: object, label: str) -> None:
+    if value is None:
+        return
+    _validate_usage(value, label)
 
 
 def _validate_tool_call_payload(
@@ -1081,6 +1118,8 @@ class _ReplayValidator:
             if not self.pending_stream_delta:
                 self.stream_baseline_message_count = self.durable_message_count
             self.pending_stream_delta = True
+        elif step.kind == TraceStepKinds.MODEL_ERROR:
+            self._validate_model_error(step)
         elif step.kind == TraceStepKinds.MODEL_RESULT:
             self._validate_model_result(step)
         elif step.kind == TraceStepKinds.TOOL_CALL:
@@ -1286,6 +1325,16 @@ class _ReplayValidator:
         self.model_result_tool_call_count = _expect_nonnegative_int(
             step.payload.get("tool_call_count"), "model_result tool_call_count"
         )
+        self.pending_stream_delta = False
+
+    def _validate_model_error(self, step: TraceStep) -> None:
+        self._validate_same_status(step)
+        if self.current_status is not AgentStatus.PLANNING:
+            raise ReplayError("model_error is only valid while planning")
+        if not self.model_call_open:
+            raise ReplayError("model_error requires an open model_call")
+        self.model_call_open = False
+        self.model_result_ready = False
         self.pending_stream_delta = False
 
     def _validate_tool_call(self, step: TraceStep) -> None:
@@ -1675,6 +1724,8 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
         return _compact_conversation_insert(_expect_mapping(data["insert"], "conversation insert"))
     if kind == TraceStepKinds.MODEL_CALL:
         return deepcopy(dict(data))
+    if kind == TraceStepKinds.MODEL_ERROR:
+        return _compact_model_error(data)
     if kind == TraceStepKinds.MODEL_RESULT:
         return _compact_model_result_summary(data)
     if kind == TraceStepKinds.MODEL_DELTA:
@@ -1767,6 +1818,21 @@ def _compact_model_result_summary(data: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _compact_model_error(data: Mapping[str, Any]) -> dict[str, Any]:
+    error = _expect_mapping(data["error"], "model error")
+    metadata = _expect_mapping(error.get("metadata", {}), "model error metadata")
+    payload: dict[str, Any] = {
+        "message": error["message"],
+        "retry": data["retry"],
+        "retryable": error.get("retryable", False),
+        "metadata_keys": sorted(str(key) for key in metadata),
+    }
+    for key in ("provider", "code", "status_code", "request_id"):
+        if key in error:
+            payload[key] = error[key]
+    return payload
+
+
 def _compact_model_delta(data: Mapping[str, Any]) -> dict[str, Any]:
     payload = deepcopy(dict(data))
     raw_metadata = payload.pop("metadata", None)
@@ -1789,12 +1855,19 @@ def _compact_usage(usage: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _compact_usage_or_null(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return _compact_usage(_expect_mapping(value, "model usage"))
+
+
 def _compact_state_change(data: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "from": data["from"],
         "to": data["to"],
         "iterations": data["iterations"],
         "total_tool_calls": data["total_tool_calls"],
+        "total_usage": _compact_usage_or_null(data["total_usage"]),
         "error": data["error"],
         "pause": _compact_pause(data.get("pause")),
     }
@@ -1866,6 +1939,7 @@ def _compact_state_snapshot(state: Mapping[str, Any]) -> dict[str, Any]:
         "pending_tool_call_ids": pending_tool_call_ids,
         "iterations": state["iterations"],
         "total_tool_calls": state["total_tool_calls"],
+        "total_usage": _compact_usage_or_null(state["total_usage"]),
         "final_part_count": final_part_count,
         "error": state["error"],
         "pause": _compact_pause(state["pause"]),

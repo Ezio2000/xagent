@@ -20,6 +20,11 @@ hooks and adapters during the current invocation, but it is not copied into
 durable assistant messages, checkpoints, or trace payloads. Common finish
 reasons include `end_turn`, `tool_calls`, `max_tokens`, `stop_sequence`,
 `refusal`, `content_filter`, and `error`; the field remains an open string.
+Runtime usage accounting accumulates the standard token fields reported in
+`ModelResponse.usage` into `AgentState.total_usage`. A response that omits usage
+or omits an individual usage field does not clear previously accumulated values;
+only fields explicitly reported by the response are added to their cumulative
+field.
 
 Each `ToolCall` includes an open non-empty `mode` string. Core runtimes
 recognize `execute`, which waits for the tool's final observation before
@@ -32,15 +37,24 @@ Python adapters may raise `ModelProviderError(ModelErrorInfo(...))` for
 structured provider failures. `ModelErrorInfo` is runtime exception detail for
 the current SDK invocation; checkpoint state records the portable error message,
 not provider metadata or request objects. The portable structured error shape is
-specified in `spec/v0/model-error.schema.json`.
+specified in `spec/v0/model-error.schema.json`. `ModelErrorInfo.retryable` is
+advisory provider metadata. The runtime retries only when host code returns
+`ModelErrorDecision(retry=True)` from `RuntimeHook.on_model_error`, the call was
+not streaming, and `LoopLimits.max_model_retries` still permits another attempt.
+Each failed attempt emits `model_error`; retry opens a fresh `model_started`
+attempt in the same planning iteration.
+Streaming model failures are not retried because emitted deltas may already
+have reached live consumers.
 
 Model adapters may expose capabilities through a `capabilities` value or method.
 The core recognizes streaming, tools, tool choice, parallel tool calls,
 multimodal input/output, structured output, JSON mode, and usage reporting.
 
-Streaming adapters may additionally expose `stream(request, context)`. The
-method must return an async iterator directly, usually from an async generator;
-it must not return a coroutine that callers must await to obtain the iterator.
+Streaming adapters may additionally expose `stream(request, context)` and must
+advertise `ModelCapabilities(streaming=True)`. The method must return an async
+iterator directly, usually from an async generator; it must not return a
+coroutine that callers must await to obtain the iterator. If streaming is not
+advertised, `stream=True` callers use the normal `complete()` path.
 Stream deltas are emitted as `model_delta` events for live rendering only.
 Durable `AgentState` is committed after the complete `ModelResponse` is
 available.

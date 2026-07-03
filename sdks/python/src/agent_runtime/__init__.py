@@ -12,9 +12,9 @@ from agent_runtime.errors import (
     ToolError,
 )
 from agent_runtime.events import AgentEvent, EventEmitter, EventType, EventTypes, QueuedEvent
-from agent_runtime.hooks import RuntimeHook
+from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
 from agent_runtime.limits import LoopLimits
-from agent_runtime.loop import AgentLoop, AgentResult
+from agent_runtime.loop import AgentLoop, AgentResult, ToolSchedulerFactory
 from agent_runtime.messages import ContentPart, Message, ToolCall
 from agent_runtime.models import (
     ModelCapabilities,
@@ -84,6 +84,7 @@ __all__ = [
     "ModelCapabilities",
     "ModelClient",
     "ModelContentDelta",
+    "ModelErrorDecision",
     "ModelError",
     "ModelErrorInfo",
     "ModelOptions",
@@ -128,6 +129,7 @@ __all__ = [
     "ToolRejection",
     "ToolRegistry",
     "ToolScheduler",
+    "ToolSchedulerFactory",
     "ToolSpec",
     "ToolStarted",
     "ToolChoice",

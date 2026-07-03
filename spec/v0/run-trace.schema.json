@@ -180,6 +180,7 @@
         "pending_tool_call_ids",
         "iterations",
         "total_tool_calls",
+        "total_usage",
         "final_part_count",
         "error",
         "pause"
@@ -201,6 +202,12 @@
         },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "total_usage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/usage" }
+          ]
+        },
         "final_part_count": { "type": "integer", "minimum": 0 },
         "error": { "type": ["string", "null"] },
         "pause": { "$ref": "#/$defs/compact_pause_or_null" }
@@ -216,6 +223,7 @@
         "pending_tool_call_ids",
         "iterations",
         "total_tool_calls",
+        "total_usage",
         "final_part_count",
         "error",
         "pause",
@@ -238,6 +246,12 @@
         },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "total_usage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/usage" }
+          ]
+        },
         "final_part_count": { "type": "integer", "minimum": 0 },
         "error": { "type": ["string", "null"] },
         "pause": { "$ref": "#/$defs/compact_pause_or_null" },
@@ -299,6 +313,24 @@
       "required": ["iteration"],
       "properties": {
         "iteration": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "model_error_payload": {
+      "type": "object",
+      "required": ["message", "retry", "retryable", "metadata_keys"],
+      "properties": {
+        "message": { "type": "string", "minLength": 1 },
+        "retry": { "type": "boolean" },
+        "retryable": { "type": "boolean" },
+        "provider": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "minLength": 1 },
+        "status_code": { "type": "integer", "minimum": 100 },
+        "request_id": { "type": "string", "minLength": 1 },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       },
       "additionalProperties": false
     },
@@ -606,12 +638,26 @@
     },
     "state_changed_payload": {
       "type": "object",
-      "required": ["from", "to", "iterations", "total_tool_calls", "error", "pause"],
+      "required": [
+        "from",
+        "to",
+        "iterations",
+        "total_tool_calls",
+        "total_usage",
+        "error",
+        "pause"
+      ],
       "properties": {
         "from": { "$ref": "#/$defs/status" },
         "to": { "$ref": "#/$defs/status" },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "total_usage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/usage" }
+          ]
+        },
         "error": { "type": ["string", "null"] },
         "pause": { "$ref": "#/$defs/compact_pause_or_null" }
       },
@@ -685,6 +731,7 @@
             "resume",
             "model_call",
             "model_delta",
+            "model_error",
             "model_result",
             "tool_call",
             "tool_result",
@@ -731,6 +778,10 @@
         {
           "if": { "properties": { "kind": { "const": "model_delta" } }, "required": ["kind"] },
           "then": { "properties": { "payload": { "$ref": "#/$defs/model_delta_payload" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "model_error" } }, "required": ["kind"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/model_error_payload" } } }
         },
         {
           "if": { "properties": { "kind": { "const": "model_result" } }, "required": ["kind"] },

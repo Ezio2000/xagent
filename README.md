@@ -67,7 +67,7 @@ and contract validation. Most application code should import only
 - Provider-neutral model protocol: messages, tools, model options, tool choice,
   response format, usage, capabilities, structured provider errors, and
   streaming deltas.
-- Event stream: `run_started`, `model_started`, `model_delta`,
+- Event stream: `run_started`, `model_started`, `model_delta`, `model_error`,
   `model_completed`, `tool_started`, `tool_completed`, `state_changed`,
   `pause_requested`, `checkpoint`, `final`, `error`, `run_paused`, and
   `run_completed`.
@@ -129,7 +129,8 @@ Model adapters implement:
 async def complete(request, context) -> ModelResponse: ...
 ```
 
-Streaming adapters may additionally implement:
+Streaming adapters may additionally implement `stream()` and advertise
+`ModelCapabilities(streaming=True)`:
 
 ```python
 def stream(request, context) -> AsyncIterator[ModelStreamEvent]: ...
@@ -137,7 +138,8 @@ def stream(request, context) -> AsyncIterator[ModelStreamEvent]: ...
 
 `stream()` must return an async iterator directly, usually from an async
 generator. The runtime forwards stream progress as `model_delta` events and
-commits `AgentState` only after a complete `ModelResponse` exists.
+commits `AgentState` only after a complete `ModelResponse` exists. If streaming
+is not advertised, `stream=True` callers use the normal `complete()` path.
 
 Provider adapters should translate `ModelOptions`, `ToolChoice`,
 `ResponseFormat`, multimodal `ContentPart` values, and `ModelCapabilities` into

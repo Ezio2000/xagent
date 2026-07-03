@@ -22,6 +22,7 @@ from agent_runtime.limits import LoopLimits
 from agent_runtime.loop import AgentLoop, AgentResult
 from agent_runtime.messages import ContentPart, Message
 from agent_runtime.models import (
+    ModelCapabilities,
     ModelContentDelta,
     ModelRequest,
     ModelResponse,
@@ -112,6 +113,8 @@ LIMIT_KEYS = {
     "timeout_seconds",
     "stop_on_tool_error",
     "max_parallel_tool_calls",
+    "max_total_tokens",
+    "max_model_retries",
 }
 REQUIRED_SCHEMA_FILES = {
     "events.schema.json",
@@ -120,6 +123,7 @@ REQUIRED_SCHEMA_FILES = {
     "resume-input.schema.json",
     "messages.schema.json",
     "model-response.schema.json",
+    "model-error.schema.json",
     "tools.schema.json",
     "tool-result.schema.json",
     "limits.schema.json",
@@ -195,6 +199,8 @@ class ScriptedModel:
 
 
 class StreamedCaseModel(ScriptedModel):
+    capabilities = ModelCapabilities(streaming=True)
+
     def __init__(
         self,
         steps: Sequence[ModelResponse],
@@ -1293,6 +1299,8 @@ def limits_from_case(case: dict[str, Any]) -> LoopLimits:
         timeout_seconds=cast(float | None, raw_limits.get("timeout_seconds")),
         stop_on_tool_error=cast(bool, raw_limits.get("stop_on_tool_error", False)),
         max_parallel_tool_calls=cast(int, raw_limits.get("max_parallel_tool_calls", 1)),
+        max_total_tokens=cast(int | None, raw_limits.get("max_total_tokens")),
+        max_model_retries=cast(int, raw_limits.get("max_model_retries", 0)),
     )
 
 

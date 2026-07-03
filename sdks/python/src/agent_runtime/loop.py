@@ -8,12 +8,12 @@ from contextlib import suppress
 from dataclasses import dataclass
 from inspect import isawaitable, iscoroutinefunction
 from time import monotonic, time
-from typing import Any, TypeVar, cast
+from typing import Any, TypeAlias, TypeVar, cast
 
 from agent_runtime.control import ConversationInsert, PauseRequest, RunController
 from agent_runtime.errors import AgentError, InvalidToolCall, ModelProviderError, ToolError
 from agent_runtime.events import CORE_EVENT_TYPES, AgentEvent, EventEmitter, EventTypes
-from agent_runtime.hooks import RuntimeHook
+from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
 from agent_runtime.limits import LoopLimits
 from agent_runtime.messages import (
     ContentPart,
@@ -28,8 +28,10 @@ from agent_runtime.models import (
     ModelRequest,
     ModelResponse,
     ModelStreamAccumulator,
+    ModelUsage,
     ResponseFormat,
     ToolChoice,
+    model_capabilities,
     stream_event_to_delta_payload,
 )
 from agent_runtime.resume import ResumeInput
@@ -49,6 +51,15 @@ from agent_runtime.tools import (
 from agent_runtime.trace import RunTrace, TraceRecorder
 
 T = TypeVar("T")
+ToolSchedulerFactory: TypeAlias = Callable[[ToolRegistry, LoopLimits], ToolScheduler]
+_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
 
 
 class RuntimeTimeoutError(Exception):
@@ -71,6 +82,15 @@ class RuntimeConversationInsert(Exception):
         self.insert = insert
 
 
+def _default_tool_scheduler_factory(tools: ToolRegistry, limits: LoopLimits) -> ToolScheduler:
+    return ToolScheduler(
+        tools,
+        max_parallel_tool_calls=(
+            1 if limits.stop_on_tool_error else limits.max_parallel_tool_calls
+        ),
+    )
+
+
 @dataclass(slots=True, frozen=True)
 class AgentResult:
     """Final result returned by AgentLoop.run."""
@@ -80,6 +100,7 @@ class AgentResult:
     messages: tuple[Message, ...]
     iterations: int
     total_tool_calls: int
+    total_usage: ModelUsage | None = None
     error: str | None = None
     run_id: str = ""
     snapshot: RunSnapshot | None = None
@@ -120,7 +141,9 @@ class AgentLoop:
         "_model",
         "_model_options",
         "_response_format",
+        "_tool_scheduler_factory",
         "_tool_choice",
+        "_trace_enabled",
         "_tools",
     )
 
@@ -129,7 +152,9 @@ class AgentLoop:
     _model: ModelClient
     _model_options: ModelOptions
     _response_format: ResponseFormat | None
+    _tool_scheduler_factory: ToolSchedulerFactory
     _tool_choice: ToolChoice
+    _trace_enabled: bool
     _tools: ToolRegistry
 
     def __init__(
@@ -142,7 +167,11 @@ class AgentLoop:
         tool_choice: ToolChoice | None = None,
         response_format: ResponseFormat | None = None,
         hooks: Sequence[RuntimeHook] | None = None,
+        trace: bool = True,
+        tool_scheduler_factory: ToolSchedulerFactory | None = None,
     ) -> None:
+        if not isinstance(cast(object, trace), bool):
+            raise TypeError("trace must be a boolean")
         self._model = model
         self._tools = tools if isinstance(tools, ToolRegistry) else ToolRegistry(tools)
         self._limits = limits or LoopLimits()
@@ -153,6 +182,8 @@ class AgentLoop:
             None if response_format is None else ResponseFormat.from_dict(response_format.to_dict())
         )
         self._hooks = tuple(hooks or ())
+        self._trace_enabled = trace
+        self._tool_scheduler_factory = tool_scheduler_factory or _default_tool_scheduler_factory
 
     async def run(
         self,
@@ -358,7 +389,6 @@ class AgentLoop:
                 )
                 yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
                 return
-            previous = state.status
             durable = control.last_checkpoint or control.initial_snapshot
             self._restore_state_from_snapshot(state, durable)
             self._rollback_trace_to_durable(control)
@@ -375,6 +405,9 @@ class AgentLoop:
                     "to": state.status.value,
                     "iterations": state.iterations,
                     "total_tool_calls": state.total_tool_calls,
+                    "total_usage": None
+                    if state.total_usage is None
+                    else state.total_usage.to_dict(),
                     "error": state.error,
                     "pause": None,
                 },
@@ -396,7 +429,6 @@ class AgentLoop:
                 )
                 yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
                 return
-            previous = state.status
             durable = control.last_checkpoint or control.initial_snapshot
             self._restore_state_from_snapshot(state, durable)
             self._rollback_trace_to_durable(control)
@@ -413,6 +445,9 @@ class AgentLoop:
                     "to": state.status.value,
                     "iterations": state.iterations,
                     "total_tool_calls": state.total_tool_calls,
+                    "total_usage": None
+                    if state.total_usage is None
+                    else state.total_usage.to_dict(),
                     "error": state.error,
                     "pause": None,
                 },
@@ -503,108 +538,130 @@ class AgentLoop:
             return
 
         state.iterations += 1
-        for event in await self._events(
-            context,
-            control,
-            EventTypes.MODEL_STARTED,
-            {"iteration": state.iterations},
-        ):
-            yield event
-
-        request = await self._before_model(
-            ModelRequest(
+        model_error_attempts = 0
+        while True:
+            using_stream = stream and self._model_supports_streaming()
+            request = ModelRequest(
                 messages=tuple(state.messages),
                 tools=self._tools.specs(),
                 options=self._model_options,
                 tool_choice=self._tool_choice,
                 response_format=self._response_format,
-            ),
-            context,
-            control,
-        )
-        try:
-            if stream and hasattr(self._model, "stream"):
-                response_holder: list[ModelResponse] = []
-                iterator = self._stream_model(
-                    request, context, control, response_holder
-                ).__aiter__()
-                try:
-                    while True:
-                        try:
-                            event = await anext(iterator)
-                        except StopAsyncIteration:
-                            break
-                        yield event
-                finally:
-                    await self._close_async_iterator(iterator)
-                response = response_holder[0]
-            else:
-                response = await self._await_model_with_interrupt(
-                    self._model.complete(request, context),
-                    control,
-                )
-            response = await self._after_model(
-                ModelResponse.from_dict(response.to_dict()), context, control
             )
-            assistant_message = response.to_assistant_message()
-        except RuntimePauseInterrupt as exc:
-            state.iterations -= 1
-            for event in await self._pause(
-                state,
-                context,
-                control,
-                exc.request,
-                resume_status=AgentStatus.PLANNING,
-                origin="control",
-            ):
-                yield event
-            return
-        except RuntimeConversationInsert as exc:
-            state.iterations -= 1
-            for event in await self._apply_conversation_insert(state, context, control, exc.insert):
-                yield event
-            return
-        except RuntimeTimeoutError:
-            for event in await self._limit(state, context, control, "timeout_seconds"):
-                yield event
-            return
-        except ModelProviderError as exc:
-            for event in await self._transition(
-                state,
-                AgentStatus.FAILED,
-                context,
-                control,
-                error=exc.info.message,
-            ):
-                yield event
-            return
-        except AgentError as exc:
-            for event in await self._transition(
-                state,
-                AgentStatus.FAILED,
-                context,
-                control,
-                error=str(exc) or exc.__class__.__name__,
-            ):
-                yield event
-            return
-        except Exception as exc:
-            for event in await self._transition(
-                state,
-                AgentStatus.FAILED,
-                context,
-                control,
-                error=str(exc) or exc.__class__.__name__,
-            ):
-                yield event
-            return
+            try:
+                for event in await self._events(
+                    context,
+                    control,
+                    EventTypes.MODEL_STARTED,
+                    {"iteration": state.iterations},
+                ):
+                    yield event
+
+                request = await self._before_model(request, context, control)
+                if using_stream:
+                    response_holder: list[ModelResponse] = []
+                    iterator = self._stream_model(
+                        request, context, control, response_holder
+                    ).__aiter__()
+                    try:
+                        while True:
+                            try:
+                                event = await anext(iterator)
+                            except StopAsyncIteration:
+                                break
+                            yield event
+                    finally:
+                        await self._close_async_iterator(iterator)
+                    response = response_holder[0]
+                else:
+                    response = await self._await_model_with_interrupt(
+                        self._model.complete(request, context),
+                        control,
+                    )
+                response = await self._after_model(
+                    ModelResponse.from_dict(response.to_dict()), context, control
+                )
+                assistant_message = response.to_assistant_message()
+                break
+            except RuntimePauseInterrupt as exc:
+                state.iterations -= 1
+                for event in await self._pause(
+                    state,
+                    context,
+                    control,
+                    exc.request,
+                    resume_status=AgentStatus.PLANNING,
+                    origin="control",
+                ):
+                    yield event
+                return
+            except RuntimeConversationInsert as exc:
+                state.iterations -= 1
+                for event in await self._apply_conversation_insert(
+                    state, context, control, exc.insert
+                ):
+                    yield event
+                return
+            except RuntimeTimeoutError:
+                for event in await self._limit(state, context, control, "timeout_seconds"):
+                    yield event
+                return
+            except ModelProviderError as exc:
+                decision = await self._on_model_error(exc, request, context, control)
+                retry = (
+                    decision.retry
+                    and not using_stream
+                    and model_error_attempts < self._limits.max_model_retries
+                )
+                for event in await self._events(
+                    context,
+                    control,
+                    EventTypes.MODEL_ERROR,
+                    {"error": exc.info.to_dict(), "retry": retry},
+                ):
+                    yield event
+                if retry:
+                    model_error_attempts += 1
+                    continue
+                for event in await self._transition(
+                    state,
+                    AgentStatus.FAILED,
+                    context,
+                    control,
+                    error=decision.message or exc.info.message,
+                ):
+                    yield event
+                return
+            except AgentError as exc:
+                for event in await self._transition(
+                    state,
+                    AgentStatus.FAILED,
+                    context,
+                    control,
+                    error=str(exc) or exc.__class__.__name__,
+                ):
+                    yield event
+                return
+            except Exception as exc:
+                for event in await self._transition(
+                    state,
+                    AgentStatus.FAILED,
+                    context,
+                    control,
+                    error=str(exc) or exc.__class__.__name__,
+                ):
+                    yield event
+                return
 
         state.messages.append(assistant_message)
+        self._record_model_usage(state, response.usage)
         limit_reason = None
         transition_data: Mapping[str, Any] | None = None
         if assistant_message.tool_calls:
             state.pending_tool_calls = list(assistant_message.tool_calls)
-            limit_reason = self._limits.tool_call_reason(state)
+            limit_reason = self._limits.tool_call_reason(state) or self._limits.usage_reason(
+                state.total_usage
+            )
             if limit_reason is None:
                 transition_data = await self._apply_transition(
                     state,
@@ -613,13 +670,15 @@ class AgentLoop:
                     control,
                 )
         else:
-            state.final_parts = [content_part_without_metadata(part) for part in response.parts]
-            transition_data = await self._apply_transition(
-                state,
-                AgentStatus.COMPLETED,
-                context,
-                control,
-            )
+            limit_reason = self._limits.usage_reason(state.total_usage)
+            if limit_reason is None:
+                state.final_parts = [content_part_without_metadata(part) for part in response.parts]
+                transition_data = await self._apply_transition(
+                    state,
+                    AgentStatus.COMPLETED,
+                    context,
+                    control,
+                )
 
         for event in await self._events(
             context,
@@ -1061,12 +1120,7 @@ class AgentLoop:
         if not done:
             task.add_done_callback(self._consume_background_task_exception)
             task.cancel()
-            aclose = getattr(iterator, "aclose", None)
-            if callable(aclose):
-                with suppress(BaseException):
-                    close_result = aclose()
-                    if isawaitable(close_result):
-                        await cast(Awaitable[object], close_result)
+            await self._close_async_iterator(iterator)
             raise RuntimeTimeoutError
         return await task
 
@@ -1167,19 +1221,17 @@ class AgentLoop:
         remaining = None
         if runtime_context.deadline is not None:
             remaining = max(0.0, runtime_context.deadline - now_wall)
+        tool_scheduler = self._tool_scheduler_factory(self._tools, self._limits)
+        if not isinstance(cast(object, tool_scheduler), ToolScheduler):
+            raise TypeError("tool_scheduler_factory must return ToolScheduler")
         control = RunControlState(
             run_id=runtime_context.run_id,
             started_at=runtime_context.started_at,
             deadline=runtime_context.deadline,
             monotonic_deadline=None if remaining is None else now_monotonic + remaining,
             run_controller=controller,
-            trace=TraceRecorder(runtime_context.run_id),
-            tool_scheduler=ToolScheduler(
-                self._tools,
-                max_parallel_tool_calls=(
-                    1 if self._limits.stop_on_tool_error else self._limits.max_parallel_tool_calls
-                ),
-            ),
+            trace=TraceRecorder(runtime_context.run_id) if self._trace_enabled else None,
+            tool_scheduler=tool_scheduler,
             sequence=runtime_context.sequence,
         )
         return runtime_context, control
@@ -1189,6 +1241,38 @@ class AgentLoop:
         if control.tool_scheduler is None:
             raise RuntimeError("run control is missing a tool scheduler")
         return control.tool_scheduler
+
+    def _model_supports_streaming(self) -> bool:
+        return model_capabilities(self._model).streaming
+
+    @staticmethod
+    def _record_model_usage(state: AgentState, usage: ModelUsage | None) -> None:
+        existing = state.total_usage
+        if usage is None:
+            return
+        values: dict[str, int] = {}
+        for field in _USAGE_FIELDS:
+            current = None if existing is None else getattr(existing, field)
+            increment = getattr(usage, field)
+            if existing is None:
+                if increment is not None:
+                    values[field] = increment
+            elif current is not None and increment is not None:
+                values[field] = current + increment
+            elif current is not None:
+                values[field] = current
+            elif increment is not None:
+                values[field] = increment
+        if not values:
+            return
+        state.total_usage = ModelUsage(
+            input_tokens=values.get("input_tokens"),
+            output_tokens=values.get("output_tokens"),
+            total_tokens=values.get("total_tokens"),
+            reasoning_tokens=values.get("reasoning_tokens"),
+            cache_read_tokens=values.get("cache_read_tokens"),
+            cache_write_tokens=values.get("cache_write_tokens"),
+        )
 
     def _timeout_reason(self, control: RunControlState) -> str | None:
         remaining = control.remaining_seconds()
@@ -1203,9 +1287,13 @@ class AgentLoop:
         if reason is not None:
             return reason
         if state.status is AgentStatus.PLANNING:
-            return self._limits.iteration_reason(state)
+            return self._limits.usage_reason(state.total_usage) or self._limits.iteration_reason(
+                state
+            )
         if state.status is AgentStatus.EXECUTING_TOOLS:
-            return self._limits.tool_call_reason(state)
+            return self._limits.usage_reason(state.total_usage) or self._limits.tool_call_reason(
+                state
+            )
         return None
 
     def _post_tool_commit_limit_reason(
@@ -1426,6 +1514,7 @@ class AgentLoop:
             "to": status.value,
             "iterations": state.iterations,
             "total_tool_calls": state.total_tool_calls,
+            "total_usage": None if state.total_usage is None else state.total_usage.to_dict(),
             "error": state.error,
             "pause": None if state.pause is None else state.pause.to_dict(),
         }
@@ -1588,6 +1677,28 @@ class AgentLoop:
             current = ModelResponse.from_dict(current.to_dict())
         return ModelResponse.from_dict(current.to_dict())
 
+    async def _on_model_error(
+        self,
+        error: ModelProviderError,
+        request: ModelRequest,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> ModelErrorDecision:
+        current = ModelErrorDecision()
+        info = error.info
+        for hook in self._hooks:
+            replacement = await self._call_hook(
+                hook.on_model_error, info, request, context, control=control
+            )
+            if replacement is not None:
+                if not isinstance(cast(object, replacement), ModelErrorDecision):
+                    raise TypeError("on_model_error must return ModelErrorDecision or None")
+                current = ModelErrorDecision(
+                    retry=replacement.retry,
+                    message=replacement.message,
+                )
+        return current
+
     async def _before_tool(
         self, call: ToolCall, context: RuntimeContext, control: RunControlState
     ) -> ToolCall:
@@ -1671,6 +1782,7 @@ class AgentLoop:
         state.pending_tool_calls = restored.pending_tool_calls
         state.iterations = restored.iterations
         state.total_tool_calls = restored.total_tool_calls
+        state.total_usage = restored.total_usage
         state.final_parts = restored.final_parts
         state.error = restored.error
         state.pause = restored.pause
@@ -1706,6 +1818,9 @@ class AgentLoop:
             messages=tuple(state.messages),
             iterations=state.iterations,
             total_tool_calls=state.total_tool_calls,
+            total_usage=None
+            if state.total_usage is None
+            else ModelUsage.from_dict(state.total_usage.to_dict()),
             error=state.error,
             run_id=control.run_id,
             snapshot=snapshot,

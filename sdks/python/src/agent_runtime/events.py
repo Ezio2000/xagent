@@ -160,6 +160,7 @@ class EventTypes:
     STATE_CHANGED = "state_changed"
     MODEL_STARTED = "model_started"
     MODEL_DELTA = "model_delta"
+    MODEL_ERROR = "model_error"
     MODEL_COMPLETED = "model_completed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
@@ -178,6 +179,7 @@ CORE_EVENT_TYPES = frozenset(
         EventTypes.STATE_CHANGED,
         EventTypes.MODEL_STARTED,
         EventTypes.MODEL_DELTA,
+        EventTypes.MODEL_ERROR,
         EventTypes.MODEL_COMPLETED,
         EventTypes.TOOL_STARTED,
         EventTypes.TOOL_COMPLETED,

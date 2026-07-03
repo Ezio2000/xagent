@@ -10,8 +10,8 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
 ## Boundary Decisions
 
 - Keep runtime orchestration names: `AgentLoop`, `AgentResult`, `AgentState`,
-  `AgentStatus`, `LoopLimits`, `RuntimeContext`, `RuntimeHook`, and
-  `RunSnapshot`.
+  `AgentStatus`, `LoopLimits`, `RuntimeContext`, `RuntimeHook`,
+  `ModelErrorDecision`, `ToolSchedulerFactory`, and `RunSnapshot`.
 - Keep resume/control names: `ResumeInput`, `PauseSelector`, `PauseRequest`,
   `RunController`, `ConversationInsert`, and `PauseState`.
 - Keep trace names: `RunTrace`, `TraceStep`, `TraceStepKinds`,
@@ -44,7 +44,8 @@ The name keeps it aligned with `resume-input.schema.json`.
 
 `RunController` remains separate from `LoopLimits`. The controller is the
 host-owned imperative handle for pause, interrupt, and conversation insertion.
-Limits are static run configuration.
+Limits are static run configuration, including token budgets and bounded model
+retry counts.
 
 `PauseSelector` names the `expected_pause` matcher used by `ResumeInput`. It is
 not a general query object; it only matches the paused snapshot before resume.
@@ -70,6 +71,9 @@ runtime envelope.
 `RuntimeHook` is the public extension base class for observing and rewriting
 runtime boundaries. The name is intentionally broader than event hook because
 the same class covers model, tool, transition, and event hooks.
+`ModelErrorDecision` is the typed return value for `on_model_error`, keeping
+retry and user-facing message policy host-owned instead of deriving it directly
+from provider metadata.
 
 `ModelClient` and `StreamingModelClient` name the adapter protocols. The
 streaming protocol is separate because streaming is optional and remains live
@@ -89,6 +93,8 @@ not a value type.
 `ModelProviderError` is the adapter-facing wrapper for structured provider
 failures. `ModelErrorInfo` is the serializable payload. This keeps provider
 transport details out of `AgentState` while preserving useful diagnostics.
+`ToolSchedulerFactory` is public so advanced hosts can replace scheduling
+policy while keeping `ToolScheduler` as the default implementation.
 
 ## Public Versus Internal
 

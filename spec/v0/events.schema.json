@@ -97,6 +97,19 @@
     {
       "if": {
         "properties": {
+          "type": { "const": "model_error" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/model_error_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
           "type": { "const": "tool_started" }
         },
         "required": ["type"]
@@ -320,6 +333,7 @@
         "pending_tool_call_ids",
         "iterations",
         "total_tool_calls",
+        "total_usage",
         "has_final",
         "final_part_count",
         "error",
@@ -340,6 +354,12 @@
         },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "total_usage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/usage" }
+          ]
+        },
         "has_final": { "type": "boolean" },
         "final_part_count": { "type": "integer", "minimum": 0 },
         "error": { "type": ["string", "null"] },
@@ -378,12 +398,26 @@
     },
     "state_changed_data": {
       "type": "object",
-      "required": ["from", "to", "iterations", "total_tool_calls", "error", "pause"],
+      "required": [
+        "from",
+        "to",
+        "iterations",
+        "total_tool_calls",
+        "total_usage",
+        "error",
+        "pause"
+      ],
       "properties": {
         "from": { "$ref": "#/$defs/status" },
         "to": { "$ref": "#/$defs/status" },
         "iterations": { "type": "integer", "minimum": 0 },
         "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "total_usage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/usage" }
+          ]
+        },
         "error": { "type": ["string", "null"] },
         "pause": {
           "oneOf": [
@@ -399,6 +433,15 @@
       "required": ["iteration"],
       "properties": {
         "iteration": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "model_error_data": {
+      "type": "object",
+      "required": ["error", "retry"],
+      "properties": {
+        "error": { "$ref": "model-error.schema.json" },
+        "retry": { "type": "boolean" }
       },
       "additionalProperties": false
     },

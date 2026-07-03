@@ -22,13 +22,16 @@ from agent_runtime import (
     EventTypes,
     LoopLimits,
     Message,
+    ModelCapabilities,
     ModelContentDelta,
+    ModelErrorDecision,
     ModelErrorInfo,
     ModelOptions,
     ModelProviderError,
     ModelRequest,
     ModelResponse,
     ModelToolCallDelta,
+    ModelUsage,
     PauseRequest,
     PauseSelector,
     PauseState,
@@ -37,6 +40,7 @@ from agent_runtime import (
     RunSnapshot,
     RuntimeContext,
     RuntimeHook,
+    RunTrace,
     ToolAcceptance,
     ToolCall,
     ToolChoice,
@@ -44,7 +48,9 @@ from agent_runtime import (
     ToolInvocation,
     ToolObservation,
     ToolOutput,
+    ToolRegistry,
     ToolRejection,
+    ToolScheduler,
     ToolSpec,
     TraceStepKinds,
     replay_trace,
@@ -77,6 +83,8 @@ class RequestCapturingModel:
 
 
 class StreamingTextModel:
+    capabilities = ModelCapabilities(streaming=True)
+
     async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
         _ = request, context
         raise AssertionError("stream path should not call complete")
@@ -88,6 +96,8 @@ class StreamingTextModel:
 
 
 class StreamingToolModel:
+    capabilities = ModelCapabilities(streaming=True)
+
     def __init__(self) -> None:
         self.calls = 0
 
@@ -108,6 +118,8 @@ class StreamingToolModel:
 
 
 class StreamingToolThenSlowModel:
+    capabilities = ModelCapabilities(streaming=True)
+
     def __init__(self) -> None:
         self.calls = 0
 
@@ -128,6 +140,8 @@ class StreamingToolThenSlowModel:
 
 
 class SlowStreamingModel:
+    capabilities = ModelCapabilities(streaming=True)
+
     async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
         _ = request, context
         raise AssertionError("stream path should not call complete")
@@ -139,6 +153,8 @@ class SlowStreamingModel:
 
 
 class FastStreamingModel:
+    capabilities = ModelCapabilities(streaming=True)
+
     async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
         _ = request, context
         raise AssertionError("stream path should not call complete")
@@ -150,6 +166,8 @@ class FastStreamingModel:
 
 
 class CloseTrackingStreamingModel:
+    capabilities = ModelCapabilities(streaming=True)
+
     def __init__(self) -> None:
         self.next_chunk_started = asyncio.Event()
         self.closed = asyncio.Event()
@@ -183,6 +201,27 @@ class ProviderErrorModel:
         )
 
 
+class FlakyProviderErrorModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+        _ = request, context
+        self.calls += 1
+        if self.calls == 1:
+            raise ModelProviderError(
+                ModelErrorInfo(
+                    message="provider unavailable",
+                    provider="test-provider",
+                    code="rate_limit",
+                    status_code=429,
+                    retryable=True,
+                    request_id="req-1",
+                )
+            )
+        return ModelResponse.text("recovered")
+
+
 class ClearingReadRunController(RunController):
     def __init__(self, request: PauseRequest) -> None:
         super().__init__()
@@ -198,6 +237,8 @@ class ClearingReadRunController(RunController):
 
 
 class StreamingProviderErrorModel:
+    capabilities = ModelCapabilities(streaming=True)
+
     async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
         _ = request, context
         raise AssertionError("stream path should not call complete")
@@ -722,6 +763,29 @@ class ContextInspectingModel:
         return ModelResponse.text(str(context.metadata["tenant"]))
 
 
+class RetryModelErrorHook(RuntimeHook):
+    def __init__(self, *, retry: bool = True, message: str | None = None) -> None:
+        self.retry = retry
+        self.message = message
+        self.seen: list[ModelErrorInfo] = []
+        self.before_model_calls = 0
+
+    def before_model(self, request: ModelRequest, context: RuntimeContext) -> ModelRequest | None:
+        _ = request, context
+        self.before_model_calls += 1
+        return None
+
+    def on_model_error(
+        self,
+        error: ModelErrorInfo,
+        request: ModelRequest,
+        context: RuntimeContext,
+    ) -> ModelErrorDecision:
+        _ = request, context
+        self.seen.append(error)
+        return ModelErrorDecision(retry=self.retry and error.retryable, message=self.message)
+
+
 class RewritingHook(RuntimeHook):
     def __init__(self) -> None:
         self.events: list[str] = []
@@ -1195,6 +1259,24 @@ async def test_stream_flag_falls_back_to_complete_for_non_streaming_model() -> N
 
 
 @pytest.mark.asyncio
+async def test_stream_flag_uses_complete_when_capability_does_not_advertise_streaming() -> None:
+    class CompletePreferredModel(StreamingTextModel):
+        capabilities = ModelCapabilities(streaming=False)
+
+        async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
+            _ = request, context
+            return ModelResponse.text("complete path")
+
+    result = await AgentLoop(model=CompletePreferredModel()).run(
+        [Message.user_text("stream flag")],
+        stream=True,
+    )
+
+    assert result.status is AgentStatus.COMPLETED
+    assert parts_text(result.final_parts) == "complete path"
+
+
+@pytest.mark.asyncio
 async def test_model_provider_error_sets_failed_checkpoint_error() -> None:
     result = await AgentLoop(model=ProviderErrorModel()).run([Message.user_text("fail")])
 
@@ -1203,6 +1285,49 @@ async def test_model_provider_error_sets_failed_checkpoint_error() -> None:
     assert result.snapshot is not None
     assert result.snapshot.state.error == "provider unavailable"
     assert "error_details" not in result.snapshot.state.to_dict()
+
+
+@pytest.mark.asyncio
+async def test_model_provider_error_hook_can_retry_with_limit() -> None:
+    model = FlakyProviderErrorModel()
+    hook = RetryModelErrorHook()
+
+    events = await collect_events(
+        AgentLoop(
+            model=model,
+            hooks=[hook],
+            limits=LoopLimits(max_model_retries=1),
+        ),
+        [Message.user_text("retry")],
+    )
+    event_types = [event.type for event in events]
+    event_trace = RunTrace.from_events(events[0].run_id, events)
+
+    assert events[-1].data["state"]["status"] == AgentStatus.COMPLETED.value
+    assert event_types.count(EventTypes.MODEL_STARTED) == 2
+    assert event_types.count(EventTypes.MODEL_ERROR) == 1
+    assert event_types.index(EventTypes.MODEL_ERROR) < event_types.index(EventTypes.MODEL_COMPLETED)
+    model_error_event = next(event for event in events if event.type == EventTypes.MODEL_ERROR)
+    assert model_error_event.data["retry"] is True
+    assert model_error_event.data["error"]["message"] == "provider unavailable"
+    assert [step.kind for step in event_trace.steps].count(TraceStepKinds.MODEL_CALL) == 2
+    assert TraceStepKinds.MODEL_ERROR in [step.kind for step in event_trace.steps]
+    assert replay_trace(event_trace).final_status is AgentStatus.COMPLETED
+    assert model.calls == 2
+    assert hook.before_model_calls == 2
+    assert [error.message for error in hook.seen] == ["provider unavailable"]
+
+
+@pytest.mark.asyncio
+async def test_model_provider_error_hook_can_rewrite_final_message() -> None:
+    result = await AgentLoop(
+        model=ProviderErrorModel(),
+        hooks=[RetryModelErrorHook(retry=False, message="temporary model outage")],
+        limits=LoopLimits(max_model_retries=1),
+    ).run([Message.user_text("fail")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == "temporary model outage"
 
 
 @pytest.mark.asyncio
@@ -1226,6 +1351,27 @@ async def test_stream_provider_error_discards_partial_assistant_message() -> Non
 
 
 @pytest.mark.asyncio
+async def test_stream_provider_error_is_not_retried_after_delta() -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=StreamingProviderErrorModel(),
+            hooks=[RetryModelErrorHook()],
+            limits=LoopLimits(max_model_retries=1),
+        ),
+        [Message.user_text("stream fail")],
+        stream=True,
+    )
+    event_types = [event.type for event in events]
+    model_error_event = next(event for event in events if event.type == EventTypes.MODEL_ERROR)
+
+    assert event_types.count(EventTypes.MODEL_STARTED) == 1
+    assert event_types.count(EventTypes.MODEL_ERROR) == 1
+    assert model_error_event.data["retry"] is False
+    assert EventTypes.MODEL_COMPLETED not in event_types
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+
+
+@pytest.mark.asyncio
 async def test_model_direct_final() -> None:
     model = ScriptedModel([ModelResponse.text("done")])
     result = await AgentLoop(model=model).run([Message.user_text("finish")])
@@ -1234,6 +1380,165 @@ async def test_model_direct_final() -> None:
     assert parts_text(result.final_parts) == "done"
     assert result.iterations == 1
     assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_trace_can_be_disabled() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        trace=False,
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.trace is None
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_factory_is_used_per_run() -> None:
+    calls: list[tuple[ToolRegistry, LoopLimits]] = []
+    limits = LoopLimits(max_parallel_tool_calls=3)
+
+    def factory(tools: ToolRegistry, runtime_limits: LoopLimits) -> ToolScheduler:
+        calls.append((tools, runtime_limits))
+        return ToolScheduler(tools, max_parallel_tool_calls=1)
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})]),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[EchoTool()],
+        limits=limits,
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert len(calls) == 1
+    assert calls[0][1] is limits
+    assert calls[0][0].spec_for("echo") is not None
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_factory_must_return_scheduler() -> None:
+    def factory(tools: ToolRegistry, runtime_limits: LoopLimits) -> Any:
+        _ = tools, runtime_limits
+        return object()
+
+    with pytest.raises(TypeError, match="tool_scheduler_factory"):
+        await AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            tool_scheduler_factory=factory,
+        ).run([Message.user_text("finish")])
+
+
+@pytest.mark.asyncio
+async def test_model_usage_is_aggregated_into_result_and_snapshot() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="echo", arguments={})],
+                    usage=ModelUsage(
+                        input_tokens=2,
+                        output_tokens=3,
+                        total_tokens=5,
+                        metadata={"provider_cost": "raw"},
+                    ),
+                ),
+                ModelResponse(
+                    parts=[ContentPart.text_part("done")],
+                    usage=ModelUsage(
+                        input_tokens=4,
+                        output_tokens=5,
+                        total_tokens=9,
+                        metadata={"provider_cost": "raw"},
+                    ),
+                ),
+            ]
+        ),
+        tools=[EchoTool()],
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.total_usage == ModelUsage(input_tokens=6, output_tokens=8, total_tokens=14)
+    assert result.snapshot is not None
+    assert result.snapshot.state.total_usage == result.total_usage
+    assert result.snapshot.state.summary()["total_usage"] == {
+        "input_tokens": 6,
+        "output_tokens": 8,
+        "total_tokens": 14,
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_usage_missing_fields_preserve_known_cumulative_values() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="echo", arguments={})],
+                    usage=ModelUsage(input_tokens=2, output_tokens=3, total_tokens=5),
+                ),
+                ModelResponse(
+                    parts=[ContentPart.text_part("done")],
+                    usage=ModelUsage(output_tokens=4),
+                ),
+            ]
+        ),
+        tools=[EchoTool()],
+        limits=LoopLimits(max_total_tokens=10),
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.total_usage == ModelUsage(input_tokens=2, output_tokens=7, total_tokens=5)
+    assert result.snapshot is not None
+    assert result.snapshot.state.summary()["total_usage"] == {
+        "input_tokens": 2,
+        "output_tokens": 7,
+        "total_tokens": 5,
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_usage_none_preserves_known_cumulative_values() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="echo", arguments={})],
+                    usage=ModelUsage(input_tokens=2, output_tokens=3, total_tokens=5),
+                ),
+                ModelResponse(parts=[ContentPart.text_part("done")]),
+            ]
+        ),
+        tools=[EchoTool()],
+        limits=LoopLimits(max_total_tokens=10),
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.total_usage == ModelUsage(input_tokens=2, output_tokens=3, total_tokens=5)
+
+
+@pytest.mark.asyncio
+async def test_model_usage_limit_stops_after_final_model_response() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    parts=[ContentPart.text_part("done")],
+                    usage=ModelUsage(total_tokens=11),
+                )
+            ]
+        ),
+        limits=LoopLimits(max_total_tokens=10),
+    ).run([Message.user_text("finish")])
+
+    assert result.status is AgentStatus.LIMIT_EXCEEDED
+    assert result.error == "max_total_tokens"
+    assert result.final_parts == ()
+    assert result.total_usage == ModelUsage(total_tokens=11)
 
 
 @pytest.mark.asyncio

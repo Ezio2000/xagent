@@ -9,6 +9,7 @@ Known v0.1 event types:
 - `state_changed`
 - `model_started`
 - `model_delta`
+- `model_error`
 - `model_completed`
 - `tool_started`
 - `tool_completed`
@@ -36,6 +37,13 @@ adapter supports it. It is live rendering progress, not durable state. Known
 payload kinds are standardized in `spec/v0/events.schema.json` and
 `spec/v0/model-stream.md`: `text_delta`, `tool_call_delta`, `reasoning_delta`,
 and `usage_delta`.
+
+`model_error` is emitted when a model attempt raises a structured provider
+error. It closes that attempt for event and trace accounting. If
+`data.retry` is true, another `model_started` may follow in the same planning
+iteration with the same `data.iteration` value; otherwise the run transitions to
+`failed`. The terminal `error` event is still emitted only after a terminal
+checkpoint.
 
 `tool_started` and `tool_completed` include the normalized tool invocation
 `mode`. For core-known modes, `tool_completed.data.result.result_kind` is

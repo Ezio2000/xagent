@@ -87,7 +87,8 @@ Every tool call must include `id`, `name`, `mode`, and `arguments`.
 
 `limits`, when present, uses `limits.schema.json` and may include
 `max_iterations`, `max_total_tool_calls`, `timeout_seconds`,
-`stop_on_tool_error`, and `max_parallel_tool_calls`.
+`stop_on_tool_error`, `max_parallel_tool_calls`, `max_total_tokens`, and
+`max_model_retries`.
 
 `conversation_insert`, when present with `conversation_insert_timing:
 "during_model_call"`, is inserted through the run controller while the scripted

@@ -23,6 +23,16 @@
       "type": "integer",
       "minimum": 1,
       "description": "Maximum active tool calls in a parallel-safe batch. A value of 1 is serial execution."
+    },
+    "max_total_tokens": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Maximum cumulative model total_tokens for a run. Null disables token budget enforcement."
+    },
+    "max_model_retries": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Maximum non-streaming model call retries allowed when a hook explicitly requests retry."
     }
   },
   "additionalProperties": false

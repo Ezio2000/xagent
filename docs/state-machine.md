@@ -7,7 +7,8 @@ The v0.1 state machine has six states:
 - `paused`: invocation-terminal state with a resumable `pause` payload.
 - `completed`: terminal state with a final answer.
 - `failed`: terminal state for unrecoverable runtime failures.
-- `limit_exceeded`: terminal state for iteration, tool-call, or timeout limits.
+- `limit_exceeded`: terminal state for iteration, tool-call, token, or timeout
+  limits.
 
 Transitions:
 
@@ -72,7 +73,11 @@ observation but not the control decision.
 Configured timeout limits are enforced as hard async deadlines around model,
 tool, and hook awaits. Synchronous hooks run off the event loop so a blocking
 hook cannot block the agent loop past the runtime deadline. Timeout is
-`limit_exceeded`, not `paused`.
+`limit_exceeded`, not `paused`. Standard model usage token fields are
+accumulated in `AgentState.total_usage`; if `LoopLimits.max_total_tokens` is
+exceeded after a model response is committed, the run transitions to
+`limit_exceeded`. If a later response omits usage or omits an individual usage
+field, previously accumulated fields remain unchanged.
 
 During `executing_tools`, the runtime may run explicitly safe tool calls in
 parallel up to `LoopLimits.max_parallel_tool_calls`. Unsafe or undeclared tools

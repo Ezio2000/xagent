@@ -3,10 +3,12 @@
 Model streaming is an observation protocol, not a durable state protocol.
 
 SDKs may expose a streaming model client in addition to the canonical
-`complete` model call. Streaming clients must return an async iterator directly,
-usually by implementing the method as an async generator. They must not require
-callers to await a coroutine before receiving the iterator. Streaming clients
-yield provider-neutral delta events while the model is producing a response. The
+`complete` model call. Streaming clients must explicitly advertise streaming
+capability. In the Python SDK this is `ModelCapabilities(streaming=True)`.
+Streaming methods must return an async iterator directly, usually by
+implementing the method as an async generator. They must not require callers to
+await a coroutine before receiving the iterator. Streaming clients yield
+provider-neutral delta events while the model is producing a response. The
 runtime may forward those deltas as `model_delta` events for live rendering.
 
 Durable state is still committed only after a complete `ModelResponse` is
@@ -19,6 +21,9 @@ resume. Timeout or provider-error handling may end the invocation with a
 terminal `limit_exceeded` or `failed` checkpoint, but that checkpoint must
 preserve the last stable pre-model message history and must not commit a partial
 assistant message.
+SDKs must not retry a failed streaming model attempt after deltas have been
+emitted; hosts may start a new invocation or resume from the last durable
+checkpoint if their application policy allows it.
 
 Known `model_delta` payload shapes:
 
