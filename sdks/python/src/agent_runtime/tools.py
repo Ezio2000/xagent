@@ -689,7 +689,7 @@ class ToolRegistry:
     @staticmethod
     def _validate_arguments(validator: Any, call: ToolCall) -> None:
         try:
-            validator.validate(dict(call.arguments))
+            validator.validate(call.arguments)
         except ValidationError as exc:
             raise InvalidToolCall(
                 f"tool {call.name} arguments do not match input_schema: {exc.message}"
