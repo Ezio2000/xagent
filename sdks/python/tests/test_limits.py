@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from agent_runtime import LoopLimits
+from agent_runtime import AgentState, AgentStatus, LimitReasons, LoopLimits
 
 
 def test_limit_validation() -> None:
@@ -40,3 +40,13 @@ def test_limit_validation() -> None:
 
     with pytest.raises(TypeError, match="max_model_retries"):
         LoopLimits(max_model_retries=cast(Any, True))
+
+
+def test_limit_reason_constants_match_runtime_reason_strings() -> None:
+    state = AgentState(status=AgentStatus.PLANNING, messages=[])
+    state.iterations = 8
+    state.total_tool_calls = 20
+
+    assert LoopLimits().iteration_reason(state) == LimitReasons.MAX_ITERATIONS
+    assert LoopLimits().tool_call_reason(state) == LimitReasons.MAX_TOTAL_TOOL_CALLS
+    assert LimitReasons.TIMEOUT_SECONDS == "timeout_seconds"

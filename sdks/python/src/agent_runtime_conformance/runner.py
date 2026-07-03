@@ -17,7 +17,9 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from agent_runtime.control import ConversationInsert, PauseRequest, RunController
+from agent_runtime.errors import ModelErrorInfo, ModelProviderError
 from agent_runtime.events import AgentEvent, EventTypes
+from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
 from agent_runtime.limits import LoopLimits
 from agent_runtime.loop import AgentLoop, AgentResult
 from agent_runtime.messages import ContentPart, Message
@@ -57,6 +59,7 @@ CASE_KEYS = {
     "resume_expected_pause",
     "resume_checkpoint_status",
     "resume_checkpoint_total_tool_calls",
+    "retry_model_errors",
     "stream_model_steps",
     "expected_status",
     "expected_final_text",
@@ -70,6 +73,7 @@ CASE_KEYS = {
     "expected_resume_trace_prefix",
     "expected_message_roles",
     "expected_tool_texts",
+    "expected_tool_text_contains",
     "expected_pending_tool_call_ids",
     "expected_pause",
     "expected_model_deltas",
@@ -85,8 +89,17 @@ CASE_KEYS = {
     "expected_error",
 }
 NEGATIVE_CASE_TYPES = {"model_response_negative"}
-MODEL_STEP_REQUIRED_KEYS = {"parts", "tool_calls"}
+MODEL_STEP_RESPONSE_KEYS = {
+    "parts",
+    "tool_calls",
+    "finish_reason",
+    "usage",
+    "model",
+    "response_id",
+    "metadata",
+}
 MODEL_STEP_KEYS = {
+    "error",
     "parts",
     "tool_calls",
     "finish_reason",
@@ -154,14 +167,18 @@ class ConformanceValidators:
     run_trace: Any
     resume_input: Any
     message: Any
+    model_error: Any
     model_response: Any
     limits: Any
+
+
+ModelStep = ModelResponse | ModelProviderError
 
 
 class ScriptedModel:
     def __init__(
         self,
-        steps: Sequence[ModelResponse],
+        steps: Sequence[ModelStep],
         *,
         controller: RunController | None = None,
         pause_request_on_call: PauseRequest | None = None,
@@ -181,11 +198,13 @@ class ScriptedModel:
         _ = request, context
         if self.calls >= len(self._steps):
             raise AssertionError("scripted model exhausted")
-        response = self._steps[self.calls]
+        step = self._steps[self.calls]
         self.calls += 1
         self._apply_conversation_insert_once(self._conversation_insert_on_call)
         self._apply_pause_once(self._pause_request_on_call)
-        return response
+        if isinstance(step, ModelProviderError):
+            raise step
+        return step
 
     def _apply_pause_once(self, request: PauseRequest | None) -> None:
         if self._controller is not None and request is not None and not self._pause_requested:
@@ -203,7 +222,7 @@ class StreamedCaseModel(ScriptedModel):
 
     def __init__(
         self,
-        steps: Sequence[ModelResponse],
+        steps: Sequence[ModelStep],
         stream_steps: Sequence[dict[str, Any]],
         *,
         controller: RunController | None = None,
@@ -360,6 +379,40 @@ class ParallelWaitTool:
         )
 
 
+class StrictCountTool:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    spec = ToolSpec(
+        name="strict_count",
+        description="Require an integer count.",
+        input_schema={
+            "type": "object",
+            "required": ["count"],
+            "properties": {"count": {"type": "integer"}},
+            "additionalProperties": False,
+        },
+    )
+
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = context
+        self.calls += 1
+        return ToolObservation.text(str(invocation.arguments["count"]))
+
+
+class RetryModelErrorHook(RuntimeHook):
+    def on_model_error(
+        self,
+        error: ModelErrorInfo,
+        request: ModelRequest,
+        context: RuntimeContext,
+    ) -> ModelErrorDecision | None:
+        _ = request, context
+        return ModelErrorDecision(retry=error.retryable)
+
+
 class ConformanceRunner:
     """Load and execute shared conformance cases."""
 
@@ -438,6 +491,8 @@ class ConformanceRunner:
         expect_case_str(case["name"], f"{name}.name")
         expect_case_str(case["expected_status"], f"{name}.expected_status")
         expect_case_int(case["expected_tool_calls"], f"{name}.expected_tool_calls")
+        if "retry_model_errors" in case and not isinstance(case["retry_model_errors"], bool):
+            raise TypeError(f"{name}.retry_model_errors must be a boolean")
         if case_type == "resume":
             if "resume_checkpoint_status" not in case:
                 raise KeyError(f"{name} missing required key: resume_checkpoint_status")
@@ -489,26 +544,12 @@ class ConformanceRunner:
                 raise TypeError(f"{name}.limits.stop_on_tool_error must be a boolean")
             self.assert_matches_schema(f"{name}.limits", self.validators.limits, limits)
         for index, step in enumerate(expect_case_list(case["model_steps"], f"{name}.model_steps")):
-            reject_unknown_keys(set(step), MODEL_STEP_KEYS, f"{name}.model_steps[{index}]")
-            for required in MODEL_STEP_REQUIRED_KEYS:
-                if required not in step:
-                    raise KeyError(f"{name}.model_steps[{index}] missing required key: {required}")
-            self.assert_matches_schema(
-                f"{name}.model_steps[{index}]", self.validators.model_response, step
-            )
+            self._validate_model_step(name, index, step, "model_steps")
         raw_resume_steps = case.get("resume_model_steps", [])
         for index, step in enumerate(
             expect_case_list(raw_resume_steps, f"{name}.resume_model_steps")
         ):
-            reject_unknown_keys(set(step), MODEL_STEP_KEYS, f"{name}.resume_model_steps[{index}]")
-            for required in MODEL_STEP_REQUIRED_KEYS:
-                if required not in step:
-                    raise KeyError(
-                        f"{name}.resume_model_steps[{index}] missing required key: {required}"
-                    )
-            self.assert_matches_schema(
-                f"{name}.resume_model_steps[{index}]", self.validators.model_response, step
-            )
+            self._validate_model_step(name, index, step, "resume_model_steps")
         raw_resume_messages = case.get("resume_append_messages", [])
         for message in expect_case_list(raw_resume_messages, f"{name}.resume_append_messages"):
             Message.from_dict(message)
@@ -543,7 +584,12 @@ class ConformanceRunner:
                     item.get("total_tool_calls"),
                     f"{name}.forbidden_checkpoint_status_tool_counts[{index}].total_tool_calls",
                 )
-        for key in ("expected_event_types", "expected_trace_kinds", "forbidden_event_types"):
+        for key in (
+            "expected_event_types",
+            "expected_trace_kinds",
+            "expected_tool_text_contains",
+            "forbidden_event_types",
+        ):
             if key in case:
                 for item in expect_case_list_of_strings(case[key], f"{name}.{key}"):
                     if not item:
@@ -574,6 +620,30 @@ class ConformanceRunner:
         for optional_key in ("id", "name", "mode", "arguments_delta"):
             if optional_key in event:
                 expect_case_optional_str(event[optional_key], f"{label}.{optional_key}")
+
+    def _validate_model_step(
+        self, name: str, step_index: int, step: dict[str, Any], key: str
+    ) -> None:
+        label = f"{name}.{key}[{step_index}]"
+        reject_unknown_keys(set(step), MODEL_STEP_KEYS, label)
+        has_error = "error" in step
+        has_response = bool(MODEL_STEP_RESPONSE_KEYS & set(step))
+        if has_error == has_response:
+            raise ValueError(f"{label} must contain either error or a model response")
+        if has_error:
+            error = step["error"]
+            if not isinstance(error, dict):
+                raise TypeError(f"{label}.error must be an object")
+            self.assert_matches_schema(
+                f"{label}.error",
+                self.validators.model_error,
+                cast(Mapping[str, Any], error),
+            )
+            return
+        for required in ("parts", "tool_calls"):
+            if required not in step:
+                raise KeyError(f"{label} missing required key: {required}")
+        self.assert_matches_schema(label, self.validators.model_response, step)
 
     def assert_matches_schema(
         self,
@@ -610,7 +680,7 @@ class ConformanceRunner:
             await self.assert_resume_conformance_case(case)
             return ConformanceCaseResult(name=name, case_type=case_type)
 
-        steps = [model_response_from_case_step(step) for step in case["model_steps"]]
+        steps = [model_step_from_case_step(step) for step in case["model_steps"]]
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         expected_status = AgentStatus(case["expected_status"])
         result = await self.run_case_result(case, steps, stream_steps)
@@ -627,7 +697,7 @@ class ConformanceRunner:
     async def run_case_result(
         self,
         case: dict[str, Any],
-        steps: Sequence[ModelResponse],
+        steps: Sequence[ModelStep],
         stream_steps: Sequence[dict[str, Any]],
     ) -> AgentResult:
         controller = controller_from_case(case)
@@ -636,6 +706,7 @@ class ConformanceRunner:
             model=model,
             tools=case_tools(),
             limits=limits_from_case(case),
+            hooks=hooks_from_case(case),
         ).run(
             [Message.user_text("run conformance case")],
             stream=bool(stream_steps),
@@ -645,7 +716,7 @@ class ConformanceRunner:
     async def collect_case_events(
         self,
         case: dict[str, Any],
-        steps: Sequence[ModelResponse],
+        steps: Sequence[ModelStep],
         stream_steps: Sequence[dict[str, Any]],
     ) -> list[AgentEvent]:
         controller = controller_from_case(case)
@@ -656,6 +727,7 @@ class ConformanceRunner:
                 model=model,
                 tools=case_tools(),
                 limits=limits_from_case(case),
+                hooks=hooks_from_case(case),
             ).run_events(
                 [Message.user_text("run conformance case")],
                 stream=bool(stream_steps),
@@ -667,7 +739,7 @@ class ConformanceRunner:
         self,
         case: dict[str, Any],
         resume_input: ResumeInput,
-        steps: Sequence[ModelResponse],
+        steps: Sequence[ModelStep],
     ) -> list[AgentEvent]:
         return [
             event
@@ -675,6 +747,7 @@ class ConformanceRunner:
                 model=model_from_case(case, steps, [], controller=None),
                 tools=case_tools(),
                 limits=limits_from_case(case),
+                hooks=hooks_from_case(case),
             ).run_snapshot_events(resume_input)
         ]
 
@@ -883,6 +956,17 @@ class ConformanceRunner:
                 actual_tool_texts == case["expected_tool_texts"],
                 f"expected tool texts {case['expected_tool_texts']}, got {actual_tool_texts}",
             )
+        if "expected_tool_text_contains" in case:
+            actual_tool_texts = [
+                message.text for message in result.messages if message.role == "tool"
+            ]
+            for expected in expect_case_list_of_strings(
+                case["expected_tool_text_contains"], "expected_tool_text_contains"
+            ):
+                check(
+                    any(expected in text for text in actual_tool_texts),
+                    f"expected a tool text containing {expected!r}, got {actual_tool_texts}",
+                )
         if "expected_pending_tool_call_ids" in case:
             snapshot = result.snapshot
             if snapshot is None:
@@ -1026,8 +1110,8 @@ class ConformanceRunner:
             check(not actual, f"forbidden checkpoint message roles emitted: {sorted(actual)}")
 
     async def assert_resume_conformance_case(self, case: dict[str, Any]) -> None:
-        initial_result_steps = [model_response_from_case_step(step) for step in case["model_steps"]]
-        initial_event_steps = [model_response_from_case_step(step) for step in case["model_steps"]]
+        initial_result_steps = [model_step_from_case_step(step) for step in case["model_steps"]]
+        initial_event_steps = [model_step_from_case_step(step) for step in case["model_steps"]]
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         initial_result = await self.run_case_result(case, initial_result_steps, stream_steps)
         initial_events = await self.collect_case_events(case, initial_event_steps, stream_steps)
@@ -1084,17 +1168,18 @@ class ConformanceRunner:
         )
 
         resume_steps = [
-            model_response_from_case_step(step)
+            model_step_from_case_step(step)
             for step in cast(list[dict[str, Any]], case.get("resume_model_steps") or [])
         ]
         resume_event_steps = [
-            model_response_from_case_step(step)
+            model_step_from_case_step(step)
             for step in cast(list[dict[str, Any]], case.get("resume_model_steps") or [])
         ]
         result = await AgentLoop(
             model=model_from_case(case, resume_steps, [], controller=None),
             tools=case_tools(),
             limits=limits_from_case(case),
+            hooks=hooks_from_case(case),
         ).run_snapshot(resume_input)
         resume_events = await self.collect_resume_case_events(
             case, resume_input, resume_event_steps
@@ -1222,6 +1307,7 @@ def build_validators(spec_dir: Path) -> ConformanceValidators:
         run_trace=Draft202012Validator(schemas["run-trace.schema.json"], registry=registry),
         resume_input=Draft202012Validator(schemas["resume-input.schema.json"], registry=registry),
         message=Draft202012Validator(schemas["messages.schema.json"], registry=registry),
+        model_error=Draft202012Validator(schemas["model-error.schema.json"], registry=registry),
         model_response=Draft202012Validator(
             schemas["model-response.schema.json"], registry=registry
         ),
@@ -1287,7 +1373,10 @@ def content_part_from_case(part: dict[str, Any]) -> ContentPart:
     return ContentPart.from_dict(part)
 
 
-def model_response_from_case_step(step: dict[str, Any]) -> ModelResponse:
+def model_step_from_case_step(step: dict[str, Any]) -> ModelStep:
+    if "error" in step:
+        error = ModelErrorInfo.from_dict(cast(Mapping[str, Any], step["error"]))
+        return ModelProviderError(error)
     return ModelResponse.from_dict(step)
 
 
@@ -1351,7 +1440,7 @@ def controller_from_case(case: dict[str, Any]) -> RunController | None:
 
 def model_from_case(
     case: dict[str, Any],
-    steps: Sequence[ModelResponse],
+    steps: Sequence[ModelStep],
     stream_steps: Sequence[dict[str, Any]],
     controller: RunController | None,
 ) -> ScriptedModel:
@@ -1389,7 +1478,21 @@ def model_from_case(
 
 
 def case_tools() -> list[Tool]:
-    return [EchoTool(), AcceptTool(), FailTool(), DelayedEchoTool(), WaitTool(), ParallelWaitTool()]
+    return [
+        EchoTool(),
+        AcceptTool(),
+        FailTool(),
+        DelayedEchoTool(),
+        WaitTool(),
+        ParallelWaitTool(),
+        StrictCountTool(),
+    ]
+
+
+def hooks_from_case(case: dict[str, Any]) -> list[RuntimeHook]:
+    if case.get("retry_model_errors") is True:
+        return [RetryModelErrorHook()]
+    return []
 
 
 def messages_from_case(value: object) -> list[Message]:

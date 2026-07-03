@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from inspect import isawaitable, iscoroutinefunction
 from time import monotonic, time
@@ -14,7 +14,7 @@ from agent_runtime.control import ConversationInsert, PauseRequest, RunControlle
 from agent_runtime.errors import AgentError, InvalidToolCall, ModelProviderError, ToolError
 from agent_runtime.events import CORE_EVENT_TYPES, AgentEvent, EventEmitter, EventTypes
 from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
-from agent_runtime.limits import LoopLimits
+from agent_runtime.limits import LimitReasons, LoopLimits
 from agent_runtime.messages import (
     ContentPart,
     Message,
@@ -211,15 +211,11 @@ class AgentLoop:
             state, runtime_context, control, stream=stream
         ).__aiter__()
         try:
-            while True:
-                try:
-                    event = await anext(iterator)
-                except StopAsyncIteration:
-                    break
-                yield event
+            async with aclosing(self._pump_events(iterator)) as events:
+                async for event in events:
+                    yield event
         finally:
             runtime_context.sequence = control.sequence
-            await self._close_async_iterator(iterator)
 
     async def run_snapshot(
         self,
@@ -257,15 +253,11 @@ class AgentLoop:
             working_state, runtime_context, control, stream=stream
         ).__aiter__()
         try:
-            while True:
-                try:
-                    event = await anext(iterator)
-                except StopAsyncIteration:
-                    break
-                yield event
+            async with aclosing(self._pump_events(iterator)) as events:
+                async for event in events:
+                    yield event
         finally:
             runtime_context.sequence = control.sequence
-            await self._close_async_iterator(iterator)
 
     async def _run_prepared_state(
         self,
@@ -279,14 +271,9 @@ class AgentLoop:
             working_state, runtime_context, control, stream=stream
         ).__aiter__()
         try:
-            while True:
-                try:
-                    await anext(iterator)
-                except StopAsyncIteration:
-                    break
+            await self._drain_events(iterator)
         finally:
             runtime_context.sequence = control.sequence
-            await self._close_async_iterator(iterator)
         return self._result(working_state, runtime_context, control)
 
     async def _run_prepared_state_events(
@@ -301,15 +288,11 @@ class AgentLoop:
             working_state, runtime_context, control, stream=stream
         ).__aiter__()
         try:
-            while True:
-                try:
-                    event = await anext(iterator)
-                except StopAsyncIteration:
-                    break
-                yield event
+            async with aclosing(self._pump_events(iterator)) as events:
+                async for event in events:
+                    yield event
         finally:
             runtime_context.sequence = control.sequence
-            await self._close_async_iterator(iterator)
 
     async def _run_state_events(
         self,
@@ -332,15 +315,9 @@ class AgentLoop:
                 yield event
 
             drive_iterator = self._drive(state, context, control, stream=stream).__aiter__()
-            try:
-                while True:
-                    try:
-                        event = await anext(drive_iterator)
-                    except StopAsyncIteration:
-                        break
+            async with aclosing(self._pump_events(drive_iterator)) as events:
+                async for event in events:
                     yield event
-            finally:
-                await self._close_async_iterator(drive_iterator)
 
             terminal_checkpoint_committed = state.is_terminal
             if state.status is not AgentStatus.PAUSED:
@@ -385,7 +362,7 @@ class AgentLoop:
                 yield self._raw_event(
                     control,
                     EventTypes.ERROR,
-                    {"status": state.status.value, "message": "timeout_seconds"},
+                    {"status": state.status.value, "message": LimitReasons.TIMEOUT_SECONDS},
                 )
                 yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
                 return
@@ -394,7 +371,7 @@ class AgentLoop:
             self._rollback_trace_to_durable(control)
             previous = state.status
             state.status = AgentStatus.LIMIT_EXCEEDED
-            state.error = "timeout_seconds"
+            state.error = LimitReasons.TIMEOUT_SECONDS
             state.pause = None
             self._clear_pause_request(control)
             yield self._raw_event(
@@ -489,28 +466,16 @@ class AgentLoop:
 
             if state.status is AgentStatus.PLANNING:
                 iterator = self._planning_step(state, context, control, stream=stream).__aiter__()
-                try:
-                    while True:
-                        try:
-                            event = await anext(iterator)
-                        except StopAsyncIteration:
-                            break
+                async with aclosing(self._pump_events(iterator)) as events:
+                    async for event in events:
                         yield event
-                finally:
-                    await self._close_async_iterator(iterator)
                 continue
 
             if state.status is AgentStatus.EXECUTING_TOOLS:
                 iterator = self._tool_step(state, context, control).__aiter__()
-                try:
-                    while True:
-                        try:
-                            event = await anext(iterator)
-                        except StopAsyncIteration:
-                            break
+                async with aclosing(self._pump_events(iterator)) as events:
+                    async for event in events:
                         yield event
-                finally:
-                    await self._close_async_iterator(iterator)
                 continue
 
             for event in await self._transition(
@@ -563,15 +528,9 @@ class AgentLoop:
                     iterator = self._stream_model(
                         request, context, control, response_holder
                     ).__aiter__()
-                    try:
-                        while True:
-                            try:
-                                event = await anext(iterator)
-                            except StopAsyncIteration:
-                                break
+                    async with aclosing(self._pump_events(iterator)) as events:
+                        async for event in events:
                             yield event
-                    finally:
-                        await self._close_async_iterator(iterator)
                     response = response_holder[0]
                 else:
                     response = await self._await_model_with_interrupt(
@@ -603,7 +562,9 @@ class AgentLoop:
                     yield event
                 return
             except RuntimeTimeoutError:
-                for event in await self._limit(state, context, control, "timeout_seconds"):
+                for event in await self._limit(
+                    state, context, control, LimitReasons.TIMEOUT_SECONDS
+                ):
                     yield event
                 return
             except ModelProviderError as exc:
@@ -762,7 +723,9 @@ class AgentLoop:
                 tuple(state.pending_tool_calls[:remaining_slots])
             )
             if batch is None:
-                for event in await self._limit(state, context, control, "max_total_tool_calls"):
+                for event in await self._limit(
+                    state, context, control, LimitReasons.MAX_TOTAL_TOOL_CALLS
+                ):
                     yield event
                 return
 
@@ -780,17 +743,13 @@ class AgentLoop:
 
             try:
                 iterator = self._run_tool_batch(prepared, state, context, control).__aiter__()
-                try:
-                    while True:
-                        try:
-                            event = await anext(iterator)
-                        except StopAsyncIteration:
-                            break
+                async with aclosing(self._pump_events(iterator)) as events:
+                    async for event in events:
                         yield event
-                finally:
-                    await self._close_async_iterator(iterator)
             except RuntimeTimeoutError:
-                for event in await self._limit(state, context, control, "timeout_seconds"):
+                for event in await self._limit(
+                    state, context, control, LimitReasons.TIMEOUT_SECONDS
+                ):
                     yield event
                 return
 
@@ -1188,6 +1147,24 @@ class AgentLoop:
             if not interrupt_task.done():
                 interrupt_task.cancel()
 
+    async def _pump_events(
+        self, iterator: AsyncIterator[AgentEvent]
+    ) -> AsyncGenerator[AgentEvent, None]:
+        try:
+            while True:
+                try:
+                    event = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                yield event
+        finally:
+            await self._close_async_iterator(iterator)
+
+    async def _drain_events(self, iterator: AsyncIterator[AgentEvent]) -> None:
+        async with aclosing(self._pump_events(iterator)) as events:
+            async for _event in events:
+                pass
+
     async def _close_async_iterator(self, iterator: AsyncIterator[object]) -> None:
         aclose = getattr(iterator, "aclose", None)
         if callable(aclose):
@@ -1277,7 +1254,7 @@ class AgentLoop:
     def _timeout_reason(self, control: RunControlState) -> str | None:
         remaining = control.remaining_seconds()
         if remaining is not None and remaining <= 0:
-            return "timeout_seconds"
+            return LimitReasons.TIMEOUT_SECONDS
         return None
 
     def _active_limit_reason(self, state: AgentState, control: RunControlState) -> str | None:

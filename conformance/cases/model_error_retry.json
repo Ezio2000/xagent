@@ -1,0 +1,33 @@
+{
+  "name": "model_error_retry",
+  "limits": {
+    "max_model_retries": 1
+  },
+  "retry_model_errors": true,
+  "model_steps": [
+    {
+      "error": {
+        "message": "provider unavailable",
+        "provider": "test-provider",
+        "code": "rate_limit",
+        "status_code": 429,
+        "retryable": true,
+        "request_id": "req-1"
+      }
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "recovered"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "recovered",
+  "expected_tool_calls": 0,
+  "expected_event_types": ["model_error"],
+  "expected_trace_kinds": ["model_error"]
+}

@@ -37,3 +37,16 @@ metadata key summaries, not raw host or provider metadata values.
 Raw durable metadata is limited to explicit host-owned fields such as
 `RuntimeContext.metadata`, pause metadata, and resume metadata. Model and tool
 provider metadata is not copied into durable message history or trace payloads.
+
+Runtime hooks are invoked inside the active run deadline. Async hooks are
+awaited directly. Sync hooks in the Python reference SDK run in a worker thread
+so they do not block the event loop; if the run times out or is cancelled, the
+runtime stops waiting, but Python cannot forcibly terminate the already-running
+thread. Sync hooks should therefore be short and idempotent around host-visible
+side effects.
+
+`RunController` is safe to call from other host threads in the Python reference
+SDK. Pause, interrupt, and insert requests are protected by a lock and wake the
+agent loop with `call_soon_threadsafe`. The controller only synchronizes these
+run-control requests; it does not make host persistence, model clients, or tool
+implementations thread-safe.

@@ -1,0 +1,32 @@
+{
+  "name": "tool_input_schema_validation",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "strict_count",
+          "mode": "execute",
+          "arguments": {
+            "count": "bad"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "handled invalid arguments"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "handled invalid arguments",
+  "expected_tool_calls": 1,
+  "expected_tool_text_contains": ["input_schema"],
+  "expected_message_roles": ["user", "assistant", "tool", "assistant"]
+}

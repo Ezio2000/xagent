@@ -10,6 +10,11 @@ The v0.1 state machine has six states:
 - `limit_exceeded`: terminal state for iteration, tool-call, token, or timeout
   limits.
 
+State values are closed runtime-owned contract values. Adding a state requires
+updating the SDK enum, `spec/v0/state.schema.json`, event and trace schemas,
+transition/replay validation, loop dispatch, docs, and conformance cases in the
+same change.
+
 Transitions:
 
 ```text
@@ -40,6 +45,10 @@ new model call, after a committed model response, after a serial tool commit, or
 after a full parallel tool batch commit. Interrupting model generation may stop a
 stream or model call early, but any partial `model_delta` output remains live UI
 progress only and is not appended as an assistant message.
+There is no v0 `cancelled` terminal status. Hosts that need a durable user-abort
+boundary should pause or interrupt, then discard or retain the paused snapshot
+according to application policy. Directly cancelling the SDK task is host-local
+control and does not produce a portable resumable state.
 
 Tool calls carry an open non-empty `mode` string. Core runtimes recognize
 `execute` and `accept`: execute-mode calls append a `ToolObservation`, and
@@ -91,6 +100,10 @@ SDKs should expose `RunSnapshot` as the durable checkpoint boundary. It contains
 `deadline` fields. Host applications own persistence and decide why to pause,
 where to store snapshots, and what messages or callback results to add before
 resuming.
+Snapshots and hook/event payloads are defensive copies of runtime state. The
+reference SDK favors immutable boundaries over structural sharing; long runs
+therefore pay copy cost proportional to accumulated message history at each
+checkpoint and hook boundary.
 
 SDKs should also expose a compact `RunTrace` for one runtime invocation. Trace
 steps record semantic boundaries such as model calls, tool calls, pause, resume,

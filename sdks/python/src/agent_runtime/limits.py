@@ -34,6 +34,15 @@ def _expect_bool(value: object, label: str) -> bool:
     return value
 
 
+class LimitReasons:
+    """Known limit reason constants emitted by the runtime."""
+
+    MAX_ITERATIONS = "max_iterations"
+    MAX_TOTAL_TOOL_CALLS = "max_total_tool_calls"
+    MAX_TOTAL_TOKENS = "max_total_tokens"
+    TIMEOUT_SECONDS = "timeout_seconds"
+
+
 @dataclass(slots=True, frozen=True)
 class LoopLimits:
     """Resource limits for a single agent run."""
@@ -74,17 +83,17 @@ class LoopLimits:
 
     def iteration_reason(self, state: AgentState) -> str | None:
         if state.iterations >= self.max_iterations:
-            return "max_iterations"
+            return LimitReasons.MAX_ITERATIONS
         return None
 
     def tool_call_reason(self, state: AgentState) -> str | None:
         if state.total_tool_calls >= self.max_total_tool_calls:
-            return "max_total_tool_calls"
+            return LimitReasons.MAX_TOTAL_TOOL_CALLS
         return None
 
     def usage_reason(self, usage: ModelUsage | None) -> str | None:
         if self.max_total_tokens is None or usage is None or usage.total_tokens is None:
             return None
         if usage.total_tokens > self.max_total_tokens:
-            return "max_total_tokens"
+            return LimitReasons.MAX_TOTAL_TOKENS
         return None

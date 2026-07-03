@@ -47,6 +47,14 @@ history. The paused snapshot resumes from the previous durable state, usually
 Interrupt does not define user-message policy. Hosts decide whether to resume
 the paused snapshot as-is, append new messages, or start a different run.
 
+## Cancellation
+
+v0 does not define a portable `cancelled` terminal status. User aborts that need
+a durable portable boundary should be represented as pause or interrupt followed
+by host policy: persist, discard, or never resume the paused snapshot. Directly
+cancelling the SDK task is a host-local control action and does not create a
+portable resumable status.
+
 ## Conversation Insert
 
 A conversation insert is host-owned input that enters message history during a

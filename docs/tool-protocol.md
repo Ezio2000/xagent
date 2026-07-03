@@ -6,7 +6,7 @@ Tools expose:
 
 - `spec.name`
 - `spec.description`
-- `spec.input_schema`
+- `spec.input_schema`: JSON Schema for invocation arguments.
 - `spec.modes`: supported non-empty invocation modes. Core runtimes recognize
   `execute` and `accept`; other modes are extension points handled by tool
   `invoke`.
@@ -22,6 +22,12 @@ Model adapters map provider syntax into that shape. For a model-facing operator
 such as `accept(web_search({"query": "..."}))`, the normalized runtime shape is
 the original tool name plus `mode: "accept"`; core does not create wrapper tool
 names such as `accept_web_search`.
+Before a tool implementation is called, the runtime validates
+`ToolInvocation.arguments` against `spec.input_schema`. Validation failure is an
+invalid tool call: execute-mode calls commit an error `ToolObservation`,
+accept-mode calls commit a `ToolRejection`, and extension modes commit an error
+`ToolOutput` with a custom `tool_error` result kind. The model can observe that
+tool error on the next planning turn and recover.
 
 Execute-mode tools return `ToolObservation`:
 

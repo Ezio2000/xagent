@@ -10,6 +10,10 @@ Status values:
 - `limit_exceeded`
 
 The loop starts in `planning`.
+Adding or removing a status value is a portable contract change. SDKs must
+update the status enum, `state.schema.json`, event and trace schemas, transition
+validation, replay validation, loop dispatch, documentation, and conformance
+cases together.
 
 When the model returns tool calls, the runtime appends the assistant tool-call
 message and transitions to `executing_tools`. Each tool call carries

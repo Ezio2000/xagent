@@ -408,6 +408,29 @@ class EchoTool:
         return ToolObservation.text(str(invocation.arguments.get("text", "")))
 
 
+class StrictCountTool:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    spec = ToolSpec(
+        name="strict_count",
+        description="Require an integer count.",
+        input_schema={
+            "type": "object",
+            "required": ["count"],
+            "properties": {"count": {"type": "integer"}},
+            "additionalProperties": False,
+        },
+    )
+
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = context
+        self.calls += 1
+        return ToolObservation.text(str(invocation.arguments["count"]))
+
+
 class MetadataTool:
     spec = ToolSpec(
         name="metadata_tool",
@@ -502,6 +525,32 @@ class CustomHandoffTool:
             is_error=bool(invocation.arguments.get("is_error", False)),
             pause=pause,
             correlation_id=str(invocation.arguments.get("correlation_id", invocation.id)),
+        )
+
+
+class StrictCustomHandoffTool:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    spec = ToolSpec(
+        name="strict_handoff",
+        description="Require a string custom handoff target.",
+        input_schema={
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        modes=("handoff",),
+    )
+
+    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
+        _ = context
+        self.calls += 1
+        return ToolOutput(
+            kind="handoff",
+            parts=[ContentPart.text_part(str(invocation.arguments["target"]))],
+            correlation_id=invocation.id,
         )
 
 
@@ -1671,6 +1720,38 @@ async def test_unknown_accept_tool_call_is_committed_as_rejection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_accept_tool_input_schema_error_is_committed_as_rejection() -> None:
+    tool = AcceptingWebSearchTool()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="web_search",
+                        mode="accept",
+                        arguments={"query": 123},
+                    )
+                ]
+            ),
+            ModelResponse.text("handled"),
+        ]
+    )
+
+    result = await AgentLoop(model=model, tools=[tool]).run([Message.user_text("search")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert parts_text(result.final_parts) == "handled"
+    assert tool.accepted == []
+    tool_message = next(message for message in result.messages if message.role == "tool")
+    assert "input_schema" in tool_message.text
+    assert tool_message.metadata == {
+        "result_kind": "rejection",
+        "is_error": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_accept_tool_rejection_honors_stop_on_tool_error() -> None:
     result = await AgentLoop(
         model=RejectedAcceptModel(),
@@ -1806,6 +1887,38 @@ async def test_unknown_custom_tool_call_commits_extension_tool_error() -> None:
     assert result.total_tool_calls == 1
     tool_message = next(message for message in result.messages if message.role == "tool")
     assert tool_message.text == "unknown tool: missing"
+    assert tool_message.metadata == {
+        "result_kind": "tool_error",
+        "is_error": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_input_schema_error_commits_extension_tool_error() -> None:
+    tool = StrictCustomHandoffTool()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="strict_handoff",
+                        mode="handoff",
+                        arguments={"target": 123},
+                    )
+                ]
+            ),
+            ModelResponse.text("handled"),
+        ]
+    )
+
+    result = await AgentLoop(model=model, tools=[tool]).run([Message.user_text("start handoff")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.total_tool_calls == 1
+    assert tool.calls == 0
+    tool_message = next(message for message in result.messages if message.role == "tool")
+    assert "input_schema" in tool_message.text
     assert tool_message.metadata == {
         "result_kind": "tool_error",
         "is_error": True,
@@ -2513,6 +2626,33 @@ async def test_unknown_tool_is_observation_error() -> None:
     assert result.status is AgentStatus.COMPLETED
     assert parts_text(result.final_parts) == "handled"
     assert "unknown tool" in result.messages[-2].text
+    assert result.messages[-2].metadata["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_tool_input_schema_error_is_committed_as_observation_error() -> None:
+    tool = StrictCountTool()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="strict_count",
+                        arguments={"count": "bad"},
+                    )
+                ]
+            ),
+            ModelResponse.text("handled"),
+        ]
+    )
+
+    result = await AgentLoop(model=model, tools=[tool]).run([Message.user_text("call strict")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert parts_text(result.final_parts) == "handled"
+    assert tool.calls == 0
+    assert "input_schema" in result.messages[-2].text
     assert result.messages[-2].metadata["is_error"] is True
 
 

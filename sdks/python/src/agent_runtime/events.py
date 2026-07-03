@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, NoReturn, SupportsIndex, cast
+from typing import Any, cast
+
+from agent_runtime._frozen import freeze_value, thaw_value
 
 
 def _empty_event_data() -> Mapping[str, Any]:
@@ -37,116 +38,12 @@ def _expect_number(value: object, label: str) -> float:
     return float(value)
 
 
-class _FrozenList(list[Any]):
-    def _readonly(self) -> NoReturn:
-        raise TypeError("event data is immutable")
-
-    def __setitem__(self, key: SupportsIndex | slice, value: Any) -> None:
-        _ = key, value
-        self._readonly()
-
-    def __delitem__(self, key: SupportsIndex | slice) -> None:
-        _ = key
-        self._readonly()
-
-    def __iadd__(self, value: Iterable[Any]) -> _FrozenList:
-        _ = value
-        self._readonly()
-
-    def __imul__(self, value: SupportsIndex) -> _FrozenList:
-        _ = value
-        self._readonly()
-
-    def append(self, item: Any) -> None:
-        _ = item
-        self._readonly()
-
-    def clear(self) -> None:
-        self._readonly()
-
-    def extend(self, items: Iterable[Any]) -> None:
-        _ = items
-        self._readonly()
-
-    def insert(self, index: SupportsIndex, item: Any) -> None:
-        _ = index, item
-        self._readonly()
-
-    def pop(self, index: SupportsIndex = -1) -> Any:
-        _ = index
-        self._readonly()
-
-    def remove(self, item: Any) -> None:
-        _ = item
-        self._readonly()
-
-    def reverse(self) -> None:
-        self._readonly()
-
-    def sort(self, *, key: Any = None, reverse: bool = False) -> None:
-        _ = key, reverse
-        self._readonly()
-
-    def __deepcopy__(self, memo: dict[int, Any]) -> list[Any]:
-        return [deepcopy(item, memo) for item in self]
-
-
-class _FrozenDict(dict[str, Any]):
-    def _readonly(self) -> NoReturn:
-        raise TypeError("event data is immutable")
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        _ = key, value
-        self._readonly()
-
-    def __delitem__(self, key: str) -> None:
-        _ = key
-        self._readonly()
-
-    def clear(self) -> None:
-        self._readonly()
-
-    def pop(self, key: str, default: Any = None) -> Any:
-        _ = key, default
-        self._readonly()
-
-    def popitem(self) -> tuple[str, Any]:
-        self._readonly()
-
-    def setdefault(self, key: str, default: Any = None) -> Any:
-        _ = key, default
-        self._readonly()
-
-    def update(self, *args: Any, **kwargs: Any) -> None:
-        _ = args, kwargs
-        self._readonly()
-
-    def __ior__(self, value: object) -> _FrozenDict:
-        _ = value
-        self._readonly()
-
-    def __deepcopy__(self, memo: dict[int, Any]) -> dict[str, Any]:
-        return {deepcopy(key, memo): deepcopy(value, memo) for key, value in self.items()}
-
-
 def _freeze_event_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return _FrozenDict(
-            {key: _freeze_event_value(item) for key, item in cast(Mapping[str, Any], value).items()}
-        )
-    if isinstance(value, list | tuple):
-        return _FrozenList([_freeze_event_value(item) for item in cast(Sequence[object], value)])
-    return deepcopy(value)
+    return freeze_value(value, error_message="event data is immutable")
 
 
 def _thaw_event_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            key: _thaw_event_value(item) for key, item in cast(Mapping[str, Any], value).items()
-        }
-    if isinstance(value, list | tuple):
-        return [_thaw_event_value(item) for item in cast(Sequence[object], value)]
-    return deepcopy(value)
+    return thaw_value(value)
 
 
 class EventTypes:

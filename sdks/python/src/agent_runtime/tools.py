@@ -7,6 +7,9 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, Protocol, cast
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, ValidationError
+
 from agent_runtime.control import PauseRequest
 from agent_runtime.errors import DuplicateToolError, InvalidToolCall, ToolError
 from agent_runtime.messages import (
@@ -183,6 +186,7 @@ class ToolSpec:
         if not self.description:
             raise ValueError("tool description must not be empty")
         self.input_schema = _copy_mapping(self.input_schema)
+        _validate_json_schema(self.input_schema, "tool input_schema")
         modes: tuple[ToolInvocationMode, ...] = tuple(
             _expect_mode(mode, "tool mode") for mode in self.modes
         )
@@ -193,6 +197,7 @@ class ToolSpec:
         self.modes = modes
         if self.output_schema is not None:
             self.output_schema = _copy_mapping(self.output_schema)
+            _validate_json_schema(self.output_schema, "tool output_schema")
         self.annotations = _copy_mapping(self.annotations)
         self.metadata = _copy_mapping(self.metadata)
 
@@ -604,6 +609,7 @@ class ToolRegistry:
             raise InvalidToolCall(f"unknown tool: {call.name}")
         if not spec.supports(call.mode):
             raise InvalidToolCall(f"tool {call.name} does not support {call.mode} mode")
+        self._validate_arguments(spec, call)
 
         invocation = ToolInvocation.from_tool_call(call)
         tool_context = ToolExecutionContext.from_runtime_context(context)
@@ -670,6 +676,23 @@ class ToolRegistry:
         self._tools[spec.name] = tool
         return spec
 
+    @staticmethod
+    def _validate_arguments(spec: ToolSpec, call: ToolCall) -> None:
+        try:
+            validator = cast(Any, Draft202012Validator(spec.input_schema))
+            validator.validate(dict(call.arguments))
+        except ValidationError as exc:
+            raise InvalidToolCall(
+                f"tool {call.name} arguments do not match input_schema: {exc.message}"
+            ) from exc
+
 
 def _raise_type(message: str) -> NoReturn:
     raise TypeError(message)
+
+
+def _validate_json_schema(schema: Mapping[str, Any], label: str) -> None:
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ValueError(f"{label} must be a valid JSON Schema: {exc.message}") from exc

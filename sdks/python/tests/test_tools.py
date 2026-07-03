@@ -7,6 +7,7 @@ import pytest
 from agent_runtime import (
     ContentPart,
     DuplicateToolError,
+    InvalidToolCall,
     PauseRequest,
     RuntimeContext,
     ToolCall,
@@ -94,6 +95,29 @@ class CustomModeTool:
             parts=[ContentPart.text_part(str(invocation.arguments.get("text", "")))],
             correlation_id=invocation.id,
         )
+
+
+class StrictCountTool:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    spec = ToolSpec(
+        name="strict_count",
+        description="Require an integer count.",
+        input_schema={
+            "type": "object",
+            "required": ["count"],
+            "properties": {"count": {"type": "integer"}},
+            "additionalProperties": False,
+        },
+    )
+
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = context
+        self.calls += 1
+        return ToolObservation.text(str(invocation.arguments["count"]))
 
 
 class RejectingAcceptTool:
@@ -293,6 +317,9 @@ def test_tool_spec_constructor_rejects_invalid_core_types() -> None:
     with pytest.raises(TypeError, match="tool description"):
         ToolSpec(name="tool", description=cast(Any, 1), input_schema={})
 
+    with pytest.raises(ValueError, match="valid JSON Schema"):
+        ToolSpec(name="tool", description="tool", input_schema={"type": 1})
+
 
 @pytest.mark.asyncio
 async def test_tool_arguments_are_defensive_copies() -> None:
@@ -309,6 +336,17 @@ async def test_tool_registry_rejects_invalid_tool_result_type() -> None:
 
     with pytest.raises(TypeError, match="ToolObservation"):
         await ToolRegistry([InvalidResultTool()]).invoke(call, RuntimeContext())
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_validates_arguments_against_input_schema() -> None:
+    tool = StrictCountTool()
+    call = ToolCall(id="call-1", name="strict_count", arguments={"count": "bad"})
+
+    with pytest.raises(InvalidToolCall, match="input_schema"):
+        await ToolRegistry([tool]).invoke(call, RuntimeContext())
+
+    assert tool.calls == 0
 
 
 @pytest.mark.asyncio
