@@ -116,7 +116,7 @@ class ToolScheduler:
                     index, call = active.pop(task)
                     result = await task
                     yield ToolCompleted(batch=batch, index=index, call=call, result=result)
-                    if stop_on_error and getattr(result, "is_error", False):
+                    if stop_on_error and result.is_error:
                         for remaining in active:
                             remaining.cancel()
                         if active:
