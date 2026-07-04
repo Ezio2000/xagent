@@ -22,13 +22,15 @@ Model adapters map provider syntax into that shape. For a model-facing operator
 such as `accept(web_search({"query": "..."}))`, the normalized runtime shape is
 the original tool name plus `mode: "accept"`; core does not create wrapper tool
 names such as `accept_web_search`.
-Before a tool implementation is called, the runtime validates
-`ToolInvocation.arguments` against `spec.input_schema`. Validation failure is an
-invalid tool call: execute-mode calls commit an error `ToolObservation`,
-accept-mode calls commit a `ToolRejection`, and extension modes commit an error
-`ToolOutput` with a custom `tool_error` result kind. The model can observe that
-tool error on the next planning turn and recover. The corresponding tool
-lifecycle event and trace payloads use `implementation_invoked: false`.
+Before a tool implementation is called, `AgentLoop` asks the configured
+`ToolRegistryProtocol` to validate the call. The default `toolkit.ToolRegistry`
+validates `ToolInvocation.arguments` against `spec.input_schema` with JSON
+Schema. Validation failure is an invalid tool call: execute-mode calls commit
+an error `ToolObservation`, accept-mode calls commit a `ToolRejection`, and
+extension modes commit an error `ToolOutput` with a custom `tool_error` result
+kind. The model can observe that tool error on the next planning turn and
+recover. The corresponding tool lifecycle event and trace payloads use
+`implementation_invoked: false`.
 
 If an approval policy is configured, valid tool calls are sent to it for an
 `allow`, `deny`, or `pause` decision before calling the tool implementation.
@@ -116,6 +118,8 @@ retain, or garbage-collect artifact payloads.
 
 The registry exposes neutral `ToolSpec` values. Provider adapters are
 responsible for converting those specs to provider-specific tool formats.
+Hosts may supply any object that implements `ToolRegistryProtocol`; production
+registries should enforce the same validation semantics as `toolkit.ToolRegistry`.
 
 ## Scheduling
 

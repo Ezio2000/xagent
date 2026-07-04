@@ -1,0 +1,20 @@
+[project]
+name = "modelkit"
+version = "0.1.0"
+description = "Model adapter helpers for the model-neutral runtime"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "runtime contributors" }]
+dependencies = [
+  "kernel",
+]
+
+[tool.uv.sources]
+kernel = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/modelkit"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

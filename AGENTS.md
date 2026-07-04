@@ -5,20 +5,32 @@
 This repository is a model-neutral agent runtime monorepo. Cross-language
 contracts live in `contracts/v0`; portable behavior fixtures live in
 `conformance/cases`; design notes live in `docs`; Python workspace packages live
-under `python/packages`.
+under `python`.
 
 Python packages:
 
 - `kernel`: the OS-like runtime kernel. It owns the execution loop, scheduler,
-  model/tool protocols, events, durable state, snapshots, resume, limits,
-  approval/store/journal/hook ports, trace/replay, and the public SDK surface.
-- `conformance`: CLI and harness for validating implementations.
+  model/tool protocols, events, durable state, snapshots, resume, limits, and
+  approval/store/journal/hook ports.
+- `toolkit`: default tool registry, JSON Schema validation, and concrete tool
+  invocation glue built on kernel protocols.
+- `prompting`: prompt and message construction helpers built on kernel message
+  types.
+- `modelkit`: model adapter helpers such as stream accumulation and capability
+  normalization.
+- `diagnostics`: public trace objects, trace construction, and deterministic
+  replay validation.
+- `harness`: reusable test harness helpers.
+- `conformance`: CLI and harness for validating implementations against
+  contracts and portable behavior fixtures.
 
 Documentation index:
 
 - `contracts/v0/README.md`: cross-language contract map and schema `$id`
   policy.
 - `docs/architecture.md`: kernel architecture and package boundary.
+- `docs/python-package-boundaries.md`: Python package split, dependency rules,
+  and placement checklist.
 - `docs/model-protocol.md`: model adapter protocol.
 - `docs/tool-protocol.md`: tool spec, scheduling, approval, and output rules.
 - `docs/event-stream.md`: runtime event stream and hook-emitted custom events.
@@ -37,15 +49,17 @@ source tree.
 `kernel` must not depend on any internal runtime package, conformance package,
 provider adapter, tool pack, app code, concrete store, UI, queue, or deployment
 runtime. External implementations depend on `kernel` and are injected through
-kernel ports such as `ModelClient`, `Tool`, `ApprovalPolicy`, `RunStore`,
-`RunJournal`, and `RuntimeHook`.
+kernel ports such as `ModelClient`, `ToolRegistryProtocol`, `ApprovalPolicy`,
+`RunStore`, `RunJournal`, and `RuntimeHook`.
 
-`conformance` may depend on `kernel`, but `kernel` must never import
-`conformance`.
+Sibling helper packages may depend on `kernel`, but `kernel` must never import
+them. `conformance` may depend on `kernel`, `toolkit`, `prompting`, and
+`diagnostics`, but none of those packages may import `conformance`.
 
 Project and package names must not use retired fragments: `xagent`, `agent_`,
 `agent-`, `runtime_`, or `runtime-`. The current Python package names are
-`kernel` and `conformance`.
+`kernel`, `toolkit`, `prompting`, `modelkit`, `diagnostics`, `harness`, and
+`conformance`.
 
 ## Build, Test, And Development Commands
 
@@ -61,8 +75,8 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run conformance conformance/cases --spec-dir contracts/v0
-uv run python python/packages/kernel/examples/basic_tool_loop.py
-uv run python python/packages/kernel/examples/pause_resume_trace.py
+uv run python python/kernel/examples/basic_tool_loop.py
+uv run python python/kernel/examples/pause_resume_trace.py
 ```
 
 When editing JSON contracts or conformance cases, validate changed contracts:

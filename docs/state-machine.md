@@ -110,9 +110,11 @@ reference SDK favors immutable boundaries over structural sharing; long runs
 therefore pay copy cost proportional to accumulated message history at each
 checkpoint and hook boundary.
 
-SDKs should also expose a compact `RunTrace` for one runtime invocation. Trace
-steps record semantic boundaries such as model calls, tool calls, pause, resume,
-checkpoints, terminal output, limits, and errors. Replay validators consume
-trace records and referenced checkpoint summaries; they do not call live models
-or tools and do not define new checkpoint boundaries. Trace records use
-metadata key summaries instead of raw host metadata values.
+SDKs should also make compact trace data available for one runtime invocation.
+Trace steps record semantic boundaries such as model calls, tool calls, pause,
+resume, checkpoints, terminal output, limits, and errors. In Python, public
+trace construction and replay helpers live in `diagnostics`, while `kernel`
+records the runtime artifact. Replay validators consume trace records and
+referenced checkpoint summaries; they do not call live models or tools and do
+not define new checkpoint boundaries. Trace records use metadata key summaries
+instead of raw host metadata values.

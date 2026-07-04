@@ -1,11 +1,11 @@
 # Python Public API Naming Audit
 
-Date: 2026-07-02
+Date: 2026-07-04
 
-This audit covers the Python reference SDK import surface exported from
-`kernel.__all__`. The current decision is to keep the exported names as
-the v0.1 public API and avoid compatibility aliases. Anything not exported from
-`kernel.__all__` is internal unless a later audit promotes it.
+This audit covers the Python import surfaces exported from each package root.
+The current decision is to keep `kernel.__all__` focused on core runtime
+protocols and move optional helper APIs to sibling packages. Anything not
+exported from a package root is internal unless a later audit promotes it.
 
 ## Boundary Decisions
 
@@ -19,21 +19,19 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
 - Keep core extension protocol names: `RunStore`, `StoredCheckpoint`,
   `CheckpointSummary`, `ApprovalPolicy`, `ApprovalRequest`,
   `ApprovalDecision`, `ApprovalAction`, `RunJournal`, and `JournalRecord`.
-- Keep trace names: `RunTrace`, `TraceStep`, `TraceStepKinds`,
-  `ReplayResult`, `ReplayError`, and `replay_trace`.
 - Keep event names: `AgentEvent`, `EventType`, `EventTypes`, `EventEmitter`,
   and `QueuedEvent`.
 - Keep message names: `Message`, `ContentPart`, `ArtifactRef`, and `ToolCall`.
 - Keep model and tool protocol names: `ModelRequest`, `ModelResponse`,
   `ModelClient`, `StreamingModelClient`, `ModelOptions`, `ToolChoice`,
-  `ResponseFormat`, `ModelCapabilities`, `ModelUsage`, `model_capabilities`,
+  `ResponseFormat`, `ModelCapabilities`, `ModelUsage`,
   `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`, `ToolObservation`,
   `ToolAcceptance`, `ToolRejection`, `ToolOutput`, `BackgroundTask`,
-  `ExecutableTool`, `AcceptableTool`, `InvocableTool`, `Tool`, `ToolRegistry`,
+  `ExecutableTool`, `AcceptableTool`, `InvocableTool`, `Tool`,
   `ToolRegistryProtocol`, and `normalized_tool_risk`.
 - Keep model streaming names: `ModelStreamEvent`, `ModelContentDelta`,
   `ModelToolCallDelta`, `ModelReasoningDelta`, `ModelUsageDelta`,
-  `ModelStreamStarted`, `ModelStreamCompleted`, and `ModelStreamAccumulator`.
+  `ModelStreamStarted`, and `ModelStreamCompleted`.
 - Keep scheduler detail names: `ToolCatalog`, `ToolScheduler`,
   `ToolSchedulerProtocol`, `ToolBatch`, `ToolStarted`, and `ToolCompleted`.
   They are useful for tests, advanced hosts, and future SDK alignment even
@@ -69,9 +67,13 @@ accept-mode failure output, and `ToolOutput` is the generic extension output
 shape. `BackgroundTask` is the optional host-owned background work reference
 that tool outputs can surface in events and durable tool-message metadata.
 
-`RunTrace` and `TraceStep` name the compact semantic record and its entries.
-`TraceStepKinds` mirrors runtime-owned core `EventTypes`. Replay validates this
-closed core trace vocabulary so corrupted or unknown semantic steps fail early.
+Public trace names moved to `diagnostics`: `RunTrace`, `TraceStep`,
+`TraceStepKinds`, `ReplayResult`, `ReplayError`, and `replay_trace`.
+`AgentResult.trace` is a v0 trace payload mapping; callers that need object
+helpers should pass it to `diagnostics.RunTrace.from_dict(...)` or
+`diagnostics.replay_trace(...)`. The kernel may still record and emit trace
+payloads during a run, but it must not define trace object classes,
+trace-from-events helpers, replay, or trace validation APIs.
 
 `RunStore`, `ApprovalPolicy`, and `RunJournal` are protocol names rather than
 implementation names. The SDK owns the portable boundary semantics for durable
@@ -101,15 +103,27 @@ streaming protocol is separate because streaming is optional and remains live
 progress until a complete `ModelResponse` is available.
 
 `ModelStreamEvent` and the delta/completed/started names describe provider-
-neutral streamed model progress. `ModelStreamAccumulator` is public because it
-is useful for adapter tests and for adapters that need to assemble streamed
-deltas into a final `ModelResponse`.
+neutral streamed model progress. `ModelStreamAccumulator` moved to `modelkit`
+because it is useful for adapter tests and for adapters that need to assemble
+streamed deltas into a final `ModelResponse`, but it is not required to run the
+kernel loop.
 
 `ModelCapabilities`, `ModelOptions`, `ToolChoice`, `ResponseFormat`, and
 `ModelUsage` keep provider-neutral model configuration, capability discovery,
 and accounting separate from the model client implementation. The helper
-`model_capabilities` stays lower-case because it is a factory/helper function,
-not a value type.
+`model_capabilities` moved to `modelkit`; it stays lower-case there because it
+is a helper function, not a value type.
+
+`ToolRegistry` moved to `toolkit`. `kernel` keeps `ToolRegistryProtocol` and
+tool protocol/value types so hosts can inject a custom registry without making
+the kernel depend on JSON Schema or a concrete registry implementation.
+
+Prompt construction helpers such as `user_text`, `system_text`,
+`assistant_text`, `tool_text`, and `external_text` live in `prompting`. Kernel
+message types remain provider-neutral data structures.
+
+Reusable scripted models and event collectors live in `harness`, not `kernel`
+or `conformance`.
 
 `ModelProviderError` is the adapter-facing wrapper for structured provider
 failures. `ModelErrorInfo` is the serializable payload. This keeps provider
@@ -128,6 +142,8 @@ The following implementation names are intentionally not part of the public API:
 - `RuntimePauseInterrupt`
 - `RuntimeConversationInsert`
 - `TraceRecorder`
+- `KernelModelStreamAccumulator`
+- `runtime_model_capabilities`
 - private validation and compaction helpers
 
 These names may change without a compatibility path. If a future SDK needs one

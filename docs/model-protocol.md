@@ -59,6 +59,8 @@ separate runtime retry rule.
 Model adapters may expose capabilities through a `capabilities` value or method.
 The core recognizes streaming, tools, tool choice, parallel tool calls,
 multimodal input/output, structured output, JSON mode, and usage reporting.
+Adapter tests and provider packages can use `modelkit.model_capabilities(...)`
+to normalize that value outside the kernel import surface.
 
 Streaming adapters may additionally expose `stream(request, context)` and must
 advertise `ModelCapabilities(streaming=True)`. The method must return an async
@@ -69,6 +71,8 @@ Stream deltas are emitted as `model_delta` events for live rendering only.
 Durable `AgentState` is committed after the complete `ModelResponse` is
 available. Reasoning deltas are included in this live-only stream surface; they
 are not appended to message history, checkpoints, or final response content.
+Adapters that need to assemble streamed deltas outside a live run can use
+`modelkit.ModelStreamAccumulator`.
 
 External inputs that arrive while a model call is in flight use run-control
 conversation insertion. The runtime cancels the in-flight model call, appends an

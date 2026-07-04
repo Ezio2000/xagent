@@ -29,30 +29,43 @@ kernel and are injected through its public ports.
 | `contracts/v0` | none | Cross-language JSON Schemas and portable runtime contract docs. |
 | `conformance/cases` | none | Shared JSON behavior fixtures that every SDK must pass. |
 | `docs` | none | Architecture, public API, model/tool/event/state protocol notes. |
-| `python/packages/kernel` | `kernel` | Runtime kernel: loop, scheduler, model/tool protocols, events, state, snapshots, resume, limits, approval/store/journal/hook ports, trace/replay, and public SDK exports. |
-| `python/packages/conformance` | `conformance` | Python conformance CLI, case loader, scripted harness, validators, and assertions. |
+| `python/kernel` | `kernel` | Runtime kernel: loop, scheduler, model/tool protocols, events, state, snapshots, resume, limits, approval/store/journal/hook ports, trace payload emission, and public SDK exports. |
+| `python/toolkit` | `toolkit` | Default tool registry, JSON Schema validation, and concrete invocation glue. |
+| `python/prompting` | `prompting` | Prompt and message construction helpers built on kernel message types. |
+| `python/modelkit` | `modelkit` | Model adapter helpers such as stream accumulation and capability normalization. |
+| `python/diagnostics` | `diagnostics` | Public trace objects, trace construction, and deterministic replay validation. |
+| `python/harness` | `harness` | Reusable test harness helpers. |
+| `python/conformance` | `conformance` | Python conformance CLI, case loader, scripted harness, validators, and assertions. |
 | `pyproject.toml` / `uv.lock` | none | Root uv workspace, dependency groups, lint, type-check, and test configuration. |
 
 ## Dependency Rules
 
 | Package | Allowed dependencies | Forbidden dependencies |
 |---|---|---|
-| `kernel` | Python stdlib and runtime-neutral validation libraries needed by kernel-owned protocols | Any internal runtime package, conformance, provider adapter, tool pack, app, concrete store, UI, queue, or deployment runtime |
-| `conformance` | `kernel`, JSON Schema validation libraries | Being imported by `kernel` |
+| `kernel` | Python stdlib and its own declared third-party dependencies | Any internal runtime package, conformance, provider adapter, tool pack, app, concrete store, UI, queue, or deployment runtime |
+| `toolkit` | `kernel`, JSON Schema validation libraries | Agent loop, state machine, provider adapters, conformance runner |
+| `prompting` | `kernel` | Runtime state, scheduling, model/provider clients |
+| `modelkit` | `kernel` | Runtime loop, tool execution, prompt helpers |
+| `diagnostics` | `kernel` | Running agents, invoking tools, provider adapters, persistence backends |
+| `harness` | `kernel` | Production runtime semantics or conformance contracts |
+| `conformance` | `kernel`, `toolkit`, `prompting`, `diagnostics`, JSON Schema validation libraries | Being imported by runtime packages |
 
 Hard boundary rules:
 
-- `kernel` must not import any workspace package. External implementations
-  depend on `kernel` and are injected through public ports.
-- `conformance` may import `kernel`; `kernel` must never import `conformance`.
-- No top-level `sdks/` source tree. Python packages live under
-  `python/packages`.
+- `kernel` must not import any sibling workspace package. External
+  implementations depend on `kernel` and are injected through public ports.
+- Sibling helper packages may import `kernel`, but `kernel` must never import
+  them.
+- `conformance` may import `kernel`, `toolkit`, `prompting`, and `diagnostics`;
+  runtime packages must never import `conformance`.
+- No top-level `sdks/` source tree. Python packages live under `python`.
 - Retired runtime imports must not reappear: `agent_runtime`,
   `agent_runtime_conformance`, `engine`, `protocol`, `run_state`,
   `run-state`, `extensions`, and `tracing`.
 - Project and package names must not use the retired fragments `xagent`,
   `agent_`, `agent-`, `runtime_`, or `runtime-`. The current package names are
-  `kernel` and `conformance`.
+  `kernel`, `toolkit`, `prompting`, `modelkit`, `diagnostics`, `harness`, and
+  `conformance`.
 - Do not add compatibility shims, deprecated aliases, or re-export packages for
   old names.
 - Portable behavior changes require updates to `contracts/v0`,
@@ -74,8 +87,8 @@ uv run conformance conformance/cases --spec-dir contracts/v0
 Run examples from the repository root:
 
 ```bash
-uv run python python/packages/kernel/examples/basic_tool_loop.py
-uv run python python/packages/kernel/examples/pause_resume_trace.py
+uv run python python/kernel/examples/basic_tool_loop.py
+uv run python python/kernel/examples/pause_resume_trace.py
 ```
 
 Validate changed contracts:
@@ -110,7 +123,7 @@ Extension implementations depend on `kernel` and plug into it:
 - approval systems implement `ApprovalPolicy`;
 - persistence systems implement `RunStore` and `RunJournal`;
 - lifecycle integrations implement `RuntimeHook`;
-- audit systems can consume kernel events or use `RunTrace.from_events`.
+- audit systems can consume kernel events or use `diagnostics.RunTrace`.
 
 `kernel` never imports those concrete implementations. The host application
 constructs them and injects them into `AgentLoop`.
@@ -124,7 +137,7 @@ The kernel provides only reusable runtime infrastructure:
   ordering;
 - durable state, snapshots, limits, run control, and resume inputs;
 - approval, hook, store, and journal ports for host-owned implementations;
-- trace recording and replay validation for portable diagnostics;
+- immutable trace payload emission for portable diagnostics;
 - portable conformance fixtures and a Python conformance runner.
 
 The repository deliberately does not include provider adapters, concrete

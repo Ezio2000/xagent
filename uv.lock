@@ -5,7 +5,12 @@ requires-python = ">=3.11"
 [manifest]
 members = [
     "conformance",
+    "diagnostics",
+    "harness",
     "kernel",
+    "modelkit",
+    "prompting",
+    "toolkit",
     "workspace",
 ]
 
@@ -30,19 +35,47 @@ wheels = [
 [[package]]
 name = "conformance"
 version = "0.1.0"
-source = { editable = "python/packages/conformance" }
+source = { editable = "python/conformance" }
 dependencies = [
+    { name = "diagnostics" },
     { name = "jsonschema" },
     { name = "kernel" },
+    { name = "prompting" },
     { name = "referencing" },
+    { name = "toolkit" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "diagnostics", editable = "python/diagnostics" },
     { name = "jsonschema", specifier = ">=4.23.0" },
-    { name = "kernel", editable = "python/packages/kernel" },
+    { name = "kernel", editable = "python/kernel" },
+    { name = "prompting", editable = "python/prompting" },
     { name = "referencing", specifier = ">=0.35.0" },
+    { name = "toolkit", editable = "python/toolkit" },
 ]
+
+[[package]]
+name = "diagnostics"
+version = "0.1.0"
+source = { editable = "python/diagnostics" }
+dependencies = [
+    { name = "kernel" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "kernel", editable = "python/kernel" }]
+
+[[package]]
+name = "harness"
+version = "0.1.0"
+source = { editable = "python/harness" }
+dependencies = [
+    { name = "kernel" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "kernel", editable = "python/kernel" }]
 
 [[package]]
 name = "iniconfig"
@@ -83,13 +116,18 @@ wheels = [
 [[package]]
 name = "kernel"
 version = "0.1.0"
-source = { editable = "python/packages/kernel" }
+source = { editable = "python/kernel" }
+
+[[package]]
+name = "modelkit"
+version = "0.1.0"
+source = { editable = "python/modelkit" }
 dependencies = [
-    { name = "jsonschema" },
+    { name = "kernel" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "jsonschema", specifier = ">=4.23.0" }]
+requires-dist = [{ name = "kernel", editable = "python/kernel" }]
 
 [[package]]
 name = "nodeenv"
@@ -117,6 +155,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
 ]
+
+[[package]]
+name = "prompting"
+version = "0.1.0"
+source = { editable = "python/prompting" }
+dependencies = [
+    { name = "kernel" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "kernel", editable = "python/kernel" }]
 
 [[package]]
 name = "pygments"
@@ -332,6 +381,21 @@ wheels = [
 ]
 
 [[package]]
+name = "toolkit"
+version = "0.1.0"
+source = { editable = "python/toolkit" }
+dependencies = [
+    { name = "jsonschema" },
+    { name = "kernel" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4.23.0" },
+    { name = "kernel", editable = "python/kernel" },
+]
+
+[[package]]
 name = "typing-extensions"
 version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -346,7 +410,12 @@ version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "conformance" },
+    { name = "diagnostics" },
+    { name = "harness" },
     { name = "kernel" },
+    { name = "modelkit" },
+    { name = "prompting" },
+    { name = "toolkit" },
 ]
 
 [package.dev-dependencies]
@@ -360,8 +429,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "conformance", editable = "python/packages/conformance" },
-    { name = "kernel", editable = "python/packages/kernel" },
+    { name = "conformance", editable = "python/conformance" },
+    { name = "diagnostics", editable = "python/diagnostics" },
+    { name = "harness", editable = "python/harness" },
+    { name = "kernel", editable = "python/kernel" },
+    { name = "modelkit", editable = "python/modelkit" },
+    { name = "prompting", editable = "python/prompting" },
+    { name = "toolkit", editable = "python/toolkit" },
 ]
 
 [package.metadata.requires-dev]

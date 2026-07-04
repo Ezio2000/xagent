@@ -71,8 +71,8 @@ jobs:
 
       - name: Run examples
         run: |
-          uv run python python/packages/kernel/examples/basic_tool_loop.py
-          uv run python python/packages/kernel/examples/pause_resume_trace.py
+          uv run python python/kernel/examples/basic_tool_loop.py
+          uv run python python/kernel/examples/pause_resume_trace.py
 
       - name: Test
         run: uv run pytest -q -p no:cacheprovider

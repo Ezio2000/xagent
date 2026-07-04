@@ -4,7 +4,12 @@ version = "0.0.0"
 requires-python = ">=3.11"
 dependencies = [
   "conformance",
+  "diagnostics",
+  "harness",
   "kernel",
+  "modelkit",
+  "prompting",
+  "toolkit",
 ]
 
 [tool.uv]
@@ -17,10 +22,15 @@ default = true
 
 [tool.uv.sources]
 conformance = { workspace = true }
+diagnostics = { workspace = true }
+harness = { workspace = true }
 kernel = { workspace = true }
+modelkit = { workspace = true }
+prompting = { workspace = true }
+toolkit = { workspace = true }
 
 [tool.uv.workspace]
-members = ["python/packages/*"]
+members = ["python/*"]
 
 [dependency-groups]
 dev = [
@@ -40,9 +50,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["python/packages"]
+testpaths = ["python"]
 
 [tool.pyright]
-include = ["python/packages"]
+include = ["python"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"

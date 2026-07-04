@@ -1,0 +1,15 @@
+[project]
+name = "kernel"
+version = "0.1.0"
+description = "OS-like model-neutral runtime kernel"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "runtime contributors" }]
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kernel"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

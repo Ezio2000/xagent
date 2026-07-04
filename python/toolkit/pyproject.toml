@@ -1,0 +1,21 @@
+[project]
+name = "toolkit"
+version = "0.1.0"
+description = "Default tool registry and validation helpers for the model-neutral runtime"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "runtime contributors" }]
+dependencies = [
+  "jsonschema>=4.23.0",
+  "kernel",
+]
+
+[tool.uv.sources]
+kernel = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/toolkit"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
