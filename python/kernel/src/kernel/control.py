@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias
 
+from kernel._validation import (
+    expect_bool as _expect_bool,
+)
+from kernel._validation import (
+    expect_mapping as _expect_mapping,
+)
+from kernel._validation import (
+    expect_optional_str as _expect_optional_str,
+)
+from kernel._validation import (
+    expect_sequence as _expect_sequence,
+)
+from kernel._validation import (
+    expect_str as _expect_str,
+)
+from kernel._validation import (
+    reject_unknown_keys as _reject_unknown_keys,
+)
 from kernel.messages import ContentPart, Message
 
 
@@ -20,45 +38,6 @@ def _copy_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if value is None:
         return {}
     return deepcopy(dict(_expect_mapping(value, "mapping")))
-
-
-def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping")
-    return cast(Mapping[str, Any], value)
-
-
-def _expect_sequence(value: object, label: str) -> Sequence[object]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise TypeError(f"{label} must be an array")
-    return cast(Sequence[object], value)
-
-
-def _expect_str(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string")
-    return value
-
-
-def _expect_optional_str(value: object, label: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string or null")
-    return value
-
-
-def _expect_bool(value: object, label: str) -> bool:
-    if not isinstance(value, bool):
-        raise TypeError(f"{label} must be a boolean")
-    return value
-
-
-def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
-    unknown = set(value) - allowed
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise ValueError(f"{label} has unknown field(s): {names}")
 
 
 @dataclass(slots=True, frozen=True)

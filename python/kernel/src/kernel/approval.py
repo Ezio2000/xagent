@@ -7,6 +7,15 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, cast
 
 from kernel._frozen import freeze_value, thaw_value
+from kernel._validation import (
+    expect_mapping as _expect_mapping,
+)
+from kernel._validation import (
+    expect_str as _expect_str,
+)
+from kernel._validation import (
+    reject_unknown_keys as _reject_unknown_keys,
+)
 from kernel.context import RuntimeContext
 from kernel.messages import ToolCall
 from kernel.tools import ToolSpec
@@ -16,25 +25,6 @@ ApprovalAction = Literal["allow", "deny", "pause"]
 
 def _empty_mapping() -> Mapping[str, Any]:
     return {}
-
-
-def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping")
-    return cast(Mapping[str, Any], value)
-
-
-def _expect_str(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string")
-    return value
-
-
-def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
-    unknown = set(value) - allowed
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise ValueError(f"{label} has unknown field(s): {names}")
 
 
 def _freeze_mapping(value: Mapping[str, Any], label: str) -> Mapping[str, Any]:

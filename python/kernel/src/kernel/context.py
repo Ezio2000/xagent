@@ -6,8 +6,30 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
+
+from kernel._validation import (
+    expect_mapping as _expect_mapping,
+)
+from kernel._validation import (
+    expect_nonnegative_int as _expect_int,
+)
+from kernel._validation import (
+    expect_number as _expect_number,
+)
+from kernel._validation import (
+    expect_optional_number as _expect_optional_number,
+)
+from kernel._validation import (
+    expect_optional_str as _expect_optional_str,
+)
+from kernel._validation import (
+    expect_str as _expect_str,
+)
+from kernel._validation import (
+    reject_unknown_keys as _reject_unknown_keys,
+)
 
 
 def _empty_metadata() -> Mapping[str, Any]:
@@ -18,53 +40,6 @@ def _copy_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if value is None:
         return {}
     return deepcopy(dict(_expect_mapping(value, "mapping")))
-
-
-def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping")
-    return cast(Mapping[str, Any], value)
-
-
-def _expect_str(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string")
-    return value
-
-
-def _expect_optional_str(value: object, label: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string or null")
-    return value
-
-
-def _expect_number(value: object, label: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise TypeError(f"{label} must be a number")
-    return float(value)
-
-
-def _expect_optional_number(value: object, label: str) -> float | None:
-    if value is None:
-        return None
-    return _expect_number(value, label)
-
-
-def _expect_int(value: object, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{label} must be an integer")
-    if value < 0:
-        raise ValueError(f"{label} must be >= 0")
-    return value
-
-
-def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
-    unknown = set(value) - allowed
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise ValueError(f"{label} has unknown field(s): {names}")
 
 
 @dataclass(slots=True)

@@ -35,6 +35,11 @@ The boundary tests in `python/kernel/tests/test_dependency_boundaries.py`
 enforce the allowed package set, declared dependencies, retired package names,
 and public-root-only cross-package imports.
 
+These dependency rules apply to production import packages under
+`python/*/src`. Package tests and examples may include workspace integration
+smoke tests that combine multiple public package roots, but package-local self
+tests should prefer only that package's declared runtime dependencies.
+
 ## Placement Checklist
 
 | Question | Put It In |

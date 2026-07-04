@@ -8,34 +8,22 @@ from time import time
 from typing import Any, cast
 
 from kernel._frozen import freeze_value, thaw_value
+from kernel._validation import (
+    expect_int as _expect_int,
+)
+from kernel._validation import (
+    expect_mapping as _expect_mapping,
+)
+from kernel._validation import (
+    expect_number as _expect_number,
+)
+from kernel._validation import (
+    expect_str as _expect_str,
+)
 
 
 def _empty_event_data() -> Mapping[str, Any]:
     return {}
-
-
-def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping")
-    return cast(Mapping[str, Any], value)
-
-
-def _expect_str(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string")
-    return value
-
-
-def _expect_int(value: object, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{label} must be an integer")
-    return value
-
-
-def _expect_number(value: object, label: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise TypeError(f"{label} must be a number")
-    return float(value)
 
 
 def _freeze_event_value(value: object) -> object:

@@ -6,21 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
+from kernel._validation import (
+    expect_mapping as _expect_mapping,
+)
+from kernel._validation import (
+    reject_unknown_keys as _reject_unknown_keys,
+)
 from kernel.context import RuntimeContext
 from kernel.state import AgentState
-
-
-def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
-    unknown = set(value) - allowed
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise ValueError(f"{label} has unknown field(s): {names}")
-
-
-def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping")
-    return cast(Mapping[str, Any], value)
 
 
 def _expect_agent_state(value: object) -> AgentState:

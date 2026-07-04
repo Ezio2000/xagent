@@ -64,7 +64,7 @@ from kernel import (
     ToolSpec,
     ToolStarted,
 )
-from kernel.loop import RunControlState
+from kernel._loop_types import RunControlState
 from prompting import tool_text, user_text
 from toolkit import ToolRegistry
 

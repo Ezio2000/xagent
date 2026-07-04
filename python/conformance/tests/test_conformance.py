@@ -26,6 +26,15 @@ CASES_DIR = REPO_ROOT / "conformance" / "cases"
 SHARED_CONFORMANCE_RUNNER = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
 
 
+class CountingValidator:
+    def __init__(self) -> None:
+        self.instances: list[Mapping[str, Any]] = []
+
+    def iter_errors(self, instance: Mapping[str, Any]) -> tuple[Any, ...]:
+        self.instances.append(instance)
+        return ()
+
+
 def load_json_schema(path: Path) -> dict[str, Any]:
     raw_schema = json.loads(path.read_text())
     if not isinstance(raw_schema, dict):
@@ -102,6 +111,13 @@ def test_shared_conformance_runner_loads_repository_cases() -> None:
     assert len(cases) == len(list(CASES_DIR.glob("*.json")))
 
 
+def conformance_case(name: str) -> dict[str, Any]:
+    for case in SHARED_CONFORMANCE_RUNNER.load_cases():
+        if case["name"] == name:
+            return case
+    raise AssertionError(f"missing conformance case: {name}")
+
+
 def test_shared_conformance_runner_rejects_empty_case_dir(tmp_path: Path) -> None:
     runner = ConformanceRunner(cases_dir=tmp_path, spec_dir=SPEC_DIR)
 
@@ -130,6 +146,61 @@ def test_conformance_cli_reports_invalid_case_json_path(
     assert status == 1
     assert str(bad_case.resolve()) in output
     assert "invalid JSON" in output
+
+
+@pytest.mark.asyncio
+async def test_runner_validates_runtime_model_requests_against_schema() -> None:
+    runner = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
+    validator = CountingValidator()
+    runner.validators.model_request = validator
+
+    await runner.run_case(conformance_case("final_only"))
+
+    assert validator.instances
+
+
+@pytest.mark.asyncio
+async def test_runner_validates_tool_outputs_against_tool_result_schema() -> None:
+    runner = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
+    validator = CountingValidator()
+    runner.validators.tool_result = validator
+
+    await runner.run_case(conformance_case("one_tool_then_final"))
+
+    assert validator.instances
+
+
+@pytest.mark.asyncio
+async def test_runner_validates_store_journal_tool_outputs_against_schema() -> None:
+    runner = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
+    validator = CountingValidator()
+    runner.validators.tool_result = validator
+
+    await runner.run_case(conformance_case("run_store_journal_success"))
+
+    assert validator.instances
+
+
+@pytest.mark.asyncio
+async def test_runner_validates_resume_tool_outputs_against_schema() -> None:
+    runner = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
+    validator = CountingValidator()
+    runner.validators.tool_result = validator
+
+    await runner.run_case(conformance_case("resume_executing_tools_checkpoint"))
+
+    assert validator.instances
+
+
+@pytest.mark.asyncio
+async def test_runner_validates_store_resume_journal_resume_input_against_schema() -> None:
+    runner = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
+    validator = CountingValidator()
+    runner.validators.resume_input = validator
+
+    await runner.run_case(conformance_case("run_store_resume_journal_success"))
+
+    assert validator.instances
 
 
 def test_conformance_cli_reports_invalid_case_content_path(

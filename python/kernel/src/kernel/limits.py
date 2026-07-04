@@ -4,34 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from kernel._validation import (
+    expect_bool as _expect_bool,
+)
+from kernel._validation import (
+    expect_int as _expect_int,
+)
+from kernel._validation import (
+    expect_optional_int as _expect_optional_int,
+)
+from kernel._validation import (
+    expect_optional_number as _expect_optional_number,
+)
 from kernel.models import ModelUsage
 from kernel.state import AgentState
-
-
-def _expect_int(value: object, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{label} must be an integer")
-    return value
-
-
-def _expect_optional_number(value: object, label: str) -> float | None:
-    if value is None:
-        return None
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise TypeError(f"{label} must be a number or null")
-    return float(value)
-
-
-def _expect_optional_int(value: object, label: str) -> int | None:
-    if value is None:
-        return None
-    return _expect_int(value, label)
-
-
-def _expect_bool(value: object, label: str) -> bool:
-    if not isinstance(value, bool):
-        raise TypeError(f"{label} must be a boolean")
-    return value
 
 
 class LimitReasons:

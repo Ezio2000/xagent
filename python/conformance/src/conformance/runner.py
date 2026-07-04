@@ -2,184 +2,78 @@
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import json
-import traceback
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from diagnostics import RunTrace, replay_trace
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
 from kernel import (
     AgentEvent,
     AgentLoop,
     AgentResult,
     AgentStatus,
     ApprovalDecision,
-    ApprovalRequest,
-    BackgroundTask,
-    CheckpointSummary,
     ContentPart,
     ConversationInsert,
     EventTypes,
     JournalRecord,
-    LoopLimits,
     Message,
-    ModelCapabilities,
-    ModelContentDelta,
-    ModelErrorDecision,
-    ModelErrorInfo,
-    ModelProviderError,
-    ModelRequest,
     ModelResponse,
-    ModelToolCallDelta,
-    PauseRequest,
     PauseSelector,
     ResumeInput,
-    RunController,
     RunSnapshot,
     RuntimeContext,
-    RuntimeHook,
     StoredCheckpoint,
-    ToolAcceptance,
-    ToolExecutionContext,
-    ToolInvocation,
-    ToolObservation,
-    ToolOutput,
-    ToolRejection,
-    ToolSpec,
 )
 from prompting import user_text
-from referencing import Registry, Resource
-from referencing.jsonschema import DRAFT202012
-from toolkit import ToolRegistry
 
-CASE_KEYS = {
-    "name",
-    "case_type",
-    "limits",
-    "pause_request",
-    "pause_request_timing",
-    "conversation_insert",
-    "conversation_insert_timing",
-    "model_steps",
-    "resume_model_steps",
-    "resume_append_messages",
-    "resume_expected_pause",
-    "resume_checkpoint_status",
-    "resume_checkpoint_total_tool_calls",
-    "retry_model_errors",
-    "approval_decisions",
-    "approval_metadata",
-    "expected_approval_requests",
-    "runtime_context",
-    "stream_model_steps",
-    "expected_status",
-    "expected_final_text",
-    "expected_final_part_types",
-    "expected_final_parts",
-    "expected_tool_calls",
-    "expected_resume_status",
-    "expected_resume_final_text",
-    "expected_resume_tool_calls",
-    "expected_resume_message_roles",
-    "expected_resume_tool_texts",
-    "expected_resume_error",
-    "expected_resume_trace_prefix",
-    "expected_message_roles",
-    "expected_tool_texts",
-    "expected_tool_text_contains",
-    "expected_pending_tool_call_ids",
-    "expected_pause",
-    "expected_tool_progress",
-    "expected_child_run",
-    "expected_model_deltas",
-    "expected_event_types",
-    "expected_trace_kinds",
-    "forbidden_event_types",
-    "forbidden_journal_event_types",
-    "forbidden_checkpoint_statuses",
-    "forbidden_checkpoint_tool_counts",
-    "forbidden_checkpoint_status_tool_counts",
-    "forbidden_unpaused_checkpoint_tool_counts",
-    "forbidden_checkpoint_message_roles",
-    "message",
-    "model_response",
-    "expected_error",
-}
-NEGATIVE_CASE_TYPES = {"message_negative", "model_response_negative"}
-MODEL_STEP_RESPONSE_KEYS = {
-    "parts",
-    "tool_calls",
-    "finish_reason",
-    "usage",
-    "model",
-    "response_id",
-    "metadata",
-}
-MODEL_STEP_KEYS = {
-    "error",
-    "parts",
-    "tool_calls",
-    "finish_reason",
-    "usage",
-    "model",
-    "response_id",
-    "metadata",
-}
-STREAM_STEP_KEYS = {"events"}
-STREAM_EVENT_KEYS = {
-    "type",
-    "index",
-    "text_delta",
-    "part_type",
-    "metadata",
-    "id",
-    "name",
-    "arguments_delta",
-    "mode",
-    "seconds",
-}
-LIMIT_KEYS = {
-    "max_iterations",
-    "max_total_tool_calls",
-    "timeout_seconds",
-    "stop_on_tool_error",
-    "max_parallel_tool_calls",
-    "max_total_tokens",
-    "max_model_retries",
-}
-APPROVAL_DECISION_KEYS = {"action", "reason", "metadata"}
-APPROVAL_REQUEST_EXPECTATION_KEYS = {"risk", "metadata"}
-REQUIRED_SCHEMA_FILES = {
-    "events.schema.json",
-    "model-request.schema.json",
-    "run-snapshot.schema.json",
-    "run-trace.schema.json",
-    "runtime-context.schema.json",
-    "runtime-extensions.schema.json",
-    "resume-input.schema.json",
-    "messages.schema.json",
-    "model-response.schema.json",
-    "model-error.schema.json",
-    "tools.schema.json",
-    "tool-result.schema.json",
-    "state.schema.json",
-    "limits.schema.json",
-}
-STREAM_EVENT_REQUIRED_KEYS: dict[str, set[str]] = {
-    "text_delta": {"index", "text_delta", "part_type"},
-    "tool_call_delta": {"index"},
-    "sleep": {"seconds"},
-    "pause_request": set(),
-}
-REGISTRY_CLS: Any = Registry
-RESOURCE_CLS: Any = Resource
-DRAFT_2020_12_SPEC: Any = DRAFT202012
+from conformance._case import (
+    APPROVAL_DECISION_KEYS,
+    APPROVAL_REQUEST_EXPECTATION_KEYS,
+    CASE_KEYS,
+    LIMIT_KEYS,
+    MODEL_STEP_KEYS,
+    MODEL_STEP_RESPONSE_KEYS,
+    NEGATIVE_CASE_TYPES,
+    STREAM_EVENT_KEYS,
+    STREAM_EVENT_REQUIRED_KEYS,
+    STREAM_STEP_KEYS,
+    check,
+    expect_case_int,
+    expect_case_list,
+    expect_case_list_of_strings,
+    expect_case_mapping,
+    expect_case_number,
+    expect_case_optional_int,
+    expect_case_optional_str,
+    expect_case_str,
+    reject_unknown_keys,
+)
+from conformance._fixtures import (
+    CapturingRunJournal,
+    CapturingRunStore,
+    FailingCheckpointJournal,
+    FailingCheckpointStore,
+    ModelStep,
+    approval_metadata_from_case,
+    approval_policy_from_case,
+    case_tools,
+    controller_from_case,
+    hooks_from_case,
+    limits_from_case,
+    messages_from_case,
+    model_from_case,
+    model_step_from_case_step,
+    resume_selector_from_case,
+    runtime_context_from_case,
+    select_resume_snapshot,
+)
+from conformance._schemas import (
+    assert_validator_matches,
+    build_validators,
+    load_json_object,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -188,408 +82,6 @@ class ConformanceCaseResult:
 
     name: str
     case_type: str
-
-
-@dataclass(slots=True)
-class ConformanceValidators:
-    event: Any
-    run_snapshot: Any
-    run_trace: Any
-    runtime_context: Any
-    resume_input: Any
-    message: Any
-    model_error: Any
-    model_request: Any
-    model_response: Any
-    state: Any
-    limits: Any
-    approval_request: Any
-    approval_decision: Any
-    checkpoint_summary: Any
-    stored_checkpoint: Any
-    journal_record: Any
-
-
-ModelStep = ModelResponse | ModelProviderError
-
-
-class ScriptedModel:
-    def __init__(
-        self,
-        steps: Sequence[ModelStep],
-        *,
-        controller: RunController | None = None,
-        pause_request_on_call: PauseRequest | None = None,
-        pause_request_on_stream_event: PauseRequest | None = None,
-        conversation_insert_on_call: ConversationInsert | None = None,
-    ) -> None:
-        self._steps = list(steps)
-        self._controller = controller
-        self._pause_request_on_call = pause_request_on_call
-        self._pause_request_on_stream_event = pause_request_on_stream_event
-        self._conversation_insert_on_call = conversation_insert_on_call
-        self._pause_requested = False
-        self._conversation_inserted = False
-        self.calls = 0
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        if self.calls >= len(self._steps):
-            raise AssertionError("scripted model exhausted")
-        step = self._steps[self.calls]
-        self.calls += 1
-        self._apply_conversation_insert_once(self._conversation_insert_on_call)
-        self._apply_pause_once(self._pause_request_on_call)
-        if isinstance(step, ModelProviderError):
-            raise step
-        return step
-
-    def _apply_pause_once(self, request: PauseRequest | None) -> None:
-        if self._controller is not None and request is not None and not self._pause_requested:
-            self._pause_requested = True
-            apply_pause_request(self._controller, request)
-
-    def _apply_conversation_insert_once(self, insert: ConversationInsert | None) -> None:
-        if self._controller is not None and insert is not None and not self._conversation_inserted:
-            self._conversation_inserted = True
-            self._controller.insert(insert)
-
-
-class StreamedCaseModel(ScriptedModel):
-    capabilities = ModelCapabilities(streaming=True)
-
-    def __init__(
-        self,
-        steps: Sequence[ModelStep],
-        stream_steps: Sequence[dict[str, Any]],
-        *,
-        controller: RunController | None = None,
-        pause_request_on_call: PauseRequest | None = None,
-        pause_request_on_stream_event: PauseRequest | None = None,
-        conversation_insert_on_call: ConversationInsert | None = None,
-    ) -> None:
-        super().__init__(
-            steps,
-            controller=controller,
-            pause_request_on_call=pause_request_on_call,
-            pause_request_on_stream_event=pause_request_on_stream_event,
-            conversation_insert_on_call=conversation_insert_on_call,
-        )
-        self._stream_steps = list(stream_steps)
-        self.stream_calls = 0
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = request, context
-        if self.stream_calls >= len(self._stream_steps):
-            raise AssertionError("scripted stream model exhausted")
-
-        step = self._stream_steps[self.stream_calls]
-        self.stream_calls += 1
-        self._apply_conversation_insert_once(self._conversation_insert_on_call)
-        self._apply_pause_once(self._pause_request_on_call)
-        for raw_event in cast(list[dict[str, Any]], step.get("events") or []):
-            event_type = expect_case_str(raw_event["type"], "stream event type")
-            if event_type == "text_delta":
-                yield ModelContentDelta(
-                    index=expect_case_int(raw_event["index"], "stream event index"),
-                    text_delta=expect_case_str(raw_event["text_delta"], "stream event text_delta"),
-                    part_type=expect_case_str(raw_event["part_type"], "stream event part_type"),
-                    metadata=expect_case_mapping(
-                        raw_event.get("metadata", {}), "stream event metadata"
-                    ),
-                )
-            elif event_type == "tool_call_delta":
-                yield ModelToolCallDelta(
-                    index=expect_case_int(raw_event["index"], "stream event index"),
-                    id=expect_case_optional_str(raw_event.get("id"), "stream event id"),
-                    name=expect_case_optional_str(raw_event.get("name"), "stream event name"),
-                    mode=expect_case_optional_str(raw_event.get("mode"), "stream event mode"),
-                    arguments_delta=expect_case_optional_str(
-                        raw_event.get("arguments_delta"), "stream event arguments_delta"
-                    ),
-                    metadata=expect_case_mapping(
-                        raw_event.get("metadata", {}), "stream event metadata"
-                    ),
-                )
-            elif event_type == "sleep":
-                await asyncio.sleep(
-                    expect_case_number(raw_event["seconds"], "stream event seconds")
-                )
-            elif event_type == "pause_request":
-                self._apply_pause_once(self._pause_request_on_stream_event)
-            else:
-                raise AssertionError(f"unsupported stream event type: {event_type}")
-
-
-class EchoTool:
-    spec = ToolSpec(
-        name="echo",
-        description="Return input text.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        return ToolObservation.text(str(invocation.arguments.get("text", "")))
-
-
-class AcceptTool:
-    spec = ToolSpec(
-        name="accept",
-        description="Accept an external operation.",
-        input_schema={"type": "object", "properties": {}},
-        modes=("accept",),
-    )
-
-    async def accept(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolAcceptance | ToolRejection:
-        _ = context
-        if invocation.arguments.get("reject") is True:
-            return ToolRejection.text(str(invocation.arguments.get("text", "rejected")))
-        return ToolAcceptance.text(
-            str(invocation.arguments.get("text", "accepted")),
-            correlation_id=str(invocation.arguments.get("correlation_id", invocation.id)),
-        )
-
-
-class HandoffTool:
-    spec = ToolSpec(
-        name="handoff",
-        description="Return generic custom-mode tool output.",
-        input_schema={"type": "object", "properties": {}},
-        modes=("handoff",),
-    )
-
-    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
-        _ = context
-        return ToolOutput(
-            kind=str(invocation.arguments.get("kind", "handoff")),
-            parts=[ContentPart.text_part(str(invocation.arguments.get("text", "handoff")))],
-            is_error=bool(invocation.arguments.get("is_error", False)),
-            correlation_id=str(invocation.arguments.get("correlation_id", invocation.id)),
-        )
-
-
-class FailTool:
-    spec = ToolSpec(
-        name="fail",
-        description="Raise an error.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = invocation, context
-        raise RuntimeError("tool failed")
-
-
-class DelayedEchoTool:
-    spec = ToolSpec(
-        name="delayed_echo",
-        description="Return input text after an optional delay.",
-        input_schema={"type": "object", "properties": {}},
-        annotations={"parallel_safe": True, "read_only": True, "idempotent": True},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        await asyncio.sleep(float(invocation.arguments.get("delay", 0)))
-        return ToolObservation.text(str(invocation.arguments.get("text", "")))
-
-
-class WaitTool:
-    spec = ToolSpec(
-        name="wait",
-        description="Start external work and pause the run.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        raw_background_task = invocation.arguments.get("background_task")
-        background_task = (
-            None
-            if raw_background_task is None
-            else BackgroundTask.from_dict(
-                expect_case_mapping(raw_background_task, "wait background_task")
-            )
-        )
-        return ToolObservation.waiting(
-            str(invocation.arguments.get("text", "external wait started")),
-            wait_id=str(invocation.arguments["wait_id"]),
-            reason=str(invocation.arguments.get("reason", "external_wait")),
-            background_task=background_task,
-        )
-
-
-class ProgressTool:
-    spec = ToolSpec(
-        name="progress",
-        description="Emit live progress records.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        raw_steps = invocation.arguments.get("steps", [])
-        for step in expect_case_sequence(raw_steps, "progress steps"):
-            context.emit_progress({"step": step})
-        return ToolObservation.text(str(invocation.arguments.get("text", "progress complete")))
-
-
-class ParallelWaitTool:
-    spec = ToolSpec(
-        name="parallel_wait",
-        description="Start external work and pause the run.",
-        input_schema={"type": "object", "properties": {}},
-        annotations={"parallel_safe": True, "read_only": True, "idempotent": True},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        await asyncio.sleep(float(invocation.arguments.get("delay", 0)))
-        return ToolObservation.waiting(
-            str(invocation.arguments.get("text", "external wait started")),
-            wait_id=str(invocation.arguments["wait_id"]),
-            reason=str(invocation.arguments.get("reason", "external_wait")),
-        )
-
-
-class StrictCountTool:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    spec = ToolSpec(
-        name="strict_count",
-        description="Require an integer count.",
-        input_schema={
-            "type": "object",
-            "required": ["count"],
-            "properties": {"count": {"type": "integer"}},
-            "additionalProperties": False,
-        },
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        self.calls += 1
-        return ToolObservation.text(str(invocation.arguments["count"]))
-
-
-class CaseApprovalPolicy:
-    def __init__(
-        self,
-        decisions: Mapping[str, ApprovalDecision],
-        *,
-        validate_request: Callable[[ApprovalRequest], None] | None = None,
-        validate_decision: Callable[[ApprovalDecision], None] | None = None,
-    ) -> None:
-        self._decisions = dict(decisions)
-        self._validate_request = validate_request
-        self._validate_decision = validate_decision
-
-    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
-        if self._validate_request is not None:
-            self._validate_request(request)
-        decision = self._decisions.get(request.tool_call.id, ApprovalDecision.allow())
-        if self._validate_decision is not None:
-            self._validate_decision(decision)
-        return decision
-
-
-class FailingCheckpointStore:
-    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
-        _ = checkpoint
-        raise RuntimeError("store unavailable")
-
-    async def load_checkpoint(self, run_id: str, checkpoint_id: str | None = None) -> RunSnapshot:
-        _ = checkpoint_id
-        raise KeyError(run_id)
-
-    async def list_checkpoints(self, run_id: str) -> Sequence[CheckpointSummary]:
-        _ = run_id
-        return ()
-
-
-class CapturingRunStore:
-    def __init__(self) -> None:
-        self.checkpoints: list[StoredCheckpoint] = []
-
-    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
-        self.checkpoints.append(StoredCheckpoint.from_dict(checkpoint.to_dict()))
-
-    async def load_checkpoint(self, run_id: str, checkpoint_id: str | None = None) -> RunSnapshot:
-        matches = [checkpoint for checkpoint in self.checkpoints if checkpoint.run_id == run_id]
-        if checkpoint_id is not None:
-            matches = [
-                checkpoint for checkpoint in matches if checkpoint.checkpoint_id == checkpoint_id
-            ]
-        if not matches:
-            raise KeyError(run_id)
-        return RunSnapshot.from_dict(matches[-1].snapshot.to_dict())
-
-    async def list_checkpoints(self, run_id: str) -> Sequence[CheckpointSummary]:
-        return [
-            checkpoint.summary() for checkpoint in self.checkpoints if checkpoint.run_id == run_id
-        ]
-
-
-class CapturingRunJournal:
-    def __init__(self) -> None:
-        self.records: list[JournalRecord] = []
-
-    async def append(self, record: JournalRecord) -> None:
-        self.records.append(
-            JournalRecord(
-                event=AgentEvent(**record.event.to_dict()),
-                checkpoint_id=record.checkpoint_id,
-                trace_step_id=record.trace_step_id,
-                payload_ref=record.payload_ref,
-                payload_hash=record.payload_hash,
-                metadata=record.metadata,
-            )
-        )
-
-    async def read(
-        self, run_id: str, *, after_sequence: int | None = None
-    ) -> AsyncIterator[JournalRecord]:
-        for record in self.records:
-            if record.run_id != run_id:
-                continue
-            if after_sequence is not None and record.sequence <= after_sequence:
-                continue
-            yield record
-
-
-class FailingCheckpointJournal(CapturingRunJournal):
-    async def append(self, record: JournalRecord) -> None:
-        if record.event_type == EventTypes.CHECKPOINT:
-            raise RuntimeError("journal unavailable")
-        await super().append(record)
-
-
-class RetryModelErrorHook(RuntimeHook):
-    def on_model_error(
-        self,
-        error: ModelErrorInfo,
-        request: ModelRequest,
-        context: RuntimeContext,
-    ) -> ModelErrorDecision | None:
-        _ = request, context
-        return ModelErrorDecision(retry=error.retryable)
 
 
 class ConformanceRunner:
@@ -1040,15 +532,7 @@ class ConformanceRunner:
         validator: Any,
         instance: Mapping[str, Any],
     ) -> None:
-        errors = sorted(
-            validator.iter_errors(instance),
-            key=lambda error: [str(part) for part in error.absolute_path],
-        )
-        if not errors:
-            return
-        error = errors[0]
-        path = ".".join(str(part) for part in error.absolute_path) or "$"
-        raise AssertionError(f"{label} schema violation at {path}: {error.message}") from error
+        assert_validator_matches(label, validator, instance)
 
     async def run_case(self, case: dict[str, Any]) -> ConformanceCaseResult:
         case_type = expect_case_str(case.get("case_type", "run"), "case_type")
@@ -1118,10 +602,10 @@ class ConformanceRunner:
         stream_steps: Sequence[dict[str, Any]],
     ) -> AgentResult:
         controller = controller_from_case(case)
-        model = model_from_case(case, steps, stream_steps, controller)
+        model = model_from_case(case, steps, stream_steps, controller, self.validators)
         return await AgentLoop(
             model=model,
-            tools=case_tools(),
+            tools=case_tools(self.validators),
             limits=limits_from_case(case),
             hooks=hooks_from_case(case),
             approval_policy=approval_policy_from_case(case, self.validators),
@@ -1137,13 +621,13 @@ class ConformanceRunner:
         steps = [model_step_from_case_step(step) for step in case["model_steps"]]
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         controller = controller_from_case(case)
-        model = model_from_case(case, steps, stream_steps, controller)
+        model = model_from_case(case, steps, stream_steps, controller, self.validators)
         journal = CapturingRunJournal()
         events: list[AgentEvent] = []
         try:
             async for event in AgentLoop(
                 model=model,
-                tools=case_tools(),
+                tools=case_tools(self.validators),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
                 approval_policy=approval_policy_from_case(case, self.validators),
@@ -1192,14 +676,14 @@ class ConformanceRunner:
         steps = [model_step_from_case_step(step) for step in case["model_steps"]]
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         controller = controller_from_case(case)
-        model = model_from_case(case, steps, stream_steps, controller)
+        model = model_from_case(case, steps, stream_steps, controller, self.validators)
         store = CapturingRunStore()
         journal = FailingCheckpointJournal()
         events: list[AgentEvent] = []
         try:
             async for event in AgentLoop(
                 model=model,
-                tools=case_tools(),
+                tools=case_tools(self.validators),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
                 approval_policy=approval_policy_from_case(case, self.validators),
@@ -1254,14 +738,14 @@ class ConformanceRunner:
         steps = [model_step_from_case_step(step) for step in case["model_steps"]]
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         controller = controller_from_case(case)
-        model = model_from_case(case, steps, stream_steps, controller)
+        model = model_from_case(case, steps, stream_steps, controller, self.validators)
         store = CapturingRunStore()
         journal = CapturingRunJournal()
         events = [
             event
             async for event in AgentLoop(
                 model=model,
-                tools=case_tools(),
+                tools=case_tools(self.validators),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
                 approval_policy=approval_policy_from_case(case, self.validators),
@@ -1278,6 +762,7 @@ class ConformanceRunner:
 
         check(events, "run store journal case emitted no events")
         self.assert_event_schema_contracts(events)
+        self._assert_tool_result_schema_contracts(events, self._latest_checkpoint_messages(events))
         expected_status = AgentStatus(case["expected_status"])
         completed = [event for event in events if event.type == EventTypes.RUN_COMPLETED]
         check(completed, "run store journal case did not emit run_completed")
@@ -1368,6 +853,11 @@ class ConformanceRunner:
             append_messages=messages_from_case(case.get("resume_append_messages", [])),
             expected_pause=resume_selector_from_case(case),
         )
+        self.assert_matches_schema(
+            "run store resume journal resume input",
+            self.validators.resume_input,
+            resume_input.to_dict(),
+        )
         resume_steps = [
             model_step_from_case_step(step)
             for step in cast(list[dict[str, Any]], case.get("resume_model_steps") or [])
@@ -1377,8 +867,14 @@ class ConformanceRunner:
         events = [
             event
             async for event in AgentLoop(
-                model=model_from_case(case, resume_steps, [], controller=None),
-                tools=case_tools(),
+                model=model_from_case(
+                    case,
+                    resume_steps,
+                    [],
+                    controller=None,
+                    validators=self.validators,
+                ),
+                tools=case_tools(self.validators),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
                 approval_policy=approval_policy_from_case(case, self.validators),
@@ -1387,6 +883,7 @@ class ConformanceRunner:
                 run_journal=journal,
             ).run_snapshot_events(resume_input)
         ]
+        self._assert_tool_result_schema_contracts(events, self._latest_checkpoint_messages(events))
 
         expected_status = AgentStatus(case["expected_resume_status"])
         self.assert_event_stream_invariants(events, expected_status)
@@ -1539,6 +1036,79 @@ class ConformanceRunner:
                 record.to_dict(),
             )
 
+    def _assert_tool_result_schema_contracts(
+        self, events: Sequence[AgentEvent], messages: Sequence[Message]
+    ) -> None:
+        tool_messages = {
+            message.tool_call_id: message
+            for message in messages
+            if message.role == "tool" and message.tool_call_id is not None
+        }
+        for event in events:
+            if event.type != EventTypes.TOOL_COMPLETED:
+                continue
+            call_id = expect_case_str(event.data["id"], "tool_completed id")
+            message = tool_messages.get(call_id)
+            if message is None:
+                continue
+            summary = expect_case_mapping(event.data["result"], "tool_completed result")
+            result_kind = expect_case_str(summary["result_kind"], "tool result kind")
+            payload: dict[str, Any] = {
+                "kind": result_kind,
+                "parts": [part.to_dict() for part in message.parts],
+            }
+            is_error = bool(summary.get("is_error", False))
+            if result_kind == "observation" or is_error:
+                payload["is_error"] = is_error
+            metadata = expect_case_mapping(summary.get("metadata", {}), "tool result metadata")
+            if metadata:
+                payload["metadata"] = dict(metadata)
+            message_metadata = message.metadata
+            check(
+                message_metadata.get("result_kind") == result_kind,
+                f"tool message {call_id} result_kind metadata mismatch",
+            )
+            if is_error:
+                check(
+                    message_metadata.get("is_error") is True,
+                    f"tool message {call_id} is_error metadata mismatch",
+                )
+            else:
+                check(
+                    "is_error" not in message_metadata,
+                    f"tool message {call_id} unexpectedly marks is_error",
+                )
+            pause = summary.get("pause")
+            if pause is not None:
+                payload["pause"] = expect_case_mapping(pause, "tool result pause")
+            if "correlation_id" in summary:
+                correlation_id = expect_case_str(
+                    summary["correlation_id"], "tool result correlation_id"
+                )
+                payload["correlation_id"] = correlation_id
+                check(
+                    message_metadata.get("correlation_id") == correlation_id,
+                    f"tool message {call_id} correlation_id metadata mismatch",
+                )
+            if "background_task" in summary:
+                background_task = expect_case_mapping(
+                    summary["background_task"], "tool result background_task"
+                )
+                payload["background_task"] = background_task
+                check(
+                    message_metadata.get("background_task") == background_task,
+                    f"tool message {call_id} background_task metadata mismatch",
+                )
+            self.assert_matches_schema(
+                f"tool result {call_id}", self.validators.tool_result, payload
+            )
+
+    def _latest_checkpoint_messages(self, events: Sequence[AgentEvent]) -> Sequence[Message]:
+        checkpoint_events = [event for event in events if event.type == EventTypes.CHECKPOINT]
+        check(checkpoint_events, "expected checkpoint event with messages")
+        snapshot = RunSnapshot.from_dict(checkpoint_events[-1].data)
+        return snapshot.state.messages
+
     async def collect_case_events(
         self,
         case: dict[str, Any],
@@ -1546,12 +1116,12 @@ class ConformanceRunner:
         stream_steps: Sequence[dict[str, Any]],
     ) -> list[AgentEvent]:
         controller = controller_from_case(case)
-        model = model_from_case(case, steps, stream_steps, controller)
+        model = model_from_case(case, steps, stream_steps, controller, self.validators)
         return [
             event
             async for event in AgentLoop(
                 model=model,
-                tools=case_tools(),
+                tools=case_tools(self.validators),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
                 approval_policy=approval_policy_from_case(case, self.validators),
@@ -1573,8 +1143,14 @@ class ConformanceRunner:
         return [
             event
             async for event in AgentLoop(
-                model=model_from_case(case, steps, [], controller=None),
-                tools=case_tools(),
+                model=model_from_case(
+                    case,
+                    steps,
+                    [],
+                    controller=None,
+                    validators=self.validators,
+                ),
+                tools=case_tools(self.validators),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
                 approval_policy=approval_policy_from_case(case, self.validators),
@@ -1744,6 +1320,7 @@ class ConformanceRunner:
         )
         self.assert_result_schema_contracts("result", result)
         self.assert_event_stream_invariants(events, expected_status)
+        self._assert_tool_result_schema_contracts(events, result.messages)
         trace_payload = result.trace
         if trace_payload is None:
             raise AssertionError("result trace is missing")
@@ -2248,8 +1825,14 @@ class ConformanceRunner:
             for step in cast(list[dict[str, Any]], case.get("resume_model_steps") or [])
         ]
         result = await AgentLoop(
-            model=model_from_case(case, resume_steps, [], controller=None),
-            tools=case_tools(),
+            model=model_from_case(
+                case,
+                resume_steps,
+                [],
+                controller=None,
+                validators=self.validators,
+            ),
+            tools=case_tools(self.validators),
             limits=limits_from_case(case),
             hooks=hooks_from_case(case),
             approval_policy=approval_policy_from_case(case, self.validators),
@@ -2274,6 +1857,7 @@ class ConformanceRunner:
         )
         self.assert_result_schema_contracts("resume result", result)
         self.assert_event_stream_invariants(resume_events, expected_status)
+        self._assert_tool_result_schema_contracts(resume_events, result.messages)
         trace_payload = result.trace
         if trace_payload is None:
             raise AssertionError("resume result trace is missing")
@@ -2322,436 +1906,3 @@ class ConformanceRunner:
                 f"expected resume tool texts {case['expected_resume_tool_texts']}, "
                 f"got {actual_tool_texts}",
             )
-
-
-def load_json_schema(path: Path) -> dict[str, Any]:
-    schema = load_json_object(path, "schema")
-    schema_id = schema.get("$id")
-    if not isinstance(schema_id, str) or not schema_id:
-        raise ValueError(f"{path}: schema must define a non-empty $id")
-    try:
-        Draft202012Validator.check_schema(schema)
-    except SchemaError as exc:
-        raise ValueError(f"{path}: invalid JSON schema: {exc.message}") from exc
-    return schema
-
-
-def load_json_object(path: Path, label: str) -> dict[str, Any]:
-    try:
-        raw = path.read_text()
-    except OSError as exc:
-        raise OSError(f"failed to read {label} {path}: {exc}") from exc
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"{path}: invalid JSON at line {exc.lineno} column {exc.colno}: {exc.msg}"
-        ) from exc
-    if not isinstance(value, dict):
-        raise TypeError(f"{path}: {label} must contain an object")
-    return cast(dict[str, Any], value)
-
-
-def build_validators(spec_dir: Path) -> ConformanceValidators:
-    if not spec_dir.is_dir():
-        raise FileNotFoundError(f"spec directory not found: {spec_dir}")
-    schemas = {path.name: load_json_schema(path) for path in sorted(spec_dir.glob("*.schema.json"))}
-    missing = REQUIRED_SCHEMA_FILES - set(schemas)
-    if missing:
-        raise ValueError(f"spec directory missing schema file(s): {', '.join(sorted(missing))}")
-    registry: Any = REGISTRY_CLS().with_resources(
-        [
-            (
-                cast(str, schema["$id"]),
-                RESOURCE_CLS.from_contents(
-                    cast(Any, schema), default_specification=DRAFT_2020_12_SPEC
-                ),
-            )
-            for schema in schemas.values()
-        ]
-    )
-    runtime_extensions_ref = "https://agent-runtime.local/spec/v0/runtime-extensions.schema.json"
-
-    def runtime_extension_validator(def_name: str) -> Draft202012Validator:
-        return Draft202012Validator(
-            {"$ref": f"{runtime_extensions_ref}#/$defs/{def_name}"},
-            registry=registry,
-        )
-
-    return ConformanceValidators(
-        event=Draft202012Validator(schemas["events.schema.json"], registry=registry),
-        run_snapshot=Draft202012Validator(schemas["run-snapshot.schema.json"], registry=registry),
-        run_trace=Draft202012Validator(schemas["run-trace.schema.json"], registry=registry),
-        runtime_context=Draft202012Validator(
-            schemas["runtime-context.schema.json"], registry=registry
-        ),
-        resume_input=Draft202012Validator(schemas["resume-input.schema.json"], registry=registry),
-        message=Draft202012Validator(schemas["messages.schema.json"], registry=registry),
-        model_error=Draft202012Validator(schemas["model-error.schema.json"], registry=registry),
-        model_request=Draft202012Validator(schemas["model-request.schema.json"], registry=registry),
-        model_response=Draft202012Validator(
-            schemas["model-response.schema.json"], registry=registry
-        ),
-        state=Draft202012Validator(schemas["state.schema.json"], registry=registry),
-        limits=Draft202012Validator(schemas["limits.schema.json"], registry=registry),
-        approval_request=runtime_extension_validator("approval_request"),
-        approval_decision=runtime_extension_validator("approval_decision"),
-        checkpoint_summary=runtime_extension_validator("checkpoint_summary"),
-        stored_checkpoint=runtime_extension_validator("stored_checkpoint"),
-        journal_record=runtime_extension_validator("journal_record"),
-    )
-
-
-def reject_unknown_keys(keys: set[str], allowed: set[str], label: str) -> None:
-    unknown = keys - allowed
-    if unknown:
-        raise AssertionError(f"{label} has unknown key(s): {', '.join(sorted(unknown))}")
-
-
-def check(condition: object, message: str) -> None:
-    if not condition:
-        raise AssertionError(message)
-
-
-def assert_validator_matches(label: str, validator: Any, instance: Mapping[str, Any]) -> None:
-    errors = sorted(
-        validator.iter_errors(instance),
-        key=lambda error: [str(part) for part in error.absolute_path],
-    )
-    if not errors:
-        return
-    error = errors[0]
-    path = ".".join(str(part) for part in error.absolute_path) or "$"
-    raise AssertionError(f"{label} schema violation at {path}: {error.message}") from error
-
-
-def expect_case_list(value: object, label: str) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        raise TypeError(f"{label} must be an array")
-    return cast(list[dict[str, Any]], value)
-
-
-def expect_case_list_of_strings(value: object, label: str) -> list[str]:
-    if not isinstance(value, list):
-        raise TypeError(f"{label} must be an array")
-    items = cast(list[object], value)
-    return [expect_case_str(item, f"{label} item") for item in items]
-
-
-def expect_case_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be an object")
-    return cast(Mapping[str, Any], value)
-
-
-def expect_case_sequence(value: object, label: str) -> Sequence[object]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise TypeError(f"{label} must be an array")
-    return cast(Sequence[object], value)
-
-
-def expect_case_str(value: object, label: str) -> str:
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string")
-    return value
-
-
-def expect_case_optional_str(value: object, label: str) -> str | None:
-    if value is None:
-        return None
-    return expect_case_str(value, label)
-
-
-def expect_case_int(value: object, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{label} must be an integer")
-    return value
-
-
-def expect_case_optional_int(value: object, label: str) -> int | None:
-    if value is None:
-        return None
-    return expect_case_int(value, label)
-
-
-def expect_case_number(value: object, label: str) -> float:
-    if not isinstance(value, int | float) or isinstance(value, bool):
-        raise TypeError(f"{label} must be a number")
-    return float(value)
-
-
-def content_part_from_case(part: dict[str, Any]) -> ContentPart:
-    return ContentPart.from_dict(part)
-
-
-def model_step_from_case_step(step: dict[str, Any]) -> ModelStep:
-    if "error" in step:
-        error = ModelErrorInfo.from_dict(cast(Mapping[str, Any], step["error"]))
-        return ModelProviderError(error)
-    return ModelResponse.from_dict(step)
-
-
-def limits_from_case(case: dict[str, Any]) -> LoopLimits:
-    raw_limits = cast(dict[str, Any], case.get("limits", {}))
-    return LoopLimits(
-        max_iterations=cast(int, raw_limits.get("max_iterations", 8)),
-        max_total_tool_calls=cast(int, raw_limits.get("max_total_tool_calls", 20)),
-        timeout_seconds=cast(float | None, raw_limits.get("timeout_seconds")),
-        stop_on_tool_error=cast(bool, raw_limits.get("stop_on_tool_error", False)),
-        max_parallel_tool_calls=cast(int, raw_limits.get("max_parallel_tool_calls", 1)),
-        max_total_tokens=cast(int | None, raw_limits.get("max_total_tokens")),
-        max_model_retries=cast(int, raw_limits.get("max_model_retries", 0)),
-    )
-
-
-def approval_policy_from_case(
-    case: dict[str, Any],
-    validators: ConformanceValidators,
-) -> CaseApprovalPolicy | None:
-    raw_decisions_obj = case.get("approval_decisions")
-    if not isinstance(raw_decisions_obj, dict):
-        return None
-    raw_decisions = cast(Mapping[str, object], raw_decisions_obj)
-    decisions: dict[str, ApprovalDecision] = {}
-    for call_id, raw_decision in raw_decisions.items():
-        decisions[expect_case_str(call_id, "approval decision call_id")] = (
-            ApprovalDecision.from_dict(cast(Mapping[str, Any], raw_decision))
-        )
-    return CaseApprovalPolicy(
-        decisions,
-        validate_request=lambda request: assert_validator_matches(
-            "approval request",
-            validators.approval_request,
-            request.to_dict(),
-        ),
-        validate_decision=lambda decision: assert_validator_matches(
-            "approval decision",
-            validators.approval_decision,
-            decision.to_dict(),
-        ),
-    )
-
-
-def approval_metadata_from_case(case: dict[str, Any]) -> Mapping[str, Any] | None:
-    raw_metadata = case.get("approval_metadata")
-    if raw_metadata is None:
-        return None
-    return expect_case_mapping(raw_metadata, "approval_metadata")
-
-
-def pause_request_from_case(case: dict[str, Any]) -> PauseRequest | None:
-    raw_pause_obj = case.get("pause_request")
-    if not isinstance(raw_pause_obj, dict):
-        return None
-    return PauseRequest.from_dict(cast(Mapping[str, Any], raw_pause_obj))
-
-
-def conversation_insert_from_case(case: dict[str, Any]) -> ConversationInsert | None:
-    raw_insert_obj = case.get("conversation_insert")
-    if not isinstance(raw_insert_obj, dict):
-        return None
-    return ConversationInsert.from_dict(cast(Mapping[str, Any], raw_insert_obj))
-
-
-def apply_pause_request(controller: RunController, request: PauseRequest) -> None:
-    if request.interrupt:
-        controller.interrupt(
-            reason=request.reason,
-            source=request.source,
-            wait_id=request.wait_id,
-            metadata=request.metadata,
-        )
-        return
-    controller.request_pause(
-        reason=request.reason,
-        source=request.source,
-        wait_id=request.wait_id,
-        metadata=request.metadata,
-    )
-
-
-def controller_from_case(case: dict[str, Any]) -> RunController | None:
-    request = pause_request_from_case(case)
-    insert = conversation_insert_from_case(case)
-    if request is None and insert is None:
-        return None
-    controller = RunController()
-    if request is not None and case.get("pause_request_timing") not in {
-        "during_model_call",
-        "stream_event",
-    }:
-        apply_pause_request(controller, request)
-    return controller
-
-
-def runtime_context_from_case(case: dict[str, Any]) -> RuntimeContext | None:
-    raw_context = case.get("runtime_context")
-    if raw_context is None:
-        return None
-    return RuntimeContext.from_dict(expect_case_mapping(raw_context, "runtime_context"))
-
-
-def model_from_case(
-    case: dict[str, Any],
-    steps: Sequence[ModelStep],
-    stream_steps: Sequence[dict[str, Any]],
-    controller: RunController | None,
-) -> ScriptedModel:
-    pause_request_on_call = (
-        pause_request_from_case(case)
-        if case.get("pause_request_timing") == "during_model_call"
-        else None
-    )
-    pause_request_on_stream_event = (
-        pause_request_from_case(case)
-        if case.get("pause_request_timing") == "stream_event"
-        else None
-    )
-    conversation_insert_on_call = (
-        conversation_insert_from_case(case)
-        if case.get("conversation_insert_timing") == "during_model_call"
-        else None
-    )
-    if stream_steps:
-        return StreamedCaseModel(
-            steps,
-            stream_steps,
-            controller=controller,
-            pause_request_on_call=pause_request_on_call,
-            pause_request_on_stream_event=pause_request_on_stream_event,
-            conversation_insert_on_call=conversation_insert_on_call,
-        )
-    return ScriptedModel(
-        steps,
-        controller=controller,
-        pause_request_on_call=pause_request_on_call,
-        pause_request_on_stream_event=pause_request_on_stream_event,
-        conversation_insert_on_call=conversation_insert_on_call,
-    )
-
-
-def case_tools() -> ToolRegistry:
-    return ToolRegistry(
-        [
-            EchoTool(),
-            AcceptTool(),
-            HandoffTool(),
-            FailTool(),
-            DelayedEchoTool(),
-            WaitTool(),
-            ProgressTool(),
-            ParallelWaitTool(),
-            StrictCountTool(),
-        ]
-    )
-
-
-def hooks_from_case(case: dict[str, Any]) -> list[RuntimeHook]:
-    if case.get("retry_model_errors") is True:
-        return [RetryModelErrorHook()]
-    return []
-
-
-def messages_from_case(value: object) -> list[Message]:
-    return [
-        Message.from_dict(cast(Mapping[str, Any], message))
-        for message in expect_case_list(value, "resume_append_messages")
-    ]
-
-
-def resume_selector_from_case(case: dict[str, Any]) -> PauseSelector | None:
-    raw_selector = case.get("resume_expected_pause")
-    if raw_selector is None:
-        return None
-    return PauseSelector.from_dict(cast(Mapping[str, Any], raw_selector))
-
-
-def select_resume_snapshot(case: dict[str, Any], events: Sequence[AgentEvent]) -> RunSnapshot:
-    target_status = AgentStatus(expect_case_str(case["resume_checkpoint_status"], "resume status"))
-    target_tool_calls = expect_case_optional_int(
-        case.get("resume_checkpoint_total_tool_calls"),
-        "resume checkpoint total_tool_calls",
-    )
-    for event in events:
-        if event.type != EventTypes.CHECKPOINT:
-            continue
-        snapshot = RunSnapshot.from_dict(event.data)
-        if snapshot.state.status is not target_status:
-            continue
-        if target_tool_calls is not None and snapshot.state.total_tool_calls != target_tool_calls:
-            continue
-        return snapshot
-    raise AssertionError(f"missing resume checkpoint with status {target_status.value}")
-
-
-def infer_spec_dir(cases_dir: Path) -> Path:
-    if cases_dir.name == "cases" and cases_dir.parent.name == "conformance":
-        return cases_dir.parent.parent / "contracts" / "v0"
-    return Path.cwd() / "contracts" / "v0"
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run runtime conformance cases.")
-    parser.add_argument("cases_dir", type=Path, help="Directory containing conformance case JSON")
-    parser.add_argument(
-        "--spec-dir",
-        type=Path,
-        help="Directory containing contracts/v0 schema JSON. Defaults to the repository layout.",
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Only print failures and the final summary.",
-    )
-    parser.add_argument(
-        "--traceback",
-        action="store_true",
-        help="Print Python tracebacks for failing cases.",
-    )
-    return parser
-
-
-async def _run_cli_cases(runner: ConformanceRunner, *, quiet: bool, show_tracebacks: bool) -> int:
-    cases = runner.load_cases()
-    passed = 0
-    failed = 0
-    for case in cases:
-        name = expect_case_str(case["name"], "case name")
-        try:
-            result = await runner.run_case(case)
-        except Exception as exc:
-            failed += 1
-            print(f"FAIL {name}: {exc}")
-            if show_tracebacks:
-                traceback.print_exception(exc)
-            continue
-        passed += 1
-        if not quiet:
-            print(f"PASS {result.name} [{result.case_type}]")
-    print(f"{passed} passed, {failed} failed")
-    return 1 if failed else 0
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    cases_dir = args.cases_dir.resolve()
-    spec_dir = args.spec_dir.resolve() if args.spec_dir is not None else infer_spec_dir(cases_dir)
-    try:
-        runner = ConformanceRunner(cases_dir=cases_dir, spec_dir=spec_dir)
-        return asyncio.run(
-            _run_cli_cases(
-                runner,
-                quiet=cast(bool, args.quiet),
-                show_tracebacks=cast(bool, args.traceback),
-            )
-        )
-    except Exception as exc:
-        print(f"FAIL load: {exc}")
-        if cast(bool, args.traceback):
-            traceback.print_exception(exc)
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

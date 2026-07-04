@@ -25,11 +25,11 @@ A non-Python runner should provide the same deterministic harness:
 - Load every `*.json` case in sorted order and reject unknown keys.
 - Validate fixture fields that map to v0 schemas, plus runner-specific field
   checks. During execution, validate emitted events, snapshots, result messages,
-  resume input, and traces against the v0 schemas.
+  model requests, tool outputs, resume input, and traces against the v0 schemas.
 - Convert `model_steps` and `resume_model_steps` into scripted model responses.
 - Emit stream events from `stream_model_steps` when the case requests streaming.
 - Provide the standard conformance tools: `echo`, `accept`, `handoff`, `fail`,
-  `delayed_echo`, `wait`, `parallel_wait`, and `strict_count`.
+  `delayed_echo`, `wait`, `progress`, `parallel_wait`, and `strict_count`.
 - Assert every `expected_*` field and every `forbidden_*` field present in the
   case. Absence of an expectation means the runner should not assert it.
 

@@ -7,6 +7,21 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from kernel._validation import (
+    expect_mapping as _expect_mapping,
+)
+from kernel._validation import (
+    expect_optional_non_empty_str as _expect_optional_non_empty_str,
+)
+from kernel._validation import (
+    expect_optional_str as _expect_optional_str,
+)
+from kernel._validation import (
+    expect_sequence as _expect_sequence,
+)
+from kernel._validation import (
+    reject_unknown_keys as _reject_unknown_keys,
+)
 from kernel.messages import Message
 from kernel.snapshot import RunSnapshot
 from kernel.state import AgentState, PauseState
@@ -23,40 +38,6 @@ def _empty_metadata() -> Mapping[str, Any]:
 
 def _copy_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
     return deepcopy(dict(value or {}))
-
-
-def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{label} must be a mapping")
-    return cast(Mapping[str, Any], value)
-
-
-def _expect_sequence(value: object, label: str) -> Sequence[object]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        raise TypeError(f"{label} must be an array")
-    return cast(Sequence[object], value)
-
-
-def _expect_optional_str(value: object, label: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError(f"{label} must be a string or null")
-    return value
-
-
-def _expect_optional_non_empty_str(value: object, label: str) -> str | None:
-    text = _expect_optional_str(value, label)
-    if text == "":
-        raise ValueError(f"{label} must not be empty")
-    return text
-
-
-def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str) -> None:
-    unknown = set(value) - allowed
-    if unknown:
-        names = ", ".join(sorted(unknown))
-        raise ValueError(f"{label} has unknown field(s): {names}")
 
 
 def _expect_run_snapshot(value: object, label: str) -> RunSnapshot:
