@@ -63,8 +63,9 @@ id, source label, optional correlation id, content parts, and metadata.
 
 If an insert arrives while the runtime is planning, SDKs must append the
 external message, emit `conversation_inserted`, checkpoint, and plan again. If a
-model call or stream is in flight, SDKs may cancel it before committing the
-insert; partial model deltas remain non-durable UI progress.
+model call or stream is in flight, SDKs may use provider-specific cancellation
+mechanics, but any preempted model response must be discarded and must not
+become durable. Partial model deltas remain non-durable UI progress.
 
 Conversation insertion is independent of pause:
 

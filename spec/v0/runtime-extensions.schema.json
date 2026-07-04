@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-runtime.local/spec/v0/runtime-extensions.schema.json",
+  "title": "Agent Runtime Extension Values",
+  "oneOf": [
+    { "$ref": "#/$defs/approval_request" },
+    { "$ref": "#/$defs/approval_decision" },
+    { "$ref": "#/$defs/checkpoint_summary" },
+    { "$ref": "#/$defs/stored_checkpoint" },
+    { "$ref": "#/$defs/journal_record" }
+  ],
+  "$defs": {
+    "metadata": {
+      "type": "object"
+    },
+    "nullable_non_empty_string": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["planning", "executing_tools", "paused", "completed", "failed", "limit_exceeded"]
+    },
+    "approval_request": {
+      "type": "object",
+      "required": ["tool_call", "context", "tool_spec", "risk", "metadata"],
+      "properties": {
+        "tool_call": { "$ref": "messages.schema.json#/$defs/tool_call" },
+        "context": { "$ref": "runtime-context.schema.json" },
+        "tool_spec": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "tools.schema.json" }
+          ]
+        },
+        "risk": { "$ref": "#/$defs/metadata" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      },
+      "additionalProperties": false
+    },
+    "approval_decision": {
+      "type": "object",
+      "required": ["action", "reason", "metadata"],
+      "properties": {
+        "action": { "type": "string", "enum": ["allow", "deny", "pause"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      },
+      "additionalProperties": false
+    },
+    "checkpoint_summary": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "checkpoint_id",
+        "parent_checkpoint_id",
+        "sequence",
+        "status",
+        "created_at",
+        "metadata"
+      ],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "checkpoint_id": { "type": "string", "minLength": 1 },
+        "parent_checkpoint_id": { "$ref": "#/$defs/nullable_non_empty_string" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "status": { "$ref": "#/$defs/status" },
+        "created_at": { "type": "number" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      },
+      "additionalProperties": false
+    },
+    "stored_checkpoint": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "checkpoint_id",
+        "parent_checkpoint_id",
+        "sequence",
+        "status",
+        "snapshot",
+        "created_at",
+        "metadata"
+      ],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "checkpoint_id": { "type": "string", "minLength": 1 },
+        "parent_checkpoint_id": { "$ref": "#/$defs/nullable_non_empty_string" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "status": { "$ref": "#/$defs/status" },
+        "snapshot": { "$ref": "run-snapshot.schema.json" },
+        "created_at": { "type": "number" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      },
+      "additionalProperties": false
+    },
+    "journal_record": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "sequence",
+        "event_type",
+        "event",
+        "checkpoint_id",
+        "trace_step_id",
+        "payload_ref",
+        "payload_hash",
+        "created_at",
+        "metadata"
+      ],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "event_type": { "type": "string", "minLength": 1 },
+        "event": { "$ref": "events.schema.json" },
+        "checkpoint_id": { "$ref": "#/$defs/nullable_non_empty_string" },
+        "trace_step_id": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": 0 }
+          ]
+        },
+        "payload_ref": { "$ref": "#/$defs/nullable_non_empty_string" },
+        "payload_hash": { "$ref": "#/$defs/nullable_non_empty_string" },
+        "created_at": { "type": "number" },
+        "metadata": { "$ref": "#/$defs/metadata" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

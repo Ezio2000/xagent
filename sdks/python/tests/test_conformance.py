@@ -252,6 +252,67 @@ def test_conformance_case_validation_rejects_resume_keys_without_resume_type() -
         )
 
 
+def test_conformance_case_validation_rejects_unasserted_expectation_keys() -> None:
+    with pytest.raises(AssertionError, match="unsupported expectation"):
+        SHARED_CONFORMANCE_RUNNER.validate_case_keys(
+            "bad_store_failure_case",
+            {
+                "name": "bad_store_failure_case",
+                "case_type": "run_store_failure",
+                "model_steps": [],
+                "expected_status": "failed",
+                "expected_tool_calls": 0,
+                "expected_error": "store unavailable",
+                "expected_trace_kinds": ["checkpoint"],
+            },
+        )
+
+
+def test_conformance_case_validation_allows_asserted_journal_expectations() -> None:
+    SHARED_CONFORMANCE_RUNNER.validate_case_keys(
+        "store_journal_case",
+        {
+            "name": "store_journal_case",
+            "case_type": "run_store_journal",
+            "model_steps": [],
+            "expected_status": "completed",
+            "expected_tool_calls": 0,
+            "forbidden_journal_event_types": ["custom_event"],
+        },
+    )
+
+
+def test_conformance_case_validation_rejects_journal_expectations_without_journal() -> None:
+    with pytest.raises(AssertionError, match="unsupported expectation"):
+        SHARED_CONFORMANCE_RUNNER.validate_case_keys(
+            "bad_run_case",
+            {
+                "name": "bad_run_case",
+                "model_steps": [],
+                "expected_status": "completed",
+                "expected_tool_calls": 0,
+                "forbidden_journal_event_types": ["checkpoint"],
+            },
+        )
+
+
+def test_conformance_case_validation_rejects_unsupported_store_resume_keys() -> None:
+    with pytest.raises(AssertionError, match="unsupported expectation"):
+        SHARED_CONFORMANCE_RUNNER.validate_case_keys(
+            "bad_store_resume_case",
+            {
+                "name": "bad_store_resume_case",
+                "case_type": "run_store_resume_journal",
+                "model_steps": [],
+                "expected_status": "completed",
+                "expected_tool_calls": 0,
+                "resume_checkpoint_status": "planning",
+                "expected_resume_status": "completed",
+                "expected_resume_message_roles": ["user"],
+            },
+        )
+
+
 def test_conformance_case_validation_rejects_mistyped_limits() -> None:
     with pytest.raises(TypeError, match="stop_on_tool_error"):
         SHARED_CONFORMANCE_RUNNER.validate_case_keys(
@@ -440,6 +501,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
             "batch_id": "tool-batch-1",
             "parallel": False,
             "index": 0,
+            "implementation_invoked": True,
             "result": {
                 "part_count": 1,
                 "part_types": ["text"],
@@ -462,11 +524,14 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                     "state": {
                         "status": "executing_tools",
                         "message_count": 2,
+                        "message_roles": ["user", "assistant"],
                         "pending_tool_call_count": 1,
+                        "pending_tool_call_ids": ["call-1"],
                         "iterations": 1,
                         "total_tool_calls": 0,
                         "total_usage": None,
                         "has_final": False,
+                        "final_part_count": 0,
                         "error": None,
                         "pause": None,
                     }
@@ -484,6 +549,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                     "batch_id": "tool-batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
                 run_id="run-1",
                 sequence=2,
@@ -497,6 +563,7 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                     "batch_id": "tool-batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": {
                         "part_count": 1,
                         "part_types": ["text"],
@@ -600,11 +667,14 @@ def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:
                     "state": {
                         "status": "paused",
                         "message_count": 3,
+                        "message_roles": ["user", "assistant", "tool"],
                         "pending_tool_call_count": 0,
+                        "pending_tool_call_ids": [],
                         "iterations": 1,
                         "total_tool_calls": 1,
                         "total_usage": None,
                         "has_final": False,
+                        "final_part_count": 0,
                         "error": None,
                         "pause": {
                             "reason": "external_wait",
@@ -679,6 +749,7 @@ def test_tool_result_schemas_reject_known_mode_result_kind_mismatch() -> None:
             "batch_id": "tool-batch-1",
             "parallel": False,
             "index": 0,
+            "implementation_invoked": True,
             "result": {
                 "part_count": 1,
                 "part_types": ["text"],
@@ -699,6 +770,7 @@ def test_tool_result_schemas_reject_known_mode_result_kind_mismatch() -> None:
         "batch_id": "tool-batch-1",
         "parallel": False,
         "index": 0,
+        "implementation_invoked": True,
         "result": {
             "part_count": 1,
             "part_types": ["text"],
@@ -742,6 +814,7 @@ def test_tool_result_schemas_allow_accept_mode_rejection() -> None:
             "batch_id": "tool-batch-1",
             "parallel": False,
             "index": 0,
+            "implementation_invoked": True,
             "result": {
                 "part_count": 1,
                 "part_types": ["text"],
@@ -771,6 +844,7 @@ def test_tool_result_schemas_allow_accept_mode_rejection() -> None:
                     "batch_id": "tool-batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": {
                         "part_count": 1,
                         "part_types": ["text"],
@@ -802,6 +876,7 @@ def test_tool_result_schemas_allow_extension_mode_result_kind() -> None:
             "batch_id": "tool-batch-1",
             "parallel": False,
             "index": 0,
+            "implementation_invoked": True,
             "result": {
                 "part_count": 1,
                 "part_types": ["text"],
@@ -823,6 +898,7 @@ def test_tool_result_schemas_allow_extension_mode_result_kind() -> None:
         "batch_id": "tool-batch-1",
         "parallel": False,
         "index": 0,
+        "implementation_invoked": True,
         "result": {
             "part_count": 1,
             "part_types": ["text"],
@@ -893,6 +969,7 @@ def test_tool_result_schemas_reject_extension_mode_reserved_result_kind(
             "batch_id": "tool-batch-1",
             "parallel": False,
             "index": 0,
+            "implementation_invoked": True,
             "result": event_result,
         },
         run_id="run-1",
@@ -914,6 +991,7 @@ def test_tool_result_schemas_reject_extension_mode_reserved_result_kind(
                     "batch_id": "tool-batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": trace_result,
                 },
                 "schema_version": "v0",

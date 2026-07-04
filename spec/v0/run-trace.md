@@ -74,11 +74,28 @@ of these rules is semantically invalid.
 
 ### Tool Invariants
 
+- `approval_requested` and `approval_completed` occur only while
+  `executing_tools`; they do not open or close tool calls and must preserve the
+  current status.
+- Each `approval_completed` must follow and match an earlier open
+  `approval_requested` by tool-call `id`, `name`, and `mode`; traces must not
+  leave approval requests open at a successful `completed` or `paused`
+  terminal boundary. `failed` and `limit_exceeded` terminals may close open
+  approval requests or decisions because the runtime aborted before the
+  corresponding `tool_call`, `tool_result`, or approval pause was emitted.
+- `tool_call` and `tool_result` carry `implementation_invoked`. A denied
+  approval must resolve through a non-invoked tool call/result and commit an
+  error or accept-mode rejection. Runtime validation failures may also produce
+  non-invoked tool calls/results, but the result must be an error. A paused
+  approval must resolve through `pause_requested` before any `tool_call` for
+  that id.
 - `tool_call` and `tool_result` occur only while `executing_tools`, and each
   tool result must match an open tool call, including the invocation `mode`;
 - a tool call id must not be opened twice in the same execution segment;
 - if `pending_tool_call_ids` are known from the last checkpoint, every
-  `tool_call` must belong to that pending set;
+  `approval_requested` and `tool_call` must follow that ordered list. Parallel
+  tool results may still be recorded in completion order, but tool-call start
+  and approval request order are the pending model order;
 - parallel tool results may be recorded in completion order, but the set of
   completed result ids must match the pending calls before the runtime returns
   from `executing_tools` to `planning`;
@@ -118,8 +135,8 @@ of these rules is semantically invalid.
 ### Terminal Invariants
 
 - traces end with `run_completed`;
-- `run_completed` must be the final trace step and must report the current
-  invocation-terminal status when it carries a state summary;
+- `run_completed` must be the final trace step, must carry a state summary, and
+  that summary must report the current invocation-terminal status;
 - `final` is valid only after `completed`;
 - `error` is valid only after an invocation-terminal state and its status must
   match that state;

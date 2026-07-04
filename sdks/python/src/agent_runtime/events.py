@@ -61,6 +61,8 @@ class EventTypes:
     MODEL_COMPLETED = "model_completed"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_COMPLETED = "approval_completed"
     CONVERSATION_INSERTED = "conversation_inserted"
     PAUSE_REQUESTED = "pause_requested"
     CHECKPOINT = "checkpoint"
@@ -80,6 +82,8 @@ CORE_EVENT_TYPES = frozenset(
         EventTypes.MODEL_COMPLETED,
         EventTypes.TOOL_STARTED,
         EventTypes.TOOL_COMPLETED,
+        EventTypes.APPROVAL_REQUESTED,
+        EventTypes.APPROVAL_COMPLETED,
         EventTypes.CONVERSATION_INSERTED,
         EventTypes.PAUSE_REQUESTED,
         EventTypes.CHECKPOINT,

@@ -27,7 +27,16 @@ Before a tool implementation is called, the runtime validates
 invalid tool call: execute-mode calls commit an error `ToolObservation`,
 accept-mode calls commit a `ToolRejection`, and extension modes commit an error
 `ToolOutput` with a custom `tool_error` result kind. The model can observe that
-tool error on the next planning turn and recover.
+tool error on the next planning turn and recover. The corresponding tool
+lifecycle event and trace payloads use `implementation_invoked: false`.
+
+If an approval policy is configured, valid tool calls are sent to it for an
+`allow`, `deny`, or `pause` decision before calling the tool implementation.
+Invalid tool calls are committed as runtime validation errors and are not sent
+to approval policy. `deny` commits a mode-appropriate tool error or rejection
+without calling the tool. `pause` stops before tool execution with the call
+still pending and resumes through the normal run-control protocol. Approval is
+a runtime decision point, not an OS-level sandbox or UI implementation.
 
 Execute-mode tools return `ToolObservation`:
 
@@ -100,10 +109,15 @@ and unambiguous checkpoints.
 
 Advanced hosts may replace the default scheduler by passing a
 `tool_scheduler_factory`. The factory result must implement the scheduler
-protocol: `next_batch(calls)` chooses the next ordered batch and
+protocol: `next_batch(calls)` chooses the next non-empty prefix batch and
 `run_batch(batch, execute, stop_on_error=...)` yields `tool_started` and
-`tool_completed` progress. Implementations do not need to inherit from the
-default `ToolScheduler` class.
+`tool_completed` progress. Custom schedulers must yield `tool_started` before
+calling the supplied `execute` function for that call, must call `execute`
+exactly once for each completed batch call, and must not replace the returned
+result. Implementations do not need to inherit from the default `ToolScheduler`
+class. When an approval policy is configured, the Python reference runtime
+conservatively resolves and executes at most one scheduled tool call at a time
+so approval pauses cannot leave a partially approved batch visible.
 
 Common scheduling annotations:
 

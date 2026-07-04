@@ -169,6 +169,15 @@ the original envelope (`run_id`, `sequence`, timestamp, schema version) and uses
 only the replacement `type` and `data`. Use `emitter.emit(...)` for ordinary
 custom progress events.
 
+`AgentLoop` can also accept optional core extension protocols:
+
+- `run_store` persists durable checkpoints before they become the latest
+  resumable boundary.
+- `approval_policy` approves, denies, or pauses tool execution before a tool
+  implementation is called.
+- `run_journal` appends emitted runtime events for audit and UI history. It does
+  not replace compact `RunTrace` replay validation.
+
 If a model adapter implements `stream(request, context)` and advertises
 `ModelCapabilities(streaming=True)`, callers can enable live model deltas. The
 method must return an async iterator directly, usually because it is an async

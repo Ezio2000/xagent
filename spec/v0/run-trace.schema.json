@@ -83,21 +83,6 @@
         { "$ref": "#/$defs/compact_pause" }
       ]
     },
-    "compact_pause_request": {
-      "type": "object",
-      "required": ["reason", "source", "wait_id", "metadata_keys", "interrupt"],
-      "properties": {
-        "reason": { "type": "string", "minLength": 1 },
-        "source": { "type": "string", "minLength": 1 },
-        "wait_id": { "type": ["string", "null"] },
-        "metadata_keys": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "interrupt": { "type": "boolean" }
-      },
-      "additionalProperties": false
-    },
     "compact_tool_pause_request": {
       "type": "object",
       "required": ["reason", "source", "wait_id", "metadata_keys", "interrupt"],
@@ -112,12 +97,6 @@
         "interrupt": { "const": false }
       },
       "additionalProperties": false
-    },
-    "compact_pause_request_or_null": {
-      "oneOf": [
-        { "type": "null" },
-        { "$ref": "#/$defs/compact_pause_request" }
-      ]
     },
     "compact_tool_pause_request_or_null": {
       "oneOf": [
@@ -438,20 +417,15 @@
     },
     "tool_call_payload": {
       "type": "object",
-      "required": ["id", "name", "mode", "batch_id", "parallel", "index"],
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "name": { "type": "string", "minLength": 1 },
-        "mode": { "type": "string", "minLength": 1 },
-        "batch_id": { "type": "string", "minLength": 1 },
-        "parallel": { "type": "boolean" },
-        "index": { "type": "integer", "minimum": 0 }
-      },
-      "additionalProperties": false
-    },
-    "tool_result_payload": {
-      "type": "object",
-      "required": ["id", "name", "mode", "batch_id", "parallel", "index", "result"],
+      "required": [
+        "id",
+        "name",
+        "mode",
+        "batch_id",
+        "parallel",
+        "index",
+        "implementation_invoked"
+      ],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
@@ -459,6 +433,64 @@
         "batch_id": { "type": "string", "minLength": 1 },
         "parallel": { "type": "boolean" },
         "index": { "type": "integer", "minimum": 0 },
+        "implementation_invoked": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "approval_requested_payload": {
+      "type": "object",
+      "required": ["id", "name", "mode", "risk_keys", "metadata_keys"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "risk_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "approval_completed_payload": {
+      "type": "object",
+      "required": ["id", "name", "mode", "action", "reason", "metadata_keys"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "action": { "type": "string", "enum": ["allow", "deny", "pause"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "tool_result_payload": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mode",
+        "batch_id",
+        "parallel",
+        "index",
+        "implementation_invoked",
+        "result"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "batch_id": { "type": "string", "minLength": 1 },
+        "parallel": { "type": "boolean" },
+        "index": { "type": "integer", "minimum": 0 },
+        "implementation_invoked": { "type": "boolean" },
         "result": { "$ref": "#/$defs/tool_result_summary" }
       },
       "allOf": [
@@ -733,6 +765,8 @@
             "model_delta",
             "model_error",
             "model_result",
+            "approval_requested",
+            "approval_completed",
             "tool_call",
             "tool_result",
             "conversation_insert",
@@ -786,6 +820,24 @@
         {
           "if": { "properties": { "kind": { "const": "model_result" } }, "required": ["kind"] },
           "then": { "properties": { "payload": { "$ref": "#/$defs/model_result_payload" } } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "approval_requested" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/approval_requested_payload" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "approval_completed" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/approval_completed_payload" } }
+          }
         },
         {
           "if": { "properties": { "kind": { "const": "tool_call" } }, "required": ["kind"] },

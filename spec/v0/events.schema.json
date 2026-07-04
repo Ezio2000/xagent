@@ -136,6 +136,32 @@
     {
       "if": {
         "properties": {
+          "type": { "const": "approval_requested" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/approval_requested_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "approval_completed" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/approval_completed_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
           "type": { "const": "conversation_inserted" }
         },
         "required": ["type"]
@@ -482,7 +508,16 @@
     },
     "tool_started_data": {
       "type": "object",
-      "required": ["id", "name", "mode", "arguments", "batch_id", "parallel", "index"],
+      "required": [
+        "id",
+        "name",
+        "mode",
+        "arguments",
+        "batch_id",
+        "parallel",
+        "index",
+        "implementation_invoked"
+      ],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
@@ -490,7 +525,8 @@
         "arguments": { "type": "object" },
         "batch_id": { "type": "string", "minLength": 1 },
         "parallel": { "type": "boolean" },
-        "index": { "type": "integer", "minimum": 0 }
+        "index": { "type": "integer", "minimum": 0 },
+        "implementation_invoked": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -554,7 +590,16 @@
     },
     "tool_completed_data": {
       "type": "object",
-      "required": ["id", "name", "mode", "batch_id", "parallel", "index", "result"],
+      "required": [
+        "id",
+        "name",
+        "mode",
+        "batch_id",
+        "parallel",
+        "index",
+        "implementation_invoked",
+        "result"
+      ],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
@@ -562,6 +607,7 @@
         "batch_id": { "type": "string", "minLength": 1 },
         "parallel": { "type": "boolean" },
         "index": { "type": "integer", "minimum": 0 },
+        "implementation_invoked": { "type": "boolean" },
         "result": { "$ref": "#/$defs/tool_result_summary" }
       },
       "allOf": [
@@ -616,6 +662,31 @@
           }
         }
       ],
+      "additionalProperties": false
+    },
+    "approval_requested_data": {
+      "type": "object",
+      "required": ["id", "name", "mode", "risk", "metadata"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "risk": { "type": "object" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "approval_completed_data": {
+      "type": "object",
+      "required": ["id", "name", "mode", "action", "reason", "metadata"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "action": { "type": "string", "enum": ["allow", "deny", "pause"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
       "additionalProperties": false
     },
     "conversation_insert": {

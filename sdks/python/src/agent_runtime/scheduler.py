@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from agent_runtime.messages import ToolCall
-from agent_runtime.tools import ToolOutput, ToolRegistry, ToolSpec
+from agent_runtime.tools import ToolOutput, ToolSpec
 
 
 @dataclass(slots=True, frozen=True)
@@ -39,8 +39,27 @@ class ToolCompleted:
     result: ToolOutput
 
 
-ToolProgress: TypeAlias = ToolStarted | ToolCompleted
-ExecuteTool: TypeAlias = Callable[[ToolCall], Awaitable[ToolOutput]]
+class ToolCatalog:
+    """Read-only tool specification catalog for scheduler policy."""
+
+    __slots__ = ("_specs", "_specs_by_name")
+
+    _specs: tuple[ToolSpec, ...]
+    _specs_by_name: dict[str, ToolSpec]
+
+    def __init__(self, specs: Sequence[ToolSpec]) -> None:
+        normalized = tuple(ToolSpec.from_dict(spec.to_dict()) for spec in specs)
+        self._specs = normalized
+        self._specs_by_name = {spec.name: spec for spec in normalized}
+
+    def specs(self) -> tuple[ToolSpec, ...]:
+        return tuple(ToolSpec.from_dict(spec.to_dict()) for spec in self._specs)
+
+    def spec_for(self, name: str) -> ToolSpec | None:
+        spec = self._specs_by_name.get(name)
+        if spec is None:
+            return None
+        return ToolSpec.from_dict(spec.to_dict())
 
 
 @runtime_checkable
@@ -48,16 +67,16 @@ class ToolSchedulerProtocol(Protocol):
     """Minimal scheduler interface accepted by AgentLoop."""
 
     def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
-        """Return the next batch of calls to execute, or None when no batch remains."""
+        """Return a non-empty prefix batch from calls, or None when no batch remains."""
         ...
 
     def run_batch(
         self,
         batch: ToolBatch,
-        execute: ExecuteTool,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
         *,
         stop_on_error: bool = False,
-    ) -> AsyncIterator[ToolProgress]:
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
         """Run one selected batch and yield tool progress events."""
         ...
 
@@ -69,9 +88,9 @@ class ToolScheduler:
 
     _batch_counter: int
     _max_parallel_tool_calls: int
-    _tools: ToolRegistry
+    _tools: ToolCatalog
 
-    def __init__(self, tools: ToolRegistry, *, max_parallel_tool_calls: int = 1) -> None:
+    def __init__(self, tools: ToolCatalog, *, max_parallel_tool_calls: int = 1) -> None:
         if max_parallel_tool_calls < 1:
             raise ValueError("max_parallel_tool_calls must be >= 1")
         self._tools = tools
@@ -98,10 +117,10 @@ class ToolScheduler:
     async def run_batch(
         self,
         batch: ToolBatch,
-        execute: ExecuteTool,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
         *,
         stop_on_error: bool = False,
-    ) -> AsyncIterator[ToolProgress]:
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
         if not batch.calls:
             return
 
@@ -109,22 +128,28 @@ class ToolScheduler:
         next_index = 0
         active: dict[asyncio.Future[ToolOutput], tuple[int, ToolCall]] = {}
 
-        def start_next() -> ToolStarted | None:
+        def next_started() -> ToolStarted | None:
             nonlocal next_index
             if next_index >= len(batch.calls):
                 return None
             index = next_index
             call = batch.calls[index]
             next_index += 1
-            active[asyncio.ensure_future(execute(call))] = (index, call)
             return ToolStarted(batch=batch, index=index, call=call)
+
+        def schedule(started: ToolStarted) -> None:
+            active[asyncio.ensure_future(execute(started.call))] = (
+                started.index,
+                started.call,
+            )
 
         try:
             while len(active) < max_active:
-                started = start_next()
+                started = next_started()
                 if started is None:
                     break
                 yield started
+                schedule(started)
 
             while active:
                 done, _pending = await asyncio.wait(
@@ -144,10 +169,11 @@ class ToolScheduler:
                         return
 
                     while len(active) < max_active:
-                        started = start_next()
+                        started = next_started()
                         if started is None:
                             break
                         yield started
+                        schedule(started)
         except BaseException:
             for task in active:
                 task.cancel()

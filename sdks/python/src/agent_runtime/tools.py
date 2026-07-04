@@ -300,10 +300,17 @@ class ToolOutput:
     def from_dict(cls, value: Mapping[str, Any]) -> ToolOutput:
         known = {"kind", "parts", "metadata", "is_error", "pause", "correlation_id"}
         _reject_unknown_keys(value, known, "tool output")
+        kind = _expect_str(value["kind"], "tool output kind")
+        if kind == "observation":
+            return ToolObservation.from_dict(value)
+        if kind == "acceptance":
+            return ToolAcceptance.from_dict(value)
+        if kind == "rejection":
+            return ToolRejection.from_dict(value)
         raw_pause = value.get("pause")
         raw_metadata: object = value.get("metadata", {})
         return cls(
-            kind=_expect_str(value["kind"], "tool output kind"),
+            kind=kind,
             parts=[
                 ContentPart.from_dict(_expect_mapping(part, "tool output part"))
                 for part in _expect_sequence(value["parts"], "tool output parts")
@@ -604,7 +611,8 @@ class ToolRegistry:
             return ToolSpec.from_dict(spec.to_dict())
         return None
 
-    async def invoke(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
+    def validate_call(self, call: ToolCall) -> None:
+        """Validate a tool call without invoking the concrete tool implementation."""
         tool = self._tools.get(call.name)
         if tool is None:
             raise InvalidToolCall(f"unknown tool: {call.name}")
@@ -617,12 +625,23 @@ class ToolRegistry:
         if validator is None:
             raise InvalidToolCall(f"unknown tool: {call.name}")
         self._validate_arguments(validator, call)
-
-        invocation = ToolInvocation.from_tool_call(call)
-        tool_context = ToolExecutionContext.from_runtime_context(context)
         if call.mode == "execute":
             if not callable(getattr(tool, "execute", None)):
                 raise InvalidToolCall(f"tool {call.name} does not implement execute")
+            return
+        if call.mode == "accept":
+            if not callable(getattr(tool, "accept", None)):
+                raise InvalidToolCall(f"tool {call.name} does not implement accept")
+            return
+        if not callable(getattr(tool, "invoke", None)):
+            raise InvalidToolCall(f"tool {call.name} does not implement {call.mode} mode")
+
+    async def invoke(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
+        self.validate_call(call)
+        tool = self._tools[call.name]
+        invocation = ToolInvocation.from_tool_call(call)
+        tool_context = ToolExecutionContext.from_runtime_context(context)
+        if call.mode == "execute":
             executable = cast(ExecutableTool, tool)
             try:
                 result = cast(object, await executable.execute(invocation, tool_context))
@@ -635,8 +654,6 @@ class ToolRegistry:
             return ToolObservation.from_dict(result.to_dict())
 
         if call.mode == "accept":
-            if not callable(getattr(tool, "accept", None)):
-                raise InvalidToolCall(f"tool {call.name} does not implement accept")
             acceptable = cast(AcceptableTool, tool)
             try:
                 result = cast(object, await acceptable.accept(invocation, tool_context))
@@ -650,8 +667,6 @@ class ToolRegistry:
                 return ToolRejection.from_dict(result.to_dict())
             raise TypeError("tool accept must return ToolAcceptance or ToolRejection")
 
-        if not callable(getattr(tool, "invoke", None)):
-            raise InvalidToolCall(f"tool {call.name} does not implement {call.mode} mode")
         invocable = cast(InvocableTool, tool)
         try:
             result = cast(object, await invocable.invoke(invocation, tool_context))
@@ -661,6 +676,8 @@ class ToolRegistry:
             raise ToolError(str(exc) or exc.__class__.__name__) from exc
         if not isinstance(result, ToolOutput):
             raise TypeError("tool invoke must return ToolOutput")
+        if type(result) is ToolOutput and result.kind in _RESERVED_TOOL_OUTPUT_KINDS:
+            raise TypeError("custom tool invoke must return an extension ToolOutput kind")
         output = ToolOutput.from_dict(result.to_dict())
         if output.kind in _RESERVED_TOOL_OUTPUT_KINDS:
             raise TypeError("custom tool invoke must return an extension ToolOutput kind")

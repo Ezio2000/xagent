@@ -1,0 +1,32 @@
+{
+  "name": "custom_tool_extension_mode",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "handoff",
+          "mode": "handoff",
+          "arguments": {
+            "text": "delegated",
+            "kind": "handoff"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "handoff complete"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "handoff complete",
+  "expected_tool_calls": 1,
+  "expected_tool_texts": ["delegated"]
+}

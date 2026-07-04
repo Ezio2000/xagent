@@ -1,5 +1,6 @@
 """Lightweight model-neutral agent loop runtime."""
 
+from agent_runtime.approval import ApprovalAction, ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from agent_runtime.control import ConversationInsert, PauseRequest, RunController
 from agent_runtime.errors import (
     AgentError,
@@ -13,6 +14,7 @@ from agent_runtime.errors import (
 )
 from agent_runtime.events import AgentEvent, EventEmitter, EventType, EventTypes, QueuedEvent
 from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
+from agent_runtime.journal import JournalRecord, RunJournal
 from agent_runtime.limits import LimitReasons, LoopLimits
 from agent_runtime.loop import AgentLoop, AgentResult, ToolSchedulerFactory
 from agent_runtime.messages import ContentPart, Message, ToolCall
@@ -40,6 +42,7 @@ from agent_runtime.resume import PauseSelector, ResumeInput
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.scheduler import (
     ToolBatch,
+    ToolCatalog,
     ToolCompleted,
     ToolScheduler,
     ToolSchedulerProtocol,
@@ -47,6 +50,7 @@ from agent_runtime.scheduler import (
 )
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentState, AgentStatus, PauseState
+from agent_runtime.store import CheckpointSummary, RunStore, StoredCheckpoint
 from agent_runtime.tools import (
     AcceptableTool,
     ExecutableTool,
@@ -78,6 +82,11 @@ __all__ = [
     "AgentResult",
     "AgentState",
     "AgentStatus",
+    "ApprovalAction",
+    "ApprovalDecision",
+    "ApprovalPolicy",
+    "ApprovalRequest",
+    "CheckpointSummary",
     "ContentPart",
     "ConversationInsert",
     "DuplicateToolError",
@@ -87,6 +96,7 @@ __all__ = [
     "ExecutableTool",
     "InvalidToolCall",
     "InvocableTool",
+    "JournalRecord",
     "LimitExceeded",
     "LimitReasons",
     "LoopLimits",
@@ -118,15 +128,19 @@ __all__ = [
     "ResponseFormat",
     "ResumeInput",
     "RunController",
+    "RunJournal",
     "RunSnapshot",
+    "RunStore",
     "RunTrace",
     "RuntimeContext",
     "RuntimeHook",
+    "StoredCheckpoint",
     "StreamingModelClient",
     "Tool",
     "ToolAcceptance",
     "ToolBatch",
     "ToolCall",
+    "ToolCatalog",
     "ToolChoice",
     "ToolCompleted",
     "ToolError",

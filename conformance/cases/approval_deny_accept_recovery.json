@@ -1,0 +1,52 @@
+{
+  "name": "approval_deny_accept_recovery",
+  "approval_decisions": {
+    "call-1": {
+      "action": "deny",
+      "reason": "requires external approval",
+      "metadata": {
+        "policy": "conformance"
+      }
+    }
+  },
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "accept",
+          "mode": "accept",
+          "arguments": {
+            "text": "external task"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "handled accept denial"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "handled accept denial",
+  "expected_tool_calls": 1,
+  "expected_tool_text_contains": [
+    "requires external approval"
+  ],
+  "expected_event_types": [
+    "approval_requested",
+    "approval_completed",
+    "tool_completed"
+  ],
+  "expected_trace_kinds": [
+    "approval_requested",
+    "approval_completed",
+    "tool_result"
+  ]
+}

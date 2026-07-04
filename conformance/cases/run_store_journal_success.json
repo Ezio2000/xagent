@@ -1,0 +1,38 @@
+{
+  "name": "run_store_journal_success",
+  "case_type": "run_store_journal",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "echo",
+          "mode": "execute",
+          "arguments": {
+            "text": "stored"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "stored"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "stored",
+  "expected_tool_calls": 1,
+  "expected_event_types": [
+    "checkpoint",
+    "tool_started",
+    "tool_completed",
+    "final",
+    "run_completed"
+  ]
+}

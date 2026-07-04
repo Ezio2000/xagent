@@ -1,0 +1,30 @@
+{
+  "name": "run_journal_checkpoint_append_failure",
+  "case_type": "run_journal_failure",
+  "model_steps": [
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "done"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_tool_calls": 0,
+  "expected_error": "journal unavailable",
+  "expected_event_types": [
+    "run_started",
+    "model_started",
+    "model_completed",
+    "state_changed"
+  ],
+  "forbidden_event_types": [
+    "checkpoint"
+  ],
+  "forbidden_journal_event_types": [
+    "checkpoint"
+  ]
+}

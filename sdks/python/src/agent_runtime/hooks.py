@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import TypeAlias, TypeVar, cast
+from typing import cast
 
 from agent_runtime.errors import ModelErrorInfo
 from agent_runtime.events import AgentEvent, EventEmitter
@@ -13,9 +13,6 @@ from agent_runtime.models import ModelRequest, ModelResponse
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.state import AgentState, AgentStatus
 from agent_runtime.tools import ToolOutput
-
-T = TypeVar("T")
-MaybeAwaitable: TypeAlias = T | Awaitable[T]
 
 
 @dataclass(slots=True, frozen=True)
@@ -43,18 +40,18 @@ class RuntimeHook:
 
     def on_event(
         self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter
-    ) -> MaybeAwaitable[AgentEvent | None] | None:
+    ) -> AgentEvent | Awaitable[AgentEvent | None] | None:
         _ = event, context, emitter
         return None
 
     def before_model(
         self, request: ModelRequest, context: RuntimeContext
-    ) -> MaybeAwaitable[ModelRequest | None] | None:
+    ) -> ModelRequest | Awaitable[ModelRequest | None] | None:
         return None
 
     def after_model(
         self, response: ModelResponse, context: RuntimeContext
-    ) -> MaybeAwaitable[ModelResponse | None] | None:
+    ) -> ModelResponse | Awaitable[ModelResponse | None] | None:
         return None
 
     def on_model_error(
@@ -62,18 +59,18 @@ class RuntimeHook:
         error: ModelErrorInfo,
         request: ModelRequest,
         context: RuntimeContext,
-    ) -> MaybeAwaitable[ModelErrorDecision | None] | None:
+    ) -> ModelErrorDecision | Awaitable[ModelErrorDecision | None] | None:
         _ = error, request, context
         return None
 
     def before_tool(
         self, call: ToolCall, context: RuntimeContext
-    ) -> MaybeAwaitable[ToolCall | None] | None:
+    ) -> ToolCall | Awaitable[ToolCall | None] | None:
         return None
 
     def after_tool(
         self, result: ToolOutput, context: RuntimeContext
-    ) -> MaybeAwaitable[ToolOutput | None] | None:
+    ) -> ToolOutput | Awaitable[ToolOutput | None] | None:
         return None
 
     def on_transition(
@@ -82,5 +79,5 @@ class RuntimeHook:
         current: AgentStatus,
         state: AgentState,
         context: RuntimeContext,
-    ) -> MaybeAwaitable[None] | None:
+    ) -> Awaitable[None] | None:
         return None

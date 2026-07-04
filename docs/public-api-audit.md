@@ -11,9 +11,13 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
 
 - Keep runtime orchestration names: `AgentLoop`, `AgentResult`, `AgentState`,
   `AgentStatus`, `LoopLimits`, `RuntimeContext`, `RuntimeHook`,
-  `ModelErrorDecision`, `ToolSchedulerFactory`, and `RunSnapshot`.
+  `LimitReasons`, `ModelErrorDecision`, `ToolSchedulerFactory`, and
+  `RunSnapshot`.
 - Keep resume/control names: `ResumeInput`, `PauseSelector`, `PauseRequest`,
   `RunController`, `ConversationInsert`, and `PauseState`.
+- Keep core extension protocol names: `RunStore`, `StoredCheckpoint`,
+  `CheckpointSummary`, `ApprovalPolicy`, `ApprovalRequest`,
+  `ApprovalDecision`, `ApprovalAction`, `RunJournal`, and `JournalRecord`.
 - Keep trace names: `RunTrace`, `TraceStep`, `TraceStepKinds`,
   `ReplayResult`, `ReplayError`, and `replay_trace`.
 - Keep event names: `AgentEvent`, `EventType`, `EventTypes`, `EventEmitter`,
@@ -24,13 +28,14 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
   `ResponseFormat`, `ModelCapabilities`, `ModelUsage`, `model_capabilities`,
   `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`, `ToolObservation`,
   `ToolAcceptance`, `ToolRejection`, `ToolOutput`, `ExecutableTool`,
-  `AcceptableTool`, `Tool`, and `ToolRegistry`.
+  `AcceptableTool`, `InvocableTool`, `Tool`, and `ToolRegistry`.
 - Keep model streaming names: `ModelStreamEvent`, `ModelContentDelta`,
   `ModelToolCallDelta`, `ModelReasoningDelta`, `ModelUsageDelta`,
   `ModelStreamStarted`, `ModelStreamCompleted`, and `ModelStreamAccumulator`.
-- Keep scheduler detail names: `ToolScheduler`, `ToolBatch`, `ToolStarted`, and
-  `ToolCompleted`. They are useful for tests, advanced hosts, and future SDK
-  alignment even though most users will interact through `AgentLoop`.
+- Keep scheduler detail names: `ToolCatalog`, `ToolScheduler`,
+  `ToolSchedulerProtocol`, `ToolBatch`, `ToolStarted`, and `ToolCompleted`.
+  They are useful for tests, advanced hosts, and future SDK alignment even
+  though most users will interact through `AgentLoop`.
 - Keep error names: `AgentError`, `ModelError`, `ModelProviderError`,
   `ModelErrorInfo`, `ToolError`, `InvalidToolCall`, `DuplicateToolError`, and
   `LimitExceeded`.
@@ -61,6 +66,14 @@ external completion, `ToolRejection` is accept-mode failure output, and
 `RunTrace` and `TraceStep` name the compact semantic record and its entries.
 `TraceStepKinds` mirrors runtime-owned core `EventTypes`. Replay validates this
 closed core trace vocabulary so corrupted or unknown semantic steps fail early.
+
+`RunStore`, `ApprovalPolicy`, and `RunJournal` are protocol names rather than
+implementation names. The SDK owns the portable boundary semantics for durable
+checkpoint persistence, tool approval decisions, and append-only event
+journaling, while concrete stores, approval UIs, sandboxes, dashboards, and
+policy engines remain host-owned. `StoredCheckpoint`, `CheckpointSummary`,
+`ApprovalRequest`, `ApprovalDecision`, and `JournalRecord` are value objects at
+those boundaries.
 
 `EventEmitter` is the right name for hook-owned custom event emission. It emits
 `QueuedEvent` payloads, while the runtime remains the owner of `AgentEvent`
@@ -94,8 +107,9 @@ not a value type.
 failures. `ModelErrorInfo` is the serializable payload. This keeps provider
 transport details out of `AgentState` while preserving useful diagnostics.
 `ToolSchedulerFactory` is public so advanced hosts can replace scheduling
-policy. Custom schedulers implement `ToolSchedulerProtocol`; `ToolScheduler`
-remains the default implementation.
+policy. It receives a read-only `ToolCatalog`, not executable tool
+implementations. Custom schedulers implement `ToolSchedulerProtocol`;
+`ToolScheduler` remains the default implementation.
 
 ## Public Versus Internal
 
@@ -104,20 +118,13 @@ The following implementation names are intentionally not part of the public API:
 - `RunControlState`
 - `RuntimeTimeoutError`
 - `RuntimePauseInterrupt`
+- `RuntimeConversationInsert`
 - `TraceRecorder`
-- `MaybeAwaitable`
-- `ToolProgress`
-- `ExecuteTool`
 - private validation and compaction helpers
 
 These names may change without a compatibility path. If a future SDK needs one
 of them as portable surface area, promote it deliberately with spec and
 conformance coverage.
-
-Internal annotation helpers such as `MaybeAwaitable`, `ToolProgress`, and
-`ExecuteTool` may appear in implementation signatures inside their modules, but
-they are not root-package API. Public callers should use the exported protocols
-and value objects instead.
 
 ## Future Rename Rules
 

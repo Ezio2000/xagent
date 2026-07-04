@@ -11,6 +11,8 @@ runtime boundary priority.
   checkpoint boundaries, and terminal invocation states.
 - `run-control.md`: pause, interrupt, resume input, timeout priority, and
   external-wait behavior.
+- `runtime-extensions.md`: core extension protocols for checkpoint stores,
+  approval decisions, and durable event journals.
 - `tool-scheduling.md`: serial versus parallel tool scheduling, batch commit
   order, checkpoint atomicity, and tool error behavior.
 - `model-stream.md`: live model delta semantics and the rule that partial
@@ -37,6 +39,7 @@ these shapes, but the JSON form is the cross-language boundary.
 | `resume-input.schema.json` | Host-to-runtime resume boundary. | Snapshot, append-only messages, optional expected-pause selector, and resume metadata. |
 | `events.schema.json` | Ordered runtime event stream. | Event envelope, event names, sequence ordering, and compact payload summaries. |
 | `run-trace.schema.json` | Compact semantic trace. | Trace envelope, ordered trace steps, status summaries, stable references, and replayable payloads. |
+| `runtime-extensions.schema.json` | Core extension value objects. | Approval requests and decisions, stored checkpoint records, checkpoint summaries, and journal records. |
 
 The Markdown files own semantic rules that schemas only partially express:
 
@@ -44,6 +47,7 @@ The Markdown files own semantic rules that schemas only partially express:
 | --- | --- |
 | `state-machine.md` | Status meanings, allowed transitions, terminal states, and checkpoint placement. |
 | `run-control.md` | Pause, interrupt, conversation insertion, resume, timeout priority, and external waits. |
+| `runtime-extensions.md` | RunStore, ApprovalPolicy, and RunJournal protocol semantics and boundaries. |
 | `tool-scheduling.md` | Serial and parallel tool execution, batch atomicity, and tool error behavior. |
 | `model-stream.md` | Streaming deltas, accumulator behavior, and non-durable partial output. |
 | `run-trace.md` | Trace step order, deterministic replay rules, and compact payload policy. |
@@ -86,8 +90,8 @@ SDK-local detail:
   expectations.
 - Provider SDK request/response objects and transport-specific errors before
   they are translated into v0 model shapes.
-- Persistence stores, approval flows, plugin systems, UI rendering, queues, and
-  deployment runtime.
+- Concrete store and journal backends, approval UIs, enterprise policy engines,
+  plugin systems, UI rendering, queues, and deployment runtime.
 - Internal semantics of `metadata` keys and values. Metadata fields included in
   v0 schemas are still part of the wire shape; SDKs should preserve them where
   the schema includes them. Run traces are the exception: they intentionally

@@ -13,6 +13,8 @@ Known v0.1 event types:
 - `model_completed`
 - `tool_started`
 - `tool_completed`
+- `approval_requested`
+- `approval_completed`
 - `conversation_inserted`
 - `pause_requested`
 - `checkpoint`
@@ -52,7 +54,16 @@ checkpoint.
 `tool_started` and `tool_completed` include the normalized tool invocation
 `mode`. For core-known modes, `tool_completed.data.result.result_kind` is
 `observation` for execute-mode output and either `acceptance` or `rejection` for
-accept-mode output; extension modes use non-empty custom result kinds.
+accept-mode output; extension modes use non-empty custom result kinds. When a
+tool result is produced by runtime policy or runtime validation rather than the
+tool implementation, such as approval denial or input-schema rejection,
+`implementation_invoked` is `false`.
+
+`approval_requested` and `approval_completed` are emitted when an
+`ApprovalPolicy` is configured. They record the host decision point before the
+tool implementation is called. `allow` continues to normal tool execution,
+`deny` commits a tool error or rejection without calling the tool, and `pause`
+uses the normal pause sequence before the pending tool call is resolved.
 
 `conversation_inserted` is emitted when host or external input preempts
 planning and enters message history as an `external` message. The event carries
@@ -65,11 +76,13 @@ progress. Host applications should persist `checkpoint` for resume and treat
 `model_delta` as optional UI progress.
 
 `pause_requested` records the core pause request that is being applied. Its
-`origin` is `control` for controller/host pauses and `tool_result` for pauses
-carried by committed tool results; `request.source` remains a public label. It is
-followed by `state_changed` to `paused` and a `checkpoint` carrying the paused
-snapshot. A clean pause emits `run_paused` instead of `final` or `error`; it
-means the current invocation stopped cleanly and can be continued with
+`origin` is `control` for controller/host pauses and approval pauses, and
+`tool_result` for pauses carried by committed tool results. Approval pauses use
+`request.source: approval` and `request.wait_id` equal to the tool-call id;
+`request.source` otherwise remains a public label. It is followed by
+`state_changed` to `paused` and a `checkpoint` carrying the paused snapshot. A
+clean pause emits `run_paused` instead of `final` or `error`; it means the
+current invocation stopped cleanly and can be continued with
 `run_snapshot(ResumeInput(...))`. If a hook fails after the paused checkpoint,
 the invocation may end with `error` and `run_completed`, with or without a
 visible `run_paused`, while the last checkpoint remains paused. The host still
@@ -85,10 +98,11 @@ pause state when paused, rather than full message bodies. Pause state in events
 includes host-supplied pause metadata; trace payloads compact that metadata to
 key summaries.
 
-Run trace is separate from the event stream. Core SDKs may derive trace steps
-from known core events and resume inputs, but trace records are not emitted as
-additional runtime events. This keeps event consumers stable while giving tests,
-debuggers, and conformance runners a deterministic replay surface.
+Run trace is separate from the event stream and from an optional durable event
+journal. Core SDKs may derive trace steps from known core events and resume
+inputs, but trace records are not emitted as additional runtime events. This
+keeps event consumers stable while giving tests, debuggers, and conformance
+runners a deterministic replay surface.
 
 Every event envelope includes:
 

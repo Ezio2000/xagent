@@ -6,14 +6,23 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from inspect import isawaitable, iscoroutinefunction
 from time import monotonic, time
 from typing import Any, TypeAlias, TypeVar, cast
 
+from agent_runtime.approval import ApprovalDecision, ApprovalPolicy, ApprovalRequest
 from agent_runtime.control import ConversationInsert, PauseRequest, RunController
-from agent_runtime.errors import AgentError, InvalidToolCall, ModelProviderError, ToolError
+from agent_runtime.errors import (
+    AgentError,
+    InvalidToolCall,
+    LimitExceeded,
+    ModelProviderError,
+    ToolError,
+)
 from agent_runtime.events import CORE_EVENT_TYPES, AgentEvent, EventEmitter, EventTypes
 from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
+from agent_runtime.journal import JournalRecord, RunJournal
 from agent_runtime.limits import LimitReasons, LoopLimits
 from agent_runtime.messages import (
     ContentPart,
@@ -36,9 +45,17 @@ from agent_runtime.models import (
 )
 from agent_runtime.resume import ResumeInput
 from agent_runtime.runtime import RuntimeContext
-from agent_runtime.scheduler import ToolBatch, ToolScheduler, ToolSchedulerProtocol, ToolStarted
+from agent_runtime.scheduler import (
+    ToolBatch,
+    ToolCatalog,
+    ToolCompleted,
+    ToolScheduler,
+    ToolSchedulerProtocol,
+    ToolStarted,
+)
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentState, AgentStatus, PauseState
+from agent_runtime.store import RunStore, StoredCheckpoint
 from agent_runtime.tools import (
     Tool,
     ToolAcceptance,
@@ -51,7 +68,7 @@ from agent_runtime.tools import (
 from agent_runtime.trace import RunTrace, TraceRecorder
 
 T = TypeVar("T")
-ToolSchedulerFactory: TypeAlias = Callable[[ToolRegistry, LoopLimits], ToolSchedulerProtocol]
+ToolSchedulerFactory: TypeAlias = Callable[[ToolCatalog, LoopLimits], ToolSchedulerProtocol]
 _MAX_DISPATCHED_EVENTS_PER_RUNTIME_EVENT = 1000
 _USAGE_FIELDS = (
     "input_tokens",
@@ -83,7 +100,7 @@ class RuntimeConversationInsert(Exception):
         self.insert = insert
 
 
-def _default_tool_scheduler_factory(tools: ToolRegistry, limits: LoopLimits) -> ToolScheduler:
+def _default_tool_scheduler_factory(tools: ToolCatalog, limits: LoopLimits) -> ToolScheduler:
     return ToolScheduler(
         tools,
         max_parallel_tool_calls=(
@@ -108,6 +125,25 @@ class AgentResult:
     trace: RunTrace | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class PreparedToolBatch:
+    """Tool batch after hook rewriting and approval decisions."""
+
+    batch: ToolBatch
+    precomputed_results: Mapping[str, ToolOutput]
+    pause_request: PauseRequest | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class AppliedTransition:
+    """Runtime state transition that may be notified after a durable commit."""
+
+    previous: AgentStatus
+    current: AgentStatus
+    state: AgentState
+    data: Mapping[str, Any]
+
+
 @dataclass(slots=True)
 class RunControlState:
     """Runtime-owned control state that hooks cannot mutate."""
@@ -117,10 +153,19 @@ class RunControlState:
     deadline: float | None = None
     monotonic_deadline: float | None = None
     run_controller: RunController | None = None
+    run_store: RunStore | None = None
+    run_journal: RunJournal | None = None
     trace: TraceRecorder | None = None
     tool_scheduler: ToolSchedulerProtocol | None = None
     initial_snapshot: RunSnapshot | None = None
     last_checkpoint: RunSnapshot | None = None
+    last_checkpoint_id: str | None = None
+    post_journal_dispatch: dict[int, tuple[bool, bool]] = dataclass_field(
+        default_factory=lambda: dict[int, tuple[bool, bool]]()
+    )
+    post_journal_transitions: dict[int, AppliedTransition] = dataclass_field(
+        default_factory=lambda: dict[int, AppliedTransition]()
+    )
     sequence: int = 0
 
     def next_sequence(self) -> int:
@@ -141,7 +186,10 @@ class AgentLoop:
         "_limits",
         "_model",
         "_model_options",
+        "_approval_policy",
         "_response_format",
+        "_run_journal",
+        "_run_store",
         "_tool_scheduler_factory",
         "_tool_choice",
         "_trace_enabled",
@@ -152,7 +200,10 @@ class AgentLoop:
     _limits: LoopLimits
     _model: ModelClient
     _model_options: ModelOptions
+    _approval_policy: ApprovalPolicy | None
     _response_format: ResponseFormat | None
+    _run_journal: RunJournal | None
+    _run_store: RunStore | None
     _tool_scheduler_factory: ToolSchedulerFactory
     _tool_choice: ToolChoice
     _trace_enabled: bool
@@ -168,6 +219,9 @@ class AgentLoop:
         tool_choice: ToolChoice | None = None,
         response_format: ResponseFormat | None = None,
         hooks: Sequence[RuntimeHook] | None = None,
+        approval_policy: ApprovalPolicy | None = None,
+        run_store: RunStore | None = None,
+        run_journal: RunJournal | None = None,
         trace: bool = True,
         tool_scheduler_factory: ToolSchedulerFactory | None = None,
     ) -> None:
@@ -183,6 +237,9 @@ class AgentLoop:
             None if response_format is None else ResponseFormat.from_dict(response_format.to_dict())
         )
         self._hooks = tuple(hooks or ())
+        self._approval_policy = approval_policy
+        self._run_store = run_store
+        self._run_journal = run_journal
         self._trace_enabled = trace
         self._tool_scheduler_factory = tool_scheduler_factory or _default_tool_scheduler_factory
 
@@ -230,6 +287,7 @@ class AgentLoop:
         resume_input = ResumeInput.from_dict(resume_input.to_dict())
         working_state, resume_snapshot = resume_input.apply()
         runtime_context, control = self._prepare_run(resume_snapshot.context, controller=controller)
+        self._seed_resume_checkpoint(control, resume_snapshot)
         if control.trace is not None:
             control.trace.record_resume(resume_input, working_state)
         return await self._run_prepared_state(
@@ -248,6 +306,7 @@ class AgentLoop:
         resume_input = ResumeInput.from_dict(resume_input.to_dict())
         working_state, resume_snapshot = resume_input.apply()
         runtime_context, control = self._prepare_run(resume_snapshot.context, controller=controller)
+        self._seed_resume_checkpoint(control, resume_snapshot)
         if control.trace is not None:
             control.trace.record_resume(resume_input, working_state)
         iterator = self._run_prepared_state_events(
@@ -273,6 +332,8 @@ class AgentLoop:
         ).__aiter__()
         try:
             await self._drain_events(iterator)
+        except RuntimeTimeoutError as exc:
+            raise LimitExceeded(LimitReasons.TIMEOUT_SECONDS) from exc
         finally:
             runtime_context.sequence = control.sequence
         return self._result(working_state, runtime_context, control)
@@ -291,7 +352,29 @@ class AgentLoop:
         try:
             async with aclosing(self._pump_events(iterator)) as events:
                 async for event in events:
+                    dispatch_options = self._post_journal_dispatch_options(control, event)
+                    if dispatch_options is not None:
+                        await self._append_journal_event(control, event)
+                        transition = control.post_journal_transitions.pop(event.sequence, None)
+                        if transition is not None:
+                            await self._notify_transition(transition, runtime_context, control)
+                        trace_before_hooks, mark_trace_durable_before_hooks = dispatch_options
+                        dispatched_events = await self._dispatch_events(
+                            event,
+                            runtime_context,
+                            control,
+                            trace_before_hooks=trace_before_hooks,
+                            mark_trace_durable_before_hooks=mark_trace_durable_before_hooks,
+                        )
+                        for index, dispatched_event in enumerate(dispatched_events):
+                            if index > 0:
+                                await self._append_journal_event(control, dispatched_event)
+                            yield dispatched_event
+                        continue
+                    await self._append_journal_event(control, event)
                     yield event
+        except RuntimeTimeoutError as exc:
+            raise LimitExceeded(LimitReasons.TIMEOUT_SECONDS) from exc
         finally:
             runtime_context.sequence = control.sequence
 
@@ -360,22 +443,35 @@ class AgentLoop:
         except RuntimeTimeoutError:
             if terminal_checkpoint_committed:
                 self._clear_pause_request(control)
-                yield self._raw_event(
+                yield await self._raw_event(
                     control,
                     EventTypes.ERROR,
                     {"status": state.status.value, "message": LimitReasons.TIMEOUT_SECONDS},
                 )
-                yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
+                yield await self._raw_event(
+                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
+                )
                 return
             durable = control.last_checkpoint or control.initial_snapshot
             self._restore_state_from_snapshot(state, durable)
             self._rollback_trace_to_durable(control)
+            if state.is_terminal:
+                self._clear_pause_request(control)
+                yield await self._raw_event(
+                    control,
+                    EventTypes.ERROR,
+                    {"status": state.status.value, "message": LimitReasons.TIMEOUT_SECONDS},
+                )
+                yield await self._raw_event(
+                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
+                )
+                return
             previous = state.status
             state.status = AgentStatus.LIMIT_EXCEEDED
             state.error = LimitReasons.TIMEOUT_SECONDS
             state.pause = None
             self._clear_pause_request(control)
-            yield self._raw_event(
+            yield await self._raw_event(
                 control,
                 EventTypes.STATE_CHANGED,
                 {
@@ -390,32 +486,47 @@ class AgentLoop:
                     "pause": None,
                 },
             )
-            yield self._raw_checkpoint_event(state, context, control)
-            yield self._raw_event(
+            yield await self._raw_checkpoint_event(state, context, control)
+            yield await self._raw_event(
                 control,
                 EventTypes.ERROR,
                 {"status": state.status.value, "message": state.error},
             )
-            yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
+            yield await self._raw_event(
+                control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
+            )
         except Exception as exc:  # pragma: no cover - defensive boundary
             if terminal_checkpoint_committed:
                 self._clear_pause_request(control)
-                yield self._raw_event(
+                yield await self._raw_event(
                     control,
                     EventTypes.ERROR,
                     {"status": state.status.value, "message": str(exc) or exc.__class__.__name__},
                 )
-                yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
+                yield await self._raw_event(
+                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
+                )
                 return
             durable = control.last_checkpoint or control.initial_snapshot
             self._restore_state_from_snapshot(state, durable)
             self._rollback_trace_to_durable(control)
+            if state.is_terminal:
+                self._clear_pause_request(control)
+                yield await self._raw_event(
+                    control,
+                    EventTypes.ERROR,
+                    {"status": state.status.value, "message": str(exc) or exc.__class__.__name__},
+                )
+                yield await self._raw_event(
+                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
+                )
+                return
             previous = state.status
             state.status = AgentStatus.FAILED
             state.error = str(exc) or exc.__class__.__name__
             state.pause = None
             self._clear_pause_request(control)
-            yield self._raw_event(
+            yield await self._raw_event(
                 control,
                 EventTypes.STATE_CHANGED,
                 {
@@ -430,13 +541,15 @@ class AgentLoop:
                     "pause": None,
                 },
             )
-            yield self._raw_checkpoint_event(state, context, control)
-            yield self._raw_event(
+            yield await self._raw_checkpoint_event(state, context, control)
+            yield await self._raw_event(
                 control,
                 EventTypes.ERROR,
                 {"status": state.status.value, "message": state.error},
             )
-            yield self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
+            yield await self._raw_event(
+                control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
+            )
 
     async def _drive(
         self,
@@ -619,28 +732,31 @@ class AgentLoop:
         self._record_model_usage(state, response.usage)
         limit_reason = None
         transition_data: Mapping[str, Any] | None = None
+        transition: AppliedTransition | None = None
         if assistant_message.tool_calls:
             state.pending_tool_calls = list(assistant_message.tool_calls)
             limit_reason = self._limits.tool_call_reason(state) or self._limits.usage_reason(
                 state.total_usage
             )
             if limit_reason is None:
-                transition_data = await self._apply_transition(
+                transition = self._apply_transition_state(
                     state,
                     AgentStatus.EXECUTING_TOOLS,
                     context,
                     control,
                 )
+                transition_data = transition.data
         else:
             limit_reason = self._limits.usage_reason(state.total_usage)
             if limit_reason is None:
                 state.final_parts = [content_part_without_metadata(part) for part in response.parts]
-                transition_data = await self._apply_transition(
+                transition = self._apply_transition_state(
                     state,
                     AgentStatus.COMPLETED,
                     context,
                     control,
                 )
+                transition_data = transition.data
 
         for event in await self._events(
             context,
@@ -655,22 +771,47 @@ class AgentLoop:
             return
         if transition_data is None:
             raise RuntimeError("model response did not produce a state transition")
-        transition_events = await self._events(
-            context, control, EventTypes.STATE_CHANGED, transition_data
-        )
+        transition_event: AgentEvent | None = None
+        transition_to_notify: AppliedTransition | None = transition
+        if self._defer_events_until_checkpoint_saved(control):
+            transition_event = self._runtime_event(
+                control, EventTypes.STATE_CHANGED, transition_data
+            )
+            transition_events: tuple[AgentEvent, ...] = ()
+        else:
+            if transition_to_notify is not None:
+                await self._notify_transition(transition_to_notify, context, control)
+                transition_to_notify = None
+            transition_events = await self._events(
+                context, control, EventTypes.STATE_CHANGED, transition_data
+            )
         limit_reason = self._active_limit_reason(state, control)
         if limit_reason is not None:
             limit_events = await self._limit(state, context, control, limit_reason)
-            for event in (*transition_events, *limit_events):
+            if transition_event is not None:
+                transition_events = await self._dispatch_deferred_transition_event(
+                    transition_to_notify, transition_event, context, control
+                )
+            for event in self._merge_deferred_events(transition_events, limit_events):
                 yield event
             return
         pause_events = await self._pause_if_requested(state, context, control)
         if pause_events:
-            for event in (*transition_events, *pause_events):
+            if transition_event is not None:
+                transition_events = await self._dispatch_deferred_transition_event(
+                    transition_to_notify, transition_event, context, control
+                )
+            for event in self._merge_deferred_events(transition_events, pause_events):
                 yield event
             return
-        checkpoint_events = await self._checkpoint_events(state, context, control)
-        for event in (*transition_events, *checkpoint_events):
+        if transition_event is not None:
+            events = await self._checkpoint_events_after_deferred_events(
+                transition_event, state, context, control, transition=transition_to_notify
+            )
+        else:
+            checkpoint_events = await self._checkpoint_events(state, context, control)
+            events = (*transition_events, *checkpoint_events)
+        for event in events:
             yield event
 
     async def _stream_model(
@@ -720,8 +861,10 @@ class AgentLoop:
                 return
 
             remaining_slots = self._remaining_tool_call_slots(state)
+            pending_calls = tuple(state.pending_tool_calls[:remaining_slots])
+            pending_snapshots = self._tool_call_snapshots(pending_calls)
             batch = self._tool_scheduler(control).next_batch(
-                tuple(state.pending_tool_calls[:remaining_slots])
+                self._tool_calls_from_snapshots(pending_snapshots)
             )
             if batch is None:
                 for event in await self._limit(
@@ -729,8 +872,37 @@ class AgentLoop:
                 ):
                     yield event
                 return
+            if not self._is_prefix_tool_batch(batch, pending_snapshots):
+                for event in await self._transition(
+                    state,
+                    AgentStatus.FAILED,
+                    context,
+                    control,
+                    error="tool scheduler must return a non-empty prefix batch",
+                ):
+                    yield event
+                return
+            batch = ToolBatch(
+                id=batch.id,
+                calls=self._tool_calls_from_snapshots(pending_snapshots[: len(batch.calls)]),
+                parallel=batch.parallel,
+            )
 
-            prepared = await self._prepare_tool_batch(batch, state, context, control)
+            prepared_holder: list[PreparedToolBatch | None] = []
+            try:
+                prepare_iterator = self._prepare_tool_batch_events(
+                    batch, state, context, control, prepared_holder
+                ).__aiter__()
+                async with aclosing(self._pump_events(prepare_iterator)) as events:
+                    async for event in events:
+                        yield event
+            except RuntimeTimeoutError:
+                for event in await self._limit(
+                    state, context, control, LimitReasons.TIMEOUT_SECONDS
+                ):
+                    yield event
+                return
+            prepared = prepared_holder[0] if prepared_holder else None
             if prepared is None:
                 for event in await self._transition(
                     state,
@@ -738,6 +910,17 @@ class AgentLoop:
                     context,
                     control,
                     error="before_tool cannot change tool call id, name, or mode",
+                ):
+                    yield event
+                return
+            if prepared.pause_request is not None:
+                for event in await self._pause(
+                    state,
+                    context,
+                    control,
+                    prepared.pause_request,
+                    resume_status=AgentStatus.EXECUTING_TOOLS,
+                    origin="control",
                 ):
                     yield event
                 return
@@ -773,72 +956,187 @@ class AgentLoop:
             for event in await self._transition(state, AgentStatus.PLANNING, context, control):
                 yield event
 
-    async def _prepare_tool_batch(
+    async def _prepare_tool_batch_events(
         self,
         batch: ToolBatch,
         state: AgentState,
         context: RuntimeContext,
         control: RunControlState,
-    ) -> ToolBatch | None:
+        prepared_holder: list[PreparedToolBatch | None],
+    ) -> AsyncIterator[AgentEvent]:
         prepared: list[ToolCall] = []
-        for index, raw_call in enumerate(batch.calls):
-            call = await self._before_tool(raw_call, context, control)
-            if call.id != raw_call.id or call.name != raw_call.name or call.mode != raw_call.mode:
-                return None
-            self._replace_tool_call_in_history(state, raw_call.id, call)
+        precomputed_results: dict[str, ToolOutput] = {}
+        raw_calls = batch.calls[:1] if self._approval_policy is not None else batch.calls
+        prepared_parallel = batch.parallel and len(raw_calls) > 1
+        for index, raw_call in enumerate(raw_calls):
+            raw_snapshot = raw_call.to_dict()
+            raw_tool_call = ToolCall.from_dict(raw_snapshot)
+            call = await self._before_tool(raw_tool_call, context, control)
+            if (
+                call.id != raw_snapshot["id"]
+                or call.name != raw_snapshot["name"]
+                or call.mode != raw_snapshot["mode"]
+            ):
+                prepared_holder.append(None)
+                return
+            self._replace_tool_call_in_history(state, cast(str, raw_snapshot["id"]), call)
             state.pending_tool_calls[index] = call
+            validation_error = self._tool_validation_error_output(call)
+            if validation_error is not None:
+                precomputed_results[call.id] = validation_error
+                prepared.append(call)
+                continue
+            decision: ApprovalDecision | None = None
+            if self._approval_policy is not None:
+                request, request_events = await self._approval_request(call, context, control)
+                for event in request_events:
+                    yield event
+                decision = await self._approval_decision(request, control)
+                completed_events = await self._approval_completed_events(
+                    call, decision, context, control
+                )
+                for event in completed_events:
+                    yield event
+                if decision.action == "pause":
+                    prepared_holder.append(
+                        PreparedToolBatch(
+                            ToolBatch(batch.id, (call,), parallel=False),
+                            precomputed_results,
+                            pause_request=PauseRequest(
+                                reason=decision.reason,
+                                source="approval",
+                                wait_id=call.id,
+                                metadata=decision.metadata,
+                            ),
+                        )
+                    )
+                    return
+            if decision is not None and decision.action == "deny":
+                precomputed_results[call.id] = self._approval_denial_output(call, decision)
             prepared.append(call)
-        return ToolBatch(batch.id, tuple(prepared), batch.parallel)
+        prepared_holder.append(
+            PreparedToolBatch(
+                ToolBatch(batch.id, tuple(prepared), prepared_parallel),
+                precomputed_results,
+            )
+        )
 
     async def _run_tool_batch(
         self,
-        batch: ToolBatch,
+        prepared: PreparedToolBatch,
         state: AgentState,
         context: RuntimeContext,
         control: RunControlState,
     ) -> AsyncIterator[AgentEvent]:
+        batch = prepared.batch
+        precomputed_results = dict(prepared.precomputed_results)
         completed: dict[int, tuple[ToolCall, ToolOutput, Message]] = {}
+        started_indices: set[int] = set()
+        executing_indices: set[int] = set()
+        completed_indices: set[int] = set()
+        execute_results: dict[int, dict[str, Any]] = {}
+        scheduler_error: AgentError | None = None
+        batch_snapshots = self._tool_call_snapshots(batch.calls)
+        scheduler_batch = ToolBatch(
+            id=batch.id,
+            calls=self._tool_calls_from_snapshots(batch_snapshots),
+            parallel=batch.parallel,
+        )
+
+        def reject_scheduler(message: str) -> None:
+            nonlocal scheduler_error
+            error = AgentError(message)
+            scheduler_error = error
+            raise error
 
         async def execute(call: ToolCall) -> ToolOutput:
-            return await self._await_with_timeout(self._execute_tool(call, context), control)
+            call_index = self._batch_call_index(batch_snapshots, call)
+            if call_index not in started_indices:
+                reject_scheduler("tool scheduler must start a batch call before executing it")
+            if call_index in executing_indices or call_index in execute_results:
+                reject_scheduler("tool scheduler must execute each batch call at most once")
+            executing_indices.add(call_index)
+            try:
+                canonical_call = ToolCall.from_dict(batch_snapshots[call_index])
+                precomputed = precomputed_results.get(canonical_call.id)
+                if precomputed is not None:
+                    result = self._normalize_tool_output(precomputed)
+                else:
+                    result = await self._await_with_timeout(
+                        self._execute_tool(canonical_call, context), control
+                    )
+                    result = self._normalize_tool_output(result)
+                result_snapshot = self._tool_output_snapshot(result)
+                execute_results[call_index] = result_snapshot
+                return self._tool_output_from_snapshot(result_snapshot)
+            finally:
+                executing_indices.discard(call_index)
 
         async for progress in self._tool_scheduler(control).run_batch(
-            batch, execute, stop_on_error=self._limits.stop_on_tool_error
+            scheduler_batch, execute, stop_on_error=self._limits.stop_on_tool_error
         ):
+            if scheduler_error is not None:
+                raise scheduler_error
+            self._validate_scheduler_progress(batch, batch_snapshots, progress)
+            canonical_call = ToolCall.from_dict(batch_snapshots[progress.index])
             if isinstance(progress, ToolStarted):
+                if progress.index in started_indices:
+                    raise AgentError("tool scheduler emitted duplicate tool_started")
+                if progress.index in completed_indices:
+                    raise AgentError("tool scheduler started a completed tool call")
+                started_indices.add(progress.index)
+                implementation_invoked = canonical_call.id not in precomputed_results
                 for event in await self._events(
                     context,
                     control,
                     EventTypes.TOOL_STARTED,
                     {
-                        "id": progress.call.id,
-                        "name": progress.call.name,
-                        "mode": progress.call.mode,
-                        "arguments": dict(progress.call.arguments),
-                        "batch_id": progress.batch.id,
-                        "parallel": progress.batch.parallel,
+                        "id": canonical_call.id,
+                        "name": canonical_call.name,
+                        "mode": canonical_call.mode,
+                        "arguments": dict(canonical_call.arguments),
+                        "batch_id": batch.id,
+                        "parallel": batch.parallel,
                         "index": progress.index,
+                        "implementation_invoked": implementation_invoked,
                     },
                 ):
                     yield event
                 continue
 
-            result = await self._after_tool(progress.result, context, control)
-            self._validate_tool_output_mode(progress.call, result)
-            invocation = ToolInvocation.from_tool_call(progress.call)
+            if progress.index not in started_indices:
+                raise AgentError("tool scheduler completed a tool call before starting it")
+            if progress.index in completed_indices:
+                raise AgentError("tool scheduler emitted duplicate tool_completed")
+            expected_result = execute_results.get(progress.index)
+            if expected_result is None:
+                raise AgentError("tool scheduler must complete results produced by execute")
+            progress_result_snapshot = self._tool_output_snapshot(progress.result)
+            if progress_result_snapshot != expected_result:
+                raise AgentError("tool scheduler must not replace execute results")
+            completed_indices.add(progress.index)
+            implementation_invoked = canonical_call.id not in precomputed_results
+            result = await self._after_tool(
+                self._tool_output_from_snapshot(expected_result), context, control
+            )
+            self._validate_tool_output_mode(canonical_call, result)
+            if not implementation_invoked:
+                self._validate_non_invoked_tool_output(canonical_call, result)
+            invocation = ToolInvocation.from_tool_call(canonical_call)
             tool_message = result.to_message(invocation)
-            completed[progress.index] = (progress.call, result, tool_message)
+            completed[progress.index] = (canonical_call, result, tool_message)
             for event in await self._events(
                 context,
                 control,
                 EventTypes.TOOL_COMPLETED,
                 {
-                    "id": progress.call.id,
-                    "name": progress.call.name,
-                    "mode": progress.call.mode,
-                    "batch_id": progress.batch.id,
-                    "parallel": progress.batch.parallel,
+                    "id": canonical_call.id,
+                    "name": canonical_call.name,
+                    "mode": canonical_call.mode,
+                    "batch_id": batch.id,
+                    "parallel": batch.parallel,
                     "index": progress.index,
+                    "implementation_invoked": implementation_invoked,
                     "result": result.summary(),
                 },
             ):
@@ -908,55 +1206,177 @@ class AgentLoop:
                 return
 
             if not state.pending_tool_calls:
-                transition_data = await self._apply_transition(
+                transition = self._apply_transition_state(
                     state,
                     AgentStatus.PLANNING,
                     context,
                     control,
                 )
-                transition_events = await self._events(
-                    context, control, EventTypes.STATE_CHANGED, transition_data
-                )
+                transition_data = transition.data
+                transition_event: AgentEvent | None = None
+                transition_to_notify: AppliedTransition | None = transition
+                if self._defer_events_until_checkpoint_saved(control):
+                    transition_event = self._runtime_event(
+                        control, EventTypes.STATE_CHANGED, transition_data
+                    )
+                    transition_events: tuple[AgentEvent, ...] = ()
+                else:
+                    await self._notify_transition(transition_to_notify, context, control)
+                    transition_to_notify = None
+                    transition_events = await self._events(
+                        context, control, EventTypes.STATE_CHANGED, transition_data
+                    )
                 limit_reason = self._active_limit_reason(state, control)
                 if limit_reason is not None:
                     limit_events = await self._limit(state, context, control, limit_reason)
-                    for event in (*transition_events, *limit_events):
+                    if transition_event is not None:
+                        transition_events = await self._dispatch_deferred_transition_event(
+                            transition_to_notify, transition_event, context, control
+                        )
+                    for event in self._merge_deferred_events(transition_events, limit_events):
                         yield event
                     return
                 pause_events = await self._pause_if_requested(state, context, control)
                 if pause_events:
-                    for event in (*transition_events, *pause_events):
+                    if transition_event is not None:
+                        transition_events = await self._dispatch_deferred_transition_event(
+                            transition_to_notify, transition_event, context, control
+                        )
+                    for event in self._merge_deferred_events(transition_events, pause_events):
                         yield event
                     return
-                checkpoint_events = await self._checkpoint_events(state, context, control)
-                for event in (*transition_events, *checkpoint_events):
+                if transition_event is not None:
+                    events = await self._checkpoint_events_after_deferred_events(
+                        transition_event,
+                        state,
+                        context,
+                        control,
+                        transition=transition_to_notify,
+                    )
+                else:
+                    checkpoint_events = await self._checkpoint_events(state, context, control)
+                    events = (*transition_events, *checkpoint_events)
+                for event in events:
                     yield event
                 return
 
             for event in await self._checkpoint_events(state, context, control):
                 yield event
 
+        if scheduler_error is not None:
+            raise scheduler_error
+        if completed_indices != set(range(len(batch.calls))):
+            raise AgentError("tool scheduler ended before completing the selected batch")
+
+    async def _approval_request(
+        self, call: ToolCall, context: RuntimeContext, control: RunControlState
+    ) -> tuple[ApprovalRequest, tuple[AgentEvent, ...]]:
+        policy = self._approval_policy
+        if policy is None:
+            raise RuntimeError("approval request requires an approval policy")
+        spec = self._tools.spec_for(call.name)
+        risk = {} if spec is None else dict(spec.annotations)
+        request = ApprovalRequest(
+            tool_call=call,
+            tool_spec=spec,
+            context=context,
+            risk=risk,
+        )
+        events = await self._events(
+            context,
+            control,
+            EventTypes.APPROVAL_REQUESTED,
+            {
+                "id": call.id,
+                "name": call.name,
+                "mode": call.mode,
+                "risk": risk,
+                "metadata": request.metadata,
+            },
+        )
+        return request, events
+
+    async def _approval_decision(
+        self, request: ApprovalRequest, control: RunControlState
+    ) -> ApprovalDecision:
+        policy = self._approval_policy
+        if policy is None:
+            raise RuntimeError("approval decision requires an approval policy")
+        decision = await self._await_with_timeout(policy.decide(request), control)
+        return ApprovalDecision.from_dict(decision.to_dict())
+
+    async def _approval_completed_events(
+        self,
+        call: ToolCall,
+        decision: ApprovalDecision,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> tuple[AgentEvent, ...]:
+        return await self._events(
+            context,
+            control,
+            EventTypes.APPROVAL_COMPLETED,
+            {
+                "id": call.id,
+                "name": call.name,
+                "mode": call.mode,
+                "action": decision.action,
+                "reason": decision.reason,
+                "metadata": decision.metadata,
+            },
+        )
+
+    @staticmethod
+    def _approval_denial_output(call: ToolCall, decision: ApprovalDecision) -> ToolOutput:
+        text = f"tool call denied by approval policy: {decision.reason}"
+        metadata = {"approval": "denied", **dict(decision.metadata)}
+        if call.mode == "execute":
+            return ToolObservation(
+                parts=[ContentPart.text_part(text)],
+                metadata=metadata,
+                is_error=True,
+            )
+        if call.mode == "accept":
+            return ToolRejection.text(text, metadata=metadata)
+        return ToolOutput(
+            kind="tool_error",
+            parts=[ContentPart.text_part(text)],
+            metadata=metadata,
+            is_error=True,
+        )
+
+    def _tool_validation_error_output(self, call: ToolCall) -> ToolOutput | None:
+        try:
+            self._tools.validate_call(call)
+        except InvalidToolCall as exc:
+            return self._tool_error_output(call, exc)
+        return None
+
     async def _execute_tool(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
         try:
             tool_context = RuntimeContext.from_dict(context.to_dict())
             return await self._tools.invoke(call, tool_context)
         except (InvalidToolCall, ToolError) as exc:
-            text = str(exc) or exc.__class__.__name__
-            metadata = {"error_type": exc.__class__.__name__}
-            if call.mode == "execute":
-                return ToolObservation(
-                    parts=[ContentPart.text_part(text)],
-                    metadata=metadata,
-                    is_error=True,
-                )
-            if call.mode == "accept":
-                return ToolRejection.text(text, metadata=metadata)
-            return ToolOutput(
-                kind="tool_error",
+            return self._tool_error_output(call, exc)
+
+    @staticmethod
+    def _tool_error_output(call: ToolCall, exc: Exception) -> ToolOutput:
+        text = str(exc) or exc.__class__.__name__
+        metadata = {"error_type": exc.__class__.__name__}
+        if call.mode == "execute":
+            return ToolObservation(
                 parts=[ContentPart.text_part(text)],
                 metadata=metadata,
                 is_error=True,
             )
+        if call.mode == "accept":
+            return ToolRejection.text(text, metadata=metadata)
+        return ToolOutput(
+            kind="tool_error",
+            parts=[ContentPart.text_part(text)],
+            metadata=metadata,
+            is_error=True,
+        )
 
     def _remaining_tool_call_slots(self, state: AgentState) -> int:
         return max(0, self._limits.max_total_tool_calls - state.total_tool_calls)
@@ -1199,7 +1619,9 @@ class AgentLoop:
         remaining = None
         if runtime_context.deadline is not None:
             remaining = max(0.0, runtime_context.deadline - now_wall)
-        tool_scheduler = self._tool_scheduler_factory(self._tools, self._limits)
+        tool_scheduler = self._tool_scheduler_factory(
+            ToolCatalog(self._tools.specs()), self._limits
+        )
         if not isinstance(cast(object, tool_scheduler), ToolSchedulerProtocol):
             raise TypeError("tool_scheduler_factory must return ToolSchedulerProtocol")
         control = RunControlState(
@@ -1208,6 +1630,8 @@ class AgentLoop:
             deadline=runtime_context.deadline,
             monotonic_deadline=None if remaining is None else now_monotonic + remaining,
             run_controller=controller,
+            run_store=self._run_store,
+            run_journal=self._run_journal,
             trace=TraceRecorder(runtime_context.run_id) if self._trace_enabled else None,
             tool_scheduler=tool_scheduler,
             sequence=runtime_context.sequence,
@@ -1220,6 +1644,72 @@ class AgentLoop:
             raise RuntimeError("run control is missing a tool scheduler")
         return control.tool_scheduler
 
+    @staticmethod
+    def _tool_call_snapshots(calls: tuple[ToolCall, ...]) -> tuple[dict[str, Any], ...]:
+        return tuple(ToolCall.from_dict(call.to_dict()).to_dict() for call in calls)
+
+    @staticmethod
+    def _tool_calls_from_snapshots(
+        snapshots: tuple[Mapping[str, Any], ...],
+    ) -> tuple[ToolCall, ...]:
+        return tuple(ToolCall.from_dict(snapshot) for snapshot in snapshots)
+
+    @staticmethod
+    def _tool_output_snapshot(output: ToolOutput) -> dict[str, Any]:
+        return AgentLoop._normalize_tool_output(output).to_dict()
+
+    @staticmethod
+    def _tool_output_from_snapshot(snapshot: Mapping[str, Any]) -> ToolOutput:
+        kind = snapshot.get("kind")
+        if kind == "observation":
+            return ToolObservation.from_dict(snapshot)
+        if kind == "acceptance":
+            return ToolAcceptance.from_dict(snapshot)
+        if kind == "rejection":
+            return ToolRejection.from_dict(snapshot)
+        return ToolOutput.from_dict(snapshot)
+
+    @staticmethod
+    def _is_prefix_tool_batch(batch: ToolBatch, snapshots: tuple[Mapping[str, Any], ...]) -> bool:
+        if not batch.calls or len(batch.calls) > len(snapshots):
+            return False
+        expected = snapshots[: len(batch.calls)]
+        return all(
+            actual.to_dict() == dict(pending)
+            for actual, pending in zip(batch.calls, expected, strict=True)
+        )
+
+    @staticmethod
+    def _batch_call_index(snapshots: tuple[Mapping[str, Any], ...], call: ToolCall) -> int:
+        call_data = call.to_dict()
+        for index, snapshot in enumerate(snapshots):
+            if call_data == dict(snapshot):
+                return index
+        raise AgentError("tool scheduler attempted to execute a call outside the selected batch")
+
+    @staticmethod
+    def _validate_scheduler_progress(
+        batch: ToolBatch,
+        snapshots: tuple[Mapping[str, Any], ...],
+        progress: ToolStarted | ToolCompleted,
+    ) -> None:
+        if progress.batch.id != batch.id or progress.batch.parallel != batch.parallel:
+            raise AgentError("tool scheduler progress batch does not match selected batch")
+        if len(progress.batch.calls) != len(snapshots):
+            raise AgentError("tool scheduler progress batch calls do not match selected batch")
+        if any(
+            actual.to_dict() != dict(expected)
+            for actual, expected in zip(progress.batch.calls, snapshots, strict=True)
+        ):
+            raise AgentError("tool scheduler progress batch calls do not match selected batch")
+        if progress.index < 0 or progress.index >= len(snapshots):
+            raise AgentError("tool scheduler progress index is outside the selected batch")
+        if progress.call.to_dict() != dict(snapshots[progress.index]):
+            raise AgentError("tool scheduler progress call does not match batch index")
+
+    def _seed_resume_checkpoint(self, control: RunControlState, snapshot: RunSnapshot) -> None:
+        control.last_checkpoint_id = self._checkpoint_id(snapshot.context.sequence)
+
     def _model_supports_streaming(self) -> bool:
         return model_capabilities(self._model).streaming
 
@@ -1229,18 +1719,18 @@ class AgentLoop:
         if usage is None:
             return
         values: dict[str, int] = {}
-        for field in _USAGE_FIELDS:
-            current = None if existing is None else getattr(existing, field)
-            increment = getattr(usage, field)
+        for usage_field in _USAGE_FIELDS:
+            current = None if existing is None else getattr(existing, usage_field)
+            increment = getattr(usage, usage_field)
             if existing is None:
                 if increment is not None:
-                    values[field] = increment
+                    values[usage_field] = increment
             elif current is not None and increment is not None:
-                values[field] = current + increment
+                values[usage_field] = current + increment
             elif current is not None:
-                values[field] = current
+                values[usage_field] = current
             elif increment is not None:
-                values[field] = increment
+                values[usage_field] = increment
         if not values:
             return
         state.total_usage = ModelUsage(
@@ -1325,16 +1815,21 @@ class AgentLoop:
             return ()
         message = insert.to_message()
         state.messages.append(message)
-        events = list(
-            await self._events(
-                context,
+        event_data = {
+            "insert": insert.to_dict(),
+            "message": message.to_dict(),
+        }
+        if self._defer_events_until_checkpoint_saved(control):
+            insert_event = self._runtime_event(
                 control,
                 EventTypes.CONVERSATION_INSERTED,
-                {
-                    "insert": insert.to_dict(),
-                    "message": message.to_dict(),
-                },
+                event_data,
             )
+            return await self._checkpoint_events_after_deferred_events(
+                insert_event, state, context, control
+            )
+        events = list(
+            await self._events(context, control, EventTypes.CONVERSATION_INSERTED, event_data)
         )
         events.extend(await self._checkpoint_events(state, context, control))
         return tuple(events)
@@ -1406,27 +1901,57 @@ class AgentLoop:
             wait_id=request.wait_id,
             metadata=request.metadata,
         )
-        events = list(
-            await self._events(
-                context,
+        event_data = {
+            "request": request.to_dict(),
+            "resume_status": resume_status.value,
+            "origin": origin,
+        }
+        if self._defer_events_until_checkpoint_saved(control):
+            pause_event = self._runtime_event(
                 control,
                 EventTypes.PAUSE_REQUESTED,
-                {
-                    "request": request.to_dict(),
-                    "resume_status": resume_status.value,
-                    "origin": origin,
-                },
+                event_data,
             )
-        )
-        events.extend(
-            await self._transition(
+            transition = self._apply_transition_state(
                 state,
                 AgentStatus.PAUSED,
                 context,
                 control,
                 pause=pause,
             )
-        )
+            transition_data = transition.data
+            transition_event = self._runtime_event(
+                control,
+                EventTypes.STATE_CHANGED,
+                transition_data,
+            )
+            events = list(
+                await self._checkpoint_events_after_deferred_events(
+                    (pause_event, transition_event),
+                    state,
+                    context,
+                    control,
+                    transition=transition,
+                )
+            )
+        else:
+            events = list(
+                await self._events(
+                    context,
+                    control,
+                    EventTypes.PAUSE_REQUESTED,
+                    event_data,
+                )
+            )
+            events.extend(
+                await self._transition(
+                    state,
+                    AgentStatus.PAUSED,
+                    context,
+                    control,
+                    pause=pause,
+                )
+            )
         controller = control.run_controller
         if controller is not None and controller.pause_request == request:
             controller.clear_pause()
@@ -1454,9 +1979,20 @@ class AgentLoop:
         pause: PauseState | None = None,
         emit_checkpoint: bool = True,
     ) -> tuple[AgentEvent, ...]:
-        transition_data = await self._apply_transition(
+        transition = self._apply_transition_state(
             state, status, context, control, error=error, pause=pause
         )
+        transition_data = transition.data
+        if emit_checkpoint and self._defer_events_until_checkpoint_saved(control):
+            transition_event = self._runtime_event(
+                control,
+                EventTypes.STATE_CHANGED,
+                transition_data,
+            )
+            return await self._checkpoint_events_after_deferred_events(
+                transition_event, state, context, control, transition=transition
+            )
+        await self._notify_transition(transition, context, control)
         events = list(
             await self._events(
                 context,
@@ -1479,15 +2015,29 @@ class AgentLoop:
         error: str | None = None,
         pause: PauseState | None = None,
     ) -> dict[str, Any]:
+        transition = self._apply_transition_state(
+            state, status, context, control, error=error, pause=pause
+        )
+        await self._notify_transition(transition, context, control)
+        return dict(transition.data)
+
+    def _apply_transition_state(
+        self,
+        state: AgentState,
+        status: AgentStatus,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        error: str | None = None,
+        pause: PauseState | None = None,
+    ) -> AppliedTransition:
+        _ = context, control
         previous = state.status
         state.status = status
         state.error = None if status is AgentStatus.PAUSED else error
         state.pause = pause if status is AgentStatus.PAUSED else None
         transition_state = AgentState.from_dict(state.to_dict())
-        await self._notify_hooks(
-            "on_transition", previous, status, transition_state, context, control=control
-        )
-        return {
+        data = {
             "from": previous.value,
             "to": status.value,
             "iterations": state.iterations,
@@ -1496,25 +2046,123 @@ class AgentLoop:
             "error": state.error,
             "pause": None if state.pause is None else state.pause.to_dict(),
         }
+        return AppliedTransition(previous, status, transition_state, data)
+
+    async def _notify_transition(
+        self,
+        transition: AppliedTransition,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> None:
+        await self._notify_hooks(
+            "on_transition",
+            transition.previous,
+            transition.current,
+            transition.state,
+            context,
+            control=control,
+        )
 
     async def _checkpoint_events(
         self,
         state: AgentState,
         context: RuntimeContext,
         control: RunControlState,
+        *,
+        defer_dispatch: bool = False,
     ) -> tuple[AgentEvent, ...]:
         sequence = control.next_sequence()
+        snapshot = self._snapshot(state, context, control, sequence=sequence)
+        checkpoint_id = self._checkpoint_id(sequence)
         event = AgentEvent(
             EventTypes.CHECKPOINT,
-            self._snapshot(state, context, control, sequence=sequence).to_dict(),
+            snapshot.to_dict(),
             run_id=control.run_id,
             sequence=sequence,
         )
-        events = await self._dispatch_events(event, context, control)
+        await self._save_checkpoint(
+            control,
+            checkpoint_id=checkpoint_id,
+            snapshot=snapshot,
+            parent_checkpoint_id=control.last_checkpoint_id,
+        )
         control.last_checkpoint = RunSnapshot.from_dict(event.data)
-        if control.trace is not None:
-            control.trace.mark_durable()
+        control.last_checkpoint_id = checkpoint_id
+        if defer_dispatch or control.run_journal is not None:
+            if control.run_journal is not None:
+                control.post_journal_dispatch[event.sequence] = (True, True)
+            return (event,)
+        events = await self._dispatch_checkpoint_events((event,), context, control)
         return events
+
+    async def _checkpoint_events_after_deferred_events(
+        self,
+        deferred_event: AgentEvent | tuple[AgentEvent, ...],
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        transition: AppliedTransition | None = None,
+    ) -> tuple[AgentEvent, ...]:
+        deferred_events = (
+            (deferred_event,) if isinstance(deferred_event, AgentEvent) else deferred_event
+        )
+        checkpoint_events = await self._checkpoint_events(
+            state, context, control, defer_dispatch=True
+        )
+        if control.run_journal is not None:
+            for event in deferred_events:
+                control.post_journal_dispatch[event.sequence] = (False, False)
+                if transition is not None and event.type == EventTypes.STATE_CHANGED:
+                    control.post_journal_transitions[event.sequence] = transition
+                    transition = None
+            return (*deferred_events, *checkpoint_events)
+
+        dispatched_deferred_events: list[AgentEvent] = []
+        for event in deferred_events:
+            if transition is not None and event.type == EventTypes.STATE_CHANGED:
+                await self._notify_transition(transition, context, control)
+                transition = None
+            dispatched_deferred_events.extend(await self._dispatch_events(event, context, control))
+        checkpoint_events = await self._dispatch_checkpoint_events(
+            checkpoint_events, context, control
+        )
+        return (*dispatched_deferred_events, *checkpoint_events)
+
+    async def _dispatch_deferred_transition_event(
+        self,
+        transition: AppliedTransition | None,
+        event: AgentEvent,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> tuple[AgentEvent, ...]:
+        if control.run_journal is not None:
+            control.post_journal_dispatch[event.sequence] = (False, False)
+            if transition is not None:
+                control.post_journal_transitions[event.sequence] = transition
+            return (event,)
+        if transition is not None:
+            await self._notify_transition(transition, context, control)
+        return await self._dispatch_events(event, context, control)
+
+    async def _dispatch_checkpoint_events(
+        self,
+        checkpoint_events: tuple[AgentEvent, ...],
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> tuple[AgentEvent, ...]:
+        events: list[AgentEvent] = []
+        for event in checkpoint_events:
+            events.extend(
+                await self._dispatch_events(
+                    event,
+                    context,
+                    control,
+                    trace_before_hooks=True,
+                    mark_trace_durable_before_hooks=True,
+                )
+            )
+        return tuple(events)
 
     async def _events(
         self,
@@ -1525,15 +2173,43 @@ class AgentLoop:
         *,
         trace_before_hooks: bool = False,
     ) -> tuple[AgentEvent, ...]:
-        event = AgentEvent(
+        event = self._runtime_event(control, event_type, data)
+        return await self._dispatch_events(
+            event, context, control, trace_before_hooks=trace_before_hooks
+        )
+
+    @staticmethod
+    def _runtime_event(
+        control: RunControlState,
+        event_type: str,
+        data: Mapping[str, Any],
+    ) -> AgentEvent:
+        return AgentEvent(
             event_type,
             data,
             run_id=control.run_id,
             sequence=control.next_sequence(),
         )
-        return await self._dispatch_events(
-            event, context, control, trace_before_hooks=trace_before_hooks
-        )
+
+    @staticmethod
+    def _defer_events_until_checkpoint_saved(control: RunControlState) -> bool:
+        return control.run_store is not None
+
+    @staticmethod
+    def _merge_deferred_events(
+        deferred_events: tuple[AgentEvent, ...],
+        committed_events: tuple[AgentEvent, ...],
+    ) -> tuple[AgentEvent, ...]:
+        if not deferred_events:
+            return committed_events
+        return (deferred_events[0], *committed_events, *deferred_events[1:])
+
+    @staticmethod
+    def _post_journal_dispatch_options(
+        control: RunControlState,
+        event: AgentEvent,
+    ) -> tuple[bool, bool] | None:
+        return control.post_journal_dispatch.pop(event.sequence, None)
 
     async def _dispatch_events(
         self,
@@ -1542,6 +2218,7 @@ class AgentLoop:
         control: RunControlState,
         *,
         trace_before_hooks: bool = False,
+        mark_trace_durable_before_hooks: bool = False,
     ) -> tuple[AgentEvent, ...]:
         specs: list[tuple[AgentEvent, bool]] = [(first_event, True)]
         events: list[AgentEvent] = []
@@ -1557,6 +2234,8 @@ class AgentLoop:
             recorded_before_hooks = False
             if runtime_owned and trace_before_hooks and control.trace is not None:
                 control.trace.record_event(runtime_event)
+                if mark_trace_durable_before_hooks:
+                    control.trace.mark_durable()
                 recorded_before_hooks = True
             for hook in self._hooks:
                 replacement = await self._call_hook(
@@ -1598,9 +2277,54 @@ class AgentLoop:
                 control.trace.record_event(pending)
         return tuple(events)
 
+    async def _append_journal_event(
+        self,
+        control: RunControlState,
+        event: AgentEvent,
+    ) -> None:
+        journal = control.run_journal
+        if journal is None:
+            return
+        checkpoint_id = None
+        if event.type == EventTypes.CHECKPOINT:
+            checkpoint_id = self._checkpoint_id(event.sequence)
+        await self._await_with_timeout(
+            journal.append(JournalRecord(event=event, checkpoint_id=checkpoint_id)),
+            control,
+        )
+
+    async def _save_checkpoint(
+        self,
+        control: RunControlState,
+        *,
+        checkpoint_id: str,
+        snapshot: RunSnapshot,
+        parent_checkpoint_id: str | None,
+    ) -> None:
+        store = control.run_store
+        if store is None:
+            return
+        await self._await_with_timeout(
+            store.save_checkpoint(
+                StoredCheckpoint(
+                    run_id=control.run_id,
+                    checkpoint_id=checkpoint_id,
+                    parent_checkpoint_id=parent_checkpoint_id,
+                    sequence=snapshot.context.sequence,
+                    status=snapshot.state.status,
+                    snapshot=snapshot,
+                    created_at=time(),
+                )
+            ),
+            control,
+        )
+
     @staticmethod
-    def _raw_event(
-        control: RunControlState, event_type: str, data: Mapping[str, Any]
+    def _checkpoint_id(sequence: int) -> str:
+        return f"checkpoint-{sequence}"
+
+    async def _raw_event(
+        self, control: RunControlState, event_type: str, data: Mapping[str, Any]
     ) -> AgentEvent:
         event = AgentEvent(
             event_type,
@@ -1612,20 +2336,28 @@ class AgentLoop:
             control.trace.record_event(event)
         return event
 
-    @staticmethod
-    def _raw_checkpoint_event(
-        state: AgentState, context: RuntimeContext, control: RunControlState
+    async def _raw_checkpoint_event(
+        self, state: AgentState, context: RuntimeContext, control: RunControlState
     ) -> AgentEvent:
         sequence = control.next_sequence()
+        snapshot = self._snapshot(state, context, control, sequence=sequence)
+        checkpoint_id = self._checkpoint_id(sequence)
         event = AgentEvent(
             EventTypes.CHECKPOINT,
-            AgentLoop._snapshot(state, context, control, sequence=sequence).to_dict(),
+            snapshot.to_dict(),
             run_id=control.run_id,
             sequence=sequence,
         )
+        await self._save_checkpoint(
+            control,
+            checkpoint_id=checkpoint_id,
+            snapshot=snapshot,
+            parent_checkpoint_id=control.last_checkpoint_id,
+        )
+        control.last_checkpoint = RunSnapshot.from_dict(event.data)
+        control.last_checkpoint_id = checkpoint_id
         if control.trace is not None:
             control.trace.record_event(event)
-        control.last_checkpoint = RunSnapshot.from_dict(event.data)
         if control.trace is not None:
             control.trace.mark_durable()
         return event
@@ -1755,6 +2487,15 @@ class AgentLoop:
             "rejection",
         }:
             raise AgentError("custom tool call must produce an extension ToolOutput kind")
+
+    @staticmethod
+    def _validate_non_invoked_tool_output(call: ToolCall, output: ToolOutput) -> None:
+        if not output.is_error:
+            raise AgentError("non-invoked tool result must remain an error")
+        if output.pause is not None:
+            raise AgentError("non-invoked tool result must not request pause")
+        if call.mode == "accept" and output.kind != "rejection":
+            raise AgentError("non-invoked accept tool result must remain a rejection")
 
     @staticmethod
     def _restore_state_from_snapshot(state: AgentState, snapshot: RunSnapshot) -> None:

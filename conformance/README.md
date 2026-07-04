@@ -4,7 +4,8 @@
 JSON objects. Unknown keys are invalid so misspelled expectations fail early.
 
 `case_type` defaults to `run`. Current case types are `run`, `resume`,
-`model_response_negative`, and `message_negative`.
+`run_store_failure`, `run_journal_failure`, `run_store_journal`,
+`run_store_resume_journal`, `model_response_negative`, and `message_negative`.
 
 Run the Python reference runner from `sdks/python`:
 
@@ -30,8 +31,10 @@ A non-Python runner should provide the same deterministic harness:
   resume input, and traces against the v0 schemas.
 - Convert `model_steps` and `resume_model_steps` into scripted model responses.
 - Emit stream events from `stream_model_steps` when the case requests streaming.
-- Provide the standard conformance tools: `echo`, `accept`, `fail`, `delayed_echo`,
-  `wait`, and `parallel_wait`.
+- Provide the standard conformance tools: `echo`, `accept`, `handoff`, `fail`,
+  `delayed_echo`, `wait`, `parallel_wait`, and `strict_count`.
+- When `approval_decisions` is present, provide an approval policy that returns
+  the configured decision for matching tool-call ids and `allow` for all others.
 - Execute `run` cases from a single initial user message.
 - Execute `resume` cases by first selecting the requested checkpoint, then
   resuming through the SDK's resume-input value.
@@ -56,6 +59,11 @@ Standard tool behavior is part of the harness contract:
   `arguments.reject` is `true`; otherwise it returns a text tool acceptance
   containing `arguments.text` or `accepted`, with `correlation_id` set to
   `arguments.correlation_id` or the tool call id.
+- `handoff`: supports only `handoff` mode. It returns a generic extension
+  `ToolOutput` with result kind `arguments.kind` or `handoff`, text
+  `arguments.text` or `handoff`, `is_error` from `arguments.is_error` or
+  `false`, and `correlation_id` set to `arguments.correlation_id` or the tool
+  call id.
 - `fail`: signals a tool failure with message `tool failed`.
 - `delayed_echo`: has `parallel_safe`, `read_only`, and `idempotent`
   annotations set to `true`; sleeps for `arguments.delay` seconds when present,
@@ -67,6 +75,9 @@ Standard tool behavior is part of the harness contract:
 - `parallel_wait`: has the same annotations as `delayed_echo`, sleeps for
   `arguments.delay` seconds when present, then returns the same waiting
   observation shape as `wait`.
+- `strict_count`: requires exactly one integer `arguments.count` field with
+  `additionalProperties: false`, increments its call counter, and returns the
+  count as text.
 
 `wait` and `parallel_wait` produce tool-origin pause requests. Their pause
 request must not be an interrupt, and their committed paused checkpoint is the
@@ -82,10 +93,13 @@ limits, and parallel scheduling cases.
 All case files must define `name`. Runtime cases also define `model_steps`,
 `expected_status`, and `expected_tool_calls`.
 
-`model_steps` and `resume_model_steps` are arrays of
-`model-response.schema.json` objects. Each step currently requires `parts` and
-`tool_calls`; optional fields include `finish_reason`, `usage`, `model`,
-`response_id`, and `metadata`.
+`model_steps` and `resume_model_steps` are arrays of scripted model steps. Each
+step is either a model response object matching `model-response.schema.json` or
+an object with an `error` field matching `model-error.schema.json`. Model
+response steps require `parts` and `tool_calls`; optional fields include
+`finish_reason`, `usage`, `model`, `response_id`, and `metadata`. Error steps
+cause the scripted model to raise the SDK's structured model-provider error for
+that attempt.
 Every tool call must include `id`, `name`, `mode`, and `arguments`.
 
 `limits`, when present, uses `limits.schema.json` and may include
@@ -97,6 +111,13 @@ Every tool call must include `id`, `name`, `mode`, and `arguments`.
 "during_model_call"`, is inserted through the run controller while the scripted
 model call is in flight. The runtime must discard the interrupted model response,
 append one `external` message, checkpoint it, and continue planning.
+`conversation_insert_timing`, when present, must be `during_model_call`.
+
+`retry_model_errors`, when set to `true`, makes the runner install a hook that
+returns a retry decision equal to the scripted `error.retryable` value. This is a
+conformance harness shortcut; it does not change the core model protocol rule
+that model retries are driven by `RuntimeHook.on_model_error` decisions and
+`LoopLimits.max_model_retries`.
 
 `stream_model_steps`, when present, is an array of objects with `events`.
 Supported stream event types are:
@@ -176,10 +197,15 @@ Common optional keys:
 - `limits`
 - `pause_request`
 - `pause_request_timing`
+- `conversation_insert`
+- `conversation_insert_timing`
+- `approval_decisions`
+- `retry_model_errors`
 - `stream_model_steps`
 - `expected_final_text`
 - `expected_message_roles`
 - `expected_tool_texts`
+- `expected_tool_text_contains`
 - `expected_pending_tool_call_ids`
 - `expected_pause`
 - `expected_model_deltas`
@@ -198,6 +224,70 @@ Common optional keys:
 `expected_event_types` requires each listed event type to appear at least once.
 `expected_trace_kinds` requires each listed compact trace kind to appear in both
 the result trace and the event-derived trace.
+`expected_tool_text_contains` requires at least one final tool message to contain
+each listed substring.
+`forbidden_journal_event_types` is only valid for case types that run with a
+capturing journal: `run_store_failure`, `run_journal_failure`,
+`run_store_journal`, and `run_store_resume_journal`.
+
+`approval_decisions`, when present, maps tool-call ids to an approval decision:
+
+```json
+{
+  "call-1": {
+    "action": "deny",
+    "reason": "requires human approval",
+    "metadata": {}
+  }
+}
+```
+
+`action` is `allow`, `deny`, or `pause`. Denied calls must commit a tool error
+or rejection without invoking the tool implementation. Pause decisions must stop
+before tool execution with the call still pending.
+
+## `run_store_failure`
+
+`run_store_failure` cases exercise the optional core `RunStore` extension with a
+store that fails checkpoint saves. The runtime must not emit or journal the
+checkpoint whose store save failed. Cases use `expected_error` for the store
+failure substring and may use `forbidden_journal_event_types` to assert journal
+records that must not appear.
+
+## `run_journal_failure`
+
+`run_journal_failure` cases exercise fail-fast `RunJournal` append behavior.
+The runner should use a store that captures checkpoints and a journal that
+fails when appending the first checkpoint record. The checkpoint save has
+already succeeded, but the checkpoint event must not be emitted to the caller
+or recorded in the journal. Cases use `expected_error` for the journal failure
+substring and may use `forbidden_journal_event_types`.
+
+## `run_store_journal`
+
+`run_store_journal` cases exercise successful `RunStore` and `RunJournal`
+integration. The runner must execute the case with capturing store and journal
+implementations, then assert:
+
+- every emitted `checkpoint` event has exactly one stored checkpoint;
+- checkpoint ids are `checkpoint-{event.sequence}`;
+- each checkpoint's `parent_checkpoint_id` points to the previous checkpoint id,
+  or `null` for the first checkpoint in the invocation;
+- stored checkpoint sequence, status, and snapshot match the checkpoint event;
+- `load_checkpoint(run_id)` returns the latest snapshot and
+  `list_checkpoints(run_id)` returns matching summaries;
+- journal records match emitted events in order, and only checkpoint records
+  carry the matching `checkpoint_id`.
+
+## `run_store_resume_journal`
+
+`run_store_resume_journal` cases exercise successful `RunStore` and
+`RunJournal` integration during resume. The runner first executes the initial
+run, selects the requested resume checkpoint using the normal resume keys, then
+executes `run_snapshot_events` with capturing store and journal implementations.
+The first checkpoint saved by the resumed invocation must use
+`checkpoint-{selected_snapshot.context.sequence}` as `parent_checkpoint_id`;
+later checkpoints continue the normal parent chain.
 
 ## `resume`
 
@@ -223,8 +313,13 @@ Resume-only optional keys:
 - `expected_resume_tool_texts`
 - `expected_resume_trace_prefix`
 
-Resume-only keys are invalid unless `case_type` is `resume`. This keeps normal
-run cases from accidentally depending on resume-specific runner behavior.
+Resume-only keys are invalid unless `case_type` is `resume`, except for the
+documented `run_store_resume_journal` subset. `run_store_resume_journal`
+supports only the keys needed to select the resume checkpoint and assert the
+successful resumed run: `resume_model_steps`, `resume_append_messages`,
+`resume_expected_pause`, `resume_checkpoint_status`,
+`resume_checkpoint_total_tool_calls`, `expected_resume_status`,
+`expected_resume_final_text`, and `expected_resume_tool_calls`.
 
 ## `model_response_negative`
 

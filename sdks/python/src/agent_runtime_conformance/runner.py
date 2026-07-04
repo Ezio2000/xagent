@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import json
 import traceback
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -16,10 +16,12 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
+from agent_runtime.approval import ApprovalDecision, ApprovalRequest
 from agent_runtime.control import ConversationInsert, PauseRequest, RunController
 from agent_runtime.errors import ModelErrorInfo, ModelProviderError
 from agent_runtime.events import AgentEvent, EventTypes
 from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
+from agent_runtime.journal import JournalRecord
 from agent_runtime.limits import LoopLimits
 from agent_runtime.loop import AgentLoop, AgentResult
 from agent_runtime.messages import ContentPart, Message
@@ -34,12 +36,14 @@ from agent_runtime.resume import PauseSelector, ResumeInput
 from agent_runtime.runtime import RuntimeContext
 from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentStatus
+from agent_runtime.store import CheckpointSummary, StoredCheckpoint
 from agent_runtime.tools import (
     Tool,
     ToolAcceptance,
     ToolExecutionContext,
     ToolInvocation,
     ToolObservation,
+    ToolOutput,
     ToolRejection,
     ToolSpec,
 )
@@ -60,6 +64,7 @@ CASE_KEYS = {
     "resume_checkpoint_status",
     "resume_checkpoint_total_tool_calls",
     "retry_model_errors",
+    "approval_decisions",
     "stream_model_steps",
     "expected_status",
     "expected_final_text",
@@ -80,6 +85,7 @@ CASE_KEYS = {
     "expected_event_types",
     "expected_trace_kinds",
     "forbidden_event_types",
+    "forbidden_journal_event_types",
     "forbidden_checkpoint_statuses",
     "forbidden_checkpoint_tool_counts",
     "forbidden_checkpoint_status_tool_counts",
@@ -130,10 +136,13 @@ LIMIT_KEYS = {
     "max_total_tokens",
     "max_model_retries",
 }
+APPROVAL_DECISION_KEYS = {"action", "reason", "metadata"}
 REQUIRED_SCHEMA_FILES = {
     "events.schema.json",
     "run-snapshot.schema.json",
     "run-trace.schema.json",
+    "runtime-context.schema.json",
+    "runtime-extensions.schema.json",
     "resume-input.schema.json",
     "messages.schema.json",
     "model-response.schema.json",
@@ -171,6 +180,11 @@ class ConformanceValidators:
     model_error: Any
     model_response: Any
     limits: Any
+    approval_request: Any
+    approval_decision: Any
+    checkpoint_summary: Any
+    stored_checkpoint: Any
+    journal_record: Any
 
 
 ModelStep = ModelResponse | ModelProviderError
@@ -312,6 +326,24 @@ class AcceptTool:
         )
 
 
+class HandoffTool:
+    spec = ToolSpec(
+        name="handoff",
+        description="Return generic custom-mode tool output.",
+        input_schema={"type": "object", "properties": {}},
+        modes=("handoff",),
+    )
+
+    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
+        _ = context
+        return ToolOutput(
+            kind=str(invocation.arguments.get("kind", "handoff")),
+            parts=[ContentPart.text_part(str(invocation.arguments.get("text", "handoff")))],
+            is_error=bool(invocation.arguments.get("is_error", False)),
+            correlation_id=str(invocation.arguments.get("correlation_id", invocation.id)),
+        )
+
+
 class FailTool:
     spec = ToolSpec(
         name="fail",
@@ -403,6 +435,98 @@ class StrictCountTool:
         return ToolObservation.text(str(invocation.arguments["count"]))
 
 
+class CaseApprovalPolicy:
+    def __init__(
+        self,
+        decisions: Mapping[str, ApprovalDecision],
+        *,
+        validate_request: Callable[[ApprovalRequest], None] | None = None,
+        validate_decision: Callable[[ApprovalDecision], None] | None = None,
+    ) -> None:
+        self._decisions = dict(decisions)
+        self._validate_request = validate_request
+        self._validate_decision = validate_decision
+
+    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+        if self._validate_request is not None:
+            self._validate_request(request)
+        decision = self._decisions.get(request.tool_call.id, ApprovalDecision.allow())
+        if self._validate_decision is not None:
+            self._validate_decision(decision)
+        return decision
+
+
+class FailingCheckpointStore:
+    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
+        _ = checkpoint
+        raise RuntimeError("store unavailable")
+
+    async def load_checkpoint(self, run_id: str, checkpoint_id: str | None = None) -> RunSnapshot:
+        _ = checkpoint_id
+        raise KeyError(run_id)
+
+    async def list_checkpoints(self, run_id: str) -> Sequence[CheckpointSummary]:
+        _ = run_id
+        return ()
+
+
+class CapturingRunStore:
+    def __init__(self) -> None:
+        self.checkpoints: list[StoredCheckpoint] = []
+
+    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
+        self.checkpoints.append(StoredCheckpoint.from_dict(checkpoint.to_dict()))
+
+    async def load_checkpoint(self, run_id: str, checkpoint_id: str | None = None) -> RunSnapshot:
+        matches = [checkpoint for checkpoint in self.checkpoints if checkpoint.run_id == run_id]
+        if checkpoint_id is not None:
+            matches = [
+                checkpoint for checkpoint in matches if checkpoint.checkpoint_id == checkpoint_id
+            ]
+        if not matches:
+            raise KeyError(run_id)
+        return RunSnapshot.from_dict(matches[-1].snapshot.to_dict())
+
+    async def list_checkpoints(self, run_id: str) -> Sequence[CheckpointSummary]:
+        return [
+            checkpoint.summary() for checkpoint in self.checkpoints if checkpoint.run_id == run_id
+        ]
+
+
+class CapturingRunJournal:
+    def __init__(self) -> None:
+        self.records: list[JournalRecord] = []
+
+    async def append(self, record: JournalRecord) -> None:
+        self.records.append(
+            JournalRecord(
+                event=AgentEvent(**record.event.to_dict()),
+                checkpoint_id=record.checkpoint_id,
+                trace_step_id=record.trace_step_id,
+                payload_ref=record.payload_ref,
+                payload_hash=record.payload_hash,
+                metadata=record.metadata,
+            )
+        )
+
+    async def read(
+        self, run_id: str, *, after_sequence: int | None = None
+    ) -> AsyncIterator[JournalRecord]:
+        for record in self.records:
+            if record.run_id != run_id:
+                continue
+            if after_sequence is not None and record.sequence <= after_sequence:
+                continue
+            yield record
+
+
+class FailingCheckpointJournal(CapturingRunJournal):
+    async def append(self, record: JournalRecord) -> None:
+        if record.event_type == EventTypes.CHECKPOINT:
+            raise RuntimeError("journal unavailable")
+        await super().append(record)
+
+
 class RetryModelErrorHook(RuntimeHook):
     def on_model_error(
         self,
@@ -441,7 +565,15 @@ class ConformanceRunner:
     def validate_case_keys(self, name: str, case: dict[str, Any]) -> None:
         reject_unknown_keys(set(case), CASE_KEYS, name)
         case_type = expect_case_str(case.get("case_type", "run"), f"{name}.case_type")
-        if case_type not in {"run", "resume", *NEGATIVE_CASE_TYPES}:
+        if case_type not in {
+            "run",
+            "resume",
+            "run_store_failure",
+            "run_journal_failure",
+            "run_store_journal",
+            "run_store_resume_journal",
+            *NEGATIVE_CASE_TYPES,
+        }:
             raise ValueError(f"{name} has invalid case_type")
         if case_type == "model_response_negative":
             for required in ("name", "model_response", "expected_error"):
@@ -477,10 +609,21 @@ class ConformanceRunner:
                     f"{name} has invalid negative-case key(s): {', '.join(sorted(forbidden))}"
                 )
             return
-        negative_only_keys = {"message", "model_response", "expected_error"} & set(case)
+        negative_only_keys = {"message", "model_response"} & set(case)
+        if (
+            case_type not in {"run_store_failure", "run_journal_failure"}
+            and "expected_error" in case
+        ):
+            negative_only_keys.add("expected_error")
         if negative_only_keys:
             raise AssertionError(
                 f"{name} has negative-only key(s): {', '.join(sorted(negative_only_keys))}"
+            )
+        unsupported_expectations = self._unsupported_expectation_keys(case_type) & set(case)
+        if unsupported_expectations:
+            raise AssertionError(
+                f"{name} has unsupported expectation key(s) for {case_type}: "
+                f"{', '.join(sorted(unsupported_expectations))}"
             )
         resume_only_keys = {
             "resume_model_steps",
@@ -496,7 +639,7 @@ class ConformanceRunner:
             "expected_resume_error",
             "expected_resume_trace_prefix",
         }
-        if case_type != "resume":
+        if case_type not in {"resume", "run_store_resume_journal"}:
             forbidden = resume_only_keys & set(case)
             if forbidden:
                 raise AssertionError(
@@ -511,6 +654,27 @@ class ConformanceRunner:
         expect_case_int(case["expected_tool_calls"], f"{name}.expected_tool_calls")
         if "retry_model_errors" in case and not isinstance(case["retry_model_errors"], bool):
             raise TypeError(f"{name}.retry_model_errors must be a boolean")
+        if "approval_decisions" in case:
+            raw_decisions_obj = case["approval_decisions"]
+            raw_decisions = cast(Mapping[str, object], raw_decisions_obj)
+            if not isinstance(raw_decisions_obj, dict):
+                raise TypeError(f"{name}.approval_decisions must be an object")
+            for call_id, raw_decision in raw_decisions.items():
+                expect_case_str(call_id, f"{name}.approval_decisions key")
+                if not isinstance(raw_decision, dict):
+                    raise TypeError(f"{name}.approval_decisions.{call_id} must be an object")
+                decision = cast(Mapping[str, Any], raw_decision)
+                reject_unknown_keys(
+                    set(decision),
+                    APPROVAL_DECISION_KEYS,
+                    f"{name}.approval_decisions.{call_id}",
+                )
+                ApprovalDecision.from_dict(decision)
+                self.assert_matches_schema(
+                    f"{name}.approval_decisions.{call_id}",
+                    self.validators.approval_decision,
+                    decision,
+                )
         if case_type == "resume":
             if "resume_checkpoint_status" not in case:
                 raise KeyError(f"{name} missing required key: resume_checkpoint_status")
@@ -529,6 +693,29 @@ class ConformanceRunner:
                 )
             if "expected_resume_error" in case:
                 expect_case_str(case["expected_resume_error"], f"{name}.expected_resume_error")
+        if case_type == "run_store_failure":
+            if "expected_error" not in case:
+                raise KeyError(f"{name} missing required key: expected_error")
+            expect_case_str(case["expected_error"], f"{name}.expected_error")
+        if case_type == "run_journal_failure":
+            if "expected_error" not in case:
+                raise KeyError(f"{name} missing required key: expected_error")
+            expect_case_str(case["expected_error"], f"{name}.expected_error")
+        if case_type == "run_store_resume_journal":
+            if "resume_checkpoint_status" not in case:
+                raise KeyError(f"{name} missing required key: resume_checkpoint_status")
+            expect_case_str(case["resume_checkpoint_status"], f"{name}.resume_checkpoint_status")
+            expect_case_optional_int(
+                case.get("resume_checkpoint_total_tool_calls"),
+                f"{name}.resume_checkpoint_total_tool_calls",
+            )
+            if "expected_resume_status" not in case:
+                raise KeyError(f"{name} missing required key: expected_resume_status")
+            expect_case_str(case["expected_resume_status"], f"{name}.expected_resume_status")
+            if "expected_resume_tool_calls" in case:
+                expect_case_int(
+                    case["expected_resume_tool_calls"], f"{name}.expected_resume_tool_calls"
+                )
         if case.get("pause_request_timing") not in {None, "during_model_call", "stream_event"}:
             raise ValueError(f"{name} has invalid pause_request_timing")
         if case.get("conversation_insert_timing") not in {None, "during_model_call"}:
@@ -614,11 +801,59 @@ class ConformanceRunner:
             "expected_trace_kinds",
             "expected_tool_text_contains",
             "forbidden_event_types",
+            "forbidden_journal_event_types",
         ):
             if key in case:
                 for item in expect_case_list_of_strings(case[key], f"{name}.{key}"):
                     if not item:
                         raise ValueError(f"{name}.{key} items must not be empty")
+
+    @staticmethod
+    def _unsupported_expectation_keys(case_type: str) -> set[str]:
+        run_expectations = {
+            "approval_decisions",
+            "expected_final_text",
+            "expected_message_roles",
+            "expected_tool_texts",
+            "expected_tool_text_contains",
+            "expected_pending_tool_call_ids",
+            "expected_pause",
+            "expected_model_deltas",
+            "expected_trace_kinds",
+        }
+        resume_expectations = {
+            "expected_resume_error",
+            "expected_resume_message_roles",
+            "expected_resume_tool_texts",
+            "expected_resume_trace_prefix",
+        }
+        if case_type in {"run_store_failure", "run_journal_failure"}:
+            return run_expectations | resume_expectations
+        if case_type in {"run", "resume"}:
+            return {"forbidden_journal_event_types"}
+        if case_type == "run_store_journal":
+            return {
+                "expected_message_roles",
+                "expected_tool_texts",
+                "expected_tool_text_contains",
+                "expected_pending_tool_call_ids",
+                "expected_pause",
+                "expected_model_deltas",
+            } | resume_expectations
+        if case_type == "run_store_resume_journal":
+            return {
+                "approval_decisions",
+                "expected_event_types",
+                "expected_message_roles",
+                "expected_tool_texts",
+                "expected_tool_text_contains",
+                "expected_pending_tool_call_ids",
+                "expected_pause",
+                "expected_model_deltas",
+                "expected_trace_kinds",
+                "forbidden_event_types",
+            } | resume_expectations
+        return set()
 
     def _validate_stream_event(
         self, name: str, step_index: int, event_index: int, event: dict[str, Any]
@@ -717,6 +952,22 @@ class ConformanceRunner:
             await self.assert_resume_conformance_case(case)
             return ConformanceCaseResult(name=name, case_type=case_type)
 
+        if case_type == "run_store_failure":
+            await self.assert_run_store_failure_case(case)
+            return ConformanceCaseResult(name=name, case_type=case_type)
+
+        if case_type == "run_journal_failure":
+            await self.assert_run_journal_failure_case(case)
+            return ConformanceCaseResult(name=name, case_type=case_type)
+
+        if case_type == "run_store_journal":
+            await self.assert_run_store_journal_case(case)
+            return ConformanceCaseResult(name=name, case_type=case_type)
+
+        if case_type == "run_store_resume_journal":
+            await self.assert_run_store_resume_journal_case(case)
+            return ConformanceCaseResult(name=name, case_type=case_type)
+
         steps = [model_step_from_case_step(step) for step in case["model_steps"]]
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         expected_status = AgentStatus(case["expected_status"])
@@ -744,11 +995,381 @@ class ConformanceRunner:
             tools=case_tools(),
             limits=limits_from_case(case),
             hooks=hooks_from_case(case),
+            approval_policy=approval_policy_from_case(case, self.validators),
         ).run(
             [Message.user_text("run conformance case")],
             stream=bool(stream_steps),
             controller=controller,
         )
+
+    async def assert_run_store_failure_case(self, case: dict[str, Any]) -> None:
+        steps = [model_step_from_case_step(step) for step in case["model_steps"]]
+        stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
+        controller = controller_from_case(case)
+        model = model_from_case(case, steps, stream_steps, controller)
+        journal = CapturingRunJournal()
+        events: list[AgentEvent] = []
+        try:
+            async for event in AgentLoop(
+                model=model,
+                tools=case_tools(),
+                limits=limits_from_case(case),
+                hooks=hooks_from_case(case),
+                approval_policy=approval_policy_from_case(case, self.validators),
+                run_store=FailingCheckpointStore(),
+                run_journal=journal,
+            ).run_events(
+                [Message.user_text("run conformance case")],
+                stream=bool(stream_steps),
+                controller=controller,
+            ):
+                events.append(event)
+        except RuntimeError as exc:
+            expected_error = expect_case_str(case["expected_error"], "expected_error")
+            if expected_error not in str(exc):
+                raise AssertionError(
+                    f"expected store failure containing {expected_error!r}, got {exc!r}"
+                ) from exc
+        else:
+            raise AssertionError("expected run store save failure")
+
+        expected_status = AgentStatus(case["expected_status"])
+        check(events, "store failure case must emit events before failing")
+        self.assert_event_schema_contracts(events)
+        state_changes = [event for event in events if event.type == EventTypes.STATE_CHANGED]
+        check(state_changes, "store failure case must emit a failed state_changed event")
+        check(
+            state_changes[-1].data["to"] == expected_status.value,
+            f"expected failed state {expected_status.value}, got {state_changes[-1].data['to']}",
+        )
+        check(
+            state_changes[-1].data["total_tool_calls"] == case["expected_tool_calls"],
+            f"expected {case['expected_tool_calls']} tool calls before store failure, "
+            f"got {state_changes[-1].data['total_tool_calls']}",
+        )
+        self._assert_expected_event_types(case, events)
+        self._assert_forbidden_expectations(case, events)
+        self._assert_forbidden_journal_expectations(case, journal.records)
+        check(
+            [record.event_type for record in journal.records] == [event.type for event in events],
+            "journal must contain exactly the emitted events before store failure",
+        )
+        self._assert_journal_record_schema_contracts(journal.records)
+
+    async def assert_run_journal_failure_case(self, case: dict[str, Any]) -> None:
+        steps = [model_step_from_case_step(step) for step in case["model_steps"]]
+        stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
+        controller = controller_from_case(case)
+        model = model_from_case(case, steps, stream_steps, controller)
+        store = CapturingRunStore()
+        journal = FailingCheckpointJournal()
+        events: list[AgentEvent] = []
+        try:
+            async for event in AgentLoop(
+                model=model,
+                tools=case_tools(),
+                limits=limits_from_case(case),
+                hooks=hooks_from_case(case),
+                approval_policy=approval_policy_from_case(case, self.validators),
+                run_store=store,
+                run_journal=journal,
+            ).run_events(
+                [Message.user_text("run conformance case")],
+                stream=bool(stream_steps),
+                controller=controller,
+            ):
+                events.append(event)
+        except RuntimeError as exc:
+            expected_error = expect_case_str(case["expected_error"], "expected_error")
+            if expected_error not in str(exc):
+                raise AssertionError(
+                    f"expected journal failure containing {expected_error!r}, got {exc!r}"
+                ) from exc
+        else:
+            raise AssertionError("expected run journal append failure")
+
+        check(events, "journal failure case must emit events before failing")
+        self.assert_event_schema_contracts(events)
+        expected_status = AgentStatus(case["expected_status"])
+        state_changes = [event for event in events if event.type == EventTypes.STATE_CHANGED]
+        check(state_changes, "journal failure case must emit state_changed before failing")
+        check(
+            state_changes[-1].data["to"] == expected_status.value,
+            f"expected state {expected_status.value}, got {state_changes[-1].data['to']}",
+        )
+        check(
+            state_changes[-1].data["total_tool_calls"] == case["expected_tool_calls"],
+            f"expected {case['expected_tool_calls']} tool calls before journal failure, "
+            f"got {state_changes[-1].data['total_tool_calls']}",
+        )
+        self._assert_expected_event_types(case, events)
+        self._assert_forbidden_expectations(case, events)
+        self._assert_forbidden_journal_expectations(case, journal.records)
+        check(store.checkpoints, "journal failure must happen after checkpoint save")
+        self._assert_stored_checkpoint_schema_contracts(store.checkpoints)
+        self._assert_journal_record_schema_contracts(journal.records)
+        check(
+            EventTypes.CHECKPOINT not in [event.type for event in events],
+            "failed journal checkpoint event must not be emitted",
+        )
+        check(
+            EventTypes.CHECKPOINT not in [record.event_type for record in journal.records],
+            "failed journal checkpoint event must not be recorded",
+        )
+
+    async def assert_run_store_journal_case(self, case: dict[str, Any]) -> None:
+        steps = [model_step_from_case_step(step) for step in case["model_steps"]]
+        stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
+        controller = controller_from_case(case)
+        model = model_from_case(case, steps, stream_steps, controller)
+        store = CapturingRunStore()
+        journal = CapturingRunJournal()
+        events = [
+            event
+            async for event in AgentLoop(
+                model=model,
+                tools=case_tools(),
+                limits=limits_from_case(case),
+                hooks=hooks_from_case(case),
+                approval_policy=approval_policy_from_case(case, self.validators),
+                run_store=store,
+                run_journal=journal,
+            ).run_events(
+                [Message.user_text("run conformance case")],
+                stream=bool(stream_steps),
+                controller=controller,
+            )
+        ]
+
+        check(events, "run store journal case emitted no events")
+        self.assert_event_schema_contracts(events)
+        expected_status = AgentStatus(case["expected_status"])
+        completed = [event for event in events if event.type == EventTypes.RUN_COMPLETED]
+        check(completed, "run store journal case did not emit run_completed")
+        completed_state = cast(Mapping[str, Any], completed[-1].data["state"])
+        check(
+            completed_state["status"] == expected_status.value,
+            f"expected status {expected_status.value}, got {completed_state['status']}",
+        )
+        check(
+            completed_state["total_tool_calls"] == case["expected_tool_calls"],
+            f"expected {case['expected_tool_calls']} tool calls, "
+            f"got {completed_state['total_tool_calls']}",
+        )
+        if "expected_final_text" in case:
+            final_events = [event for event in events if event.type == EventTypes.FINAL]
+            check(final_events, "expected final text but no final event was emitted")
+            parts = cast(list[Mapping[str, Any]], final_events[-1].data["parts"])
+            actual_final_text = "".join(str(part.get("text") or "") for part in parts)
+            check(
+                actual_final_text == case["expected_final_text"],
+                f"expected final text {case['expected_final_text']!r}, got {actual_final_text!r}",
+            )
+
+        self._assert_expected_event_types(case, events)
+        self._assert_forbidden_expectations(case, events)
+        self._assert_forbidden_journal_expectations(case, journal.records)
+        self._assert_approval_expectations(case, events)
+        event_trace = RunTrace.from_events(events[0].run_id, events)
+        self.assert_matches_schema(
+            "run store journal event trace", self.validators.run_trace, event_trace.to_dict()
+        )
+        check(
+            replay_trace(event_trace).final_status is expected_status,
+            "run store journal event trace final status mismatch",
+        )
+        self._assert_expected_trace_kinds(case, event_trace, event_trace)
+        await self._assert_store_journal_segment(
+            events,
+            store,
+            journal,
+            initial_parent_checkpoint_id=None,
+        )
+
+    async def assert_run_store_resume_journal_case(self, case: dict[str, Any]) -> None:
+        initial_result_steps = [model_step_from_case_step(step) for step in case["model_steps"]]
+        initial_event_steps = [model_step_from_case_step(step) for step in case["model_steps"]]
+        stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
+        initial_result = await self.run_case_result(case, initial_result_steps, stream_steps)
+        initial_events = await self.collect_case_events(case, initial_event_steps, stream_steps)
+        initial_status = AgentStatus(case["expected_status"])
+        self.assert_run_case_expectations(case, initial_result, initial_events, initial_status)
+
+        snapshot = select_resume_snapshot(case, initial_events)
+        resume_input = ResumeInput(
+            snapshot=snapshot,
+            append_messages=messages_from_case(case.get("resume_append_messages", [])),
+            expected_pause=resume_selector_from_case(case),
+        )
+        resume_steps = [
+            model_step_from_case_step(step)
+            for step in cast(list[dict[str, Any]], case.get("resume_model_steps") or [])
+        ]
+        store = CapturingRunStore()
+        journal = CapturingRunJournal()
+        events = [
+            event
+            async for event in AgentLoop(
+                model=model_from_case(case, resume_steps, [], controller=None),
+                tools=case_tools(),
+                limits=limits_from_case(case),
+                hooks=hooks_from_case(case),
+                approval_policy=approval_policy_from_case(case, self.validators),
+                run_store=store,
+                run_journal=journal,
+            ).run_snapshot_events(resume_input)
+        ]
+
+        expected_status = AgentStatus(case["expected_resume_status"])
+        self.assert_event_stream_invariants(events, expected_status)
+        completed_state = cast(Mapping[str, Any], events[-1].data["state"])
+        expected_tool_calls = expect_case_int(
+            case.get("expected_resume_tool_calls", 0), "expected_resume_tool_calls"
+        )
+        check(
+            completed_state["total_tool_calls"] == expected_tool_calls,
+            f"expected {expected_tool_calls} resume tool calls, "
+            f"got {completed_state['total_tool_calls']}",
+        )
+        if "expected_resume_final_text" in case:
+            final_events = [event for event in events if event.type == EventTypes.FINAL]
+            check(final_events, "expected resume final text but no final event was emitted")
+            parts = cast(list[Mapping[str, Any]], final_events[-1].data["parts"])
+            actual_final_text = "".join(str(part.get("text") or "") for part in parts)
+            check(
+                actual_final_text == case["expected_resume_final_text"],
+                f"expected resume final text {case['expected_resume_final_text']!r}, "
+                f"got {actual_final_text!r}",
+            )
+        event_trace = RunTrace.from_events(events[0].run_id, events)
+        self._assert_forbidden_journal_expectations(case, journal.records)
+        self.assert_matches_schema(
+            "run store resume journal event trace",
+            self.validators.run_trace,
+            event_trace.to_dict(),
+        )
+        check(
+            replay_trace(event_trace).final_status is expected_status,
+            "run store resume journal event trace final status mismatch",
+        )
+        await self._assert_store_journal_segment(
+            events,
+            store,
+            journal,
+            initial_parent_checkpoint_id=self._expected_checkpoint_id(snapshot.context.sequence),
+        )
+
+    async def _assert_store_journal_segment(
+        self,
+        events: Sequence[AgentEvent],
+        store: CapturingRunStore,
+        journal: CapturingRunJournal,
+        *,
+        initial_parent_checkpoint_id: str | None,
+    ) -> None:
+        checkpoint_events = [event for event in events if event.type == EventTypes.CHECKPOINT]
+        check(checkpoint_events, "run store journal case emitted no checkpoint")
+        check(
+            len(store.checkpoints) == len(checkpoint_events),
+            f"expected {len(checkpoint_events)} stored checkpoints, got {len(store.checkpoints)}",
+        )
+        previous_checkpoint_id = initial_parent_checkpoint_id
+        for event, checkpoint in zip(checkpoint_events, store.checkpoints, strict=True):
+            self.assert_matches_schema(
+                "stored checkpoint",
+                self.validators.stored_checkpoint,
+                checkpoint.to_dict(),
+            )
+            self.assert_matches_schema(
+                "checkpoint summary",
+                self.validators.checkpoint_summary,
+                checkpoint.summary().to_dict(),
+            )
+            snapshot = RunSnapshot.from_dict(event.data)
+            checkpoint_id = self._expected_checkpoint_id(event.sequence)
+            check(
+                checkpoint.checkpoint_id == checkpoint_id,
+                f"expected checkpoint id {checkpoint_id}, got {checkpoint.checkpoint_id}",
+            )
+            check(
+                checkpoint.parent_checkpoint_id == previous_checkpoint_id,
+                f"expected checkpoint parent {previous_checkpoint_id}, "
+                f"got {checkpoint.parent_checkpoint_id}",
+            )
+            check(checkpoint.sequence == event.sequence, "checkpoint sequence mismatch")
+            check(checkpoint.status is snapshot.state.status, "checkpoint status mismatch")
+            check(
+                checkpoint.snapshot.to_dict() == snapshot.to_dict(),
+                "stored checkpoint snapshot does not match checkpoint event",
+            )
+            previous_checkpoint_id = checkpoint_id
+
+        latest = await store.load_checkpoint(events[0].run_id)
+        check(
+            latest.to_dict() == store.checkpoints[-1].snapshot.to_dict(),
+            "load_checkpoint did not return latest stored snapshot",
+        )
+        summaries = list(await store.list_checkpoints(events[0].run_id))
+        check(
+            [summary.to_dict() for summary in summaries]
+            == [checkpoint.summary().to_dict() for checkpoint in store.checkpoints],
+            "list_checkpoints summaries do not match stored checkpoints",
+        )
+
+        check(
+            [record.event.to_dict() for record in journal.records]
+            == [event.to_dict() for event in events],
+            "journal records must match emitted events",
+        )
+        for record, event in zip(journal.records, events, strict=True):
+            self.assert_matches_schema(
+                "journal record",
+                self.validators.journal_record,
+                record.to_dict(),
+            )
+            expected_checkpoint_id = (
+                self._expected_checkpoint_id(event.sequence)
+                if event.type == EventTypes.CHECKPOINT
+                else None
+            )
+            check(
+                record.checkpoint_id == expected_checkpoint_id,
+                f"expected journal checkpoint_id {expected_checkpoint_id}, "
+                f"got {record.checkpoint_id}",
+            )
+
+    @staticmethod
+    def _expected_checkpoint_id(sequence: int) -> str:
+        return f"checkpoint-{sequence}"
+
+    def assert_event_schema_contracts(self, events: Sequence[AgentEvent]) -> None:
+        for event in events:
+            self.assert_matches_schema(
+                f"{event.type} event", self.validators.event, event.to_dict()
+            )
+
+    def _assert_stored_checkpoint_schema_contracts(
+        self, checkpoints: Sequence[StoredCheckpoint]
+    ) -> None:
+        for checkpoint in checkpoints:
+            self.assert_matches_schema(
+                "stored checkpoint",
+                self.validators.stored_checkpoint,
+                checkpoint.to_dict(),
+            )
+            self.assert_matches_schema(
+                "checkpoint summary",
+                self.validators.checkpoint_summary,
+                checkpoint.summary().to_dict(),
+            )
+
+    def _assert_journal_record_schema_contracts(self, records: Sequence[JournalRecord]) -> None:
+        for record in records:
+            self.assert_matches_schema(
+                "journal record",
+                self.validators.journal_record,
+                record.to_dict(),
+            )
 
     async def collect_case_events(
         self,
@@ -765,6 +1386,7 @@ class ConformanceRunner:
                 tools=case_tools(),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
+                approval_policy=approval_policy_from_case(case, self.validators),
             ).run_events(
                 [Message.user_text("run conformance case")],
                 stream=bool(stream_steps),
@@ -785,6 +1407,7 @@ class ConformanceRunner:
                 tools=case_tools(),
                 limits=limits_from_case(case),
                 hooks=hooks_from_case(case),
+                approval_policy=approval_policy_from_case(case, self.validators),
             ).run_snapshot_events(resume_input)
         ]
 
@@ -963,17 +1586,7 @@ class ConformanceRunner:
             replay_trace(event_trace).final_status is expected_status,
             "event trace final status mismatch",
         )
-        if "expected_event_types" in case:
-            expected_event_types = expect_case_list_of_strings(
-                case["expected_event_types"], "expected_event_types"
-            )
-            actual_event_types = [event.type for event in events]
-            missing = [
-                event_type
-                for event_type in expected_event_types
-                if event_type not in actual_event_types
-            ]
-            check(not missing, f"missing expected event type(s): {missing}")
+        self._assert_expected_event_types(case, events)
         if "expected_trace_kinds" in case:
             expected_trace_kinds = expect_case_list_of_strings(
                 case["expected_trace_kinds"], "expected_trace_kinds"
@@ -1038,7 +1651,92 @@ class ConformanceRunner:
                 actual_deltas == case["expected_model_deltas"],
                 f"expected model deltas {case['expected_model_deltas']}, got {actual_deltas}",
             )
+        self._assert_approval_expectations(case, events)
         self._assert_forbidden_expectations(case, events)
+
+    def _assert_approval_expectations(
+        self, case: dict[str, Any], events: Sequence[AgentEvent]
+    ) -> None:
+        raw_decisions_obj = case.get("approval_decisions")
+        if not isinstance(raw_decisions_obj, dict):
+            return
+        raw_decisions = cast(Mapping[str, object], raw_decisions_obj)
+        for call_id, raw_decision in raw_decisions.items():
+            decision = ApprovalDecision.from_dict(cast(Mapping[str, Any], raw_decision))
+            requested_events = [
+                event
+                for event in events
+                if event.type == EventTypes.APPROVAL_REQUESTED and event.data["id"] == call_id
+            ]
+            completed_events = [
+                event
+                for event in events
+                if event.type == EventTypes.APPROVAL_COMPLETED and event.data["id"] == call_id
+            ]
+            check(requested_events, f"approval call {call_id} has no approval_requested event")
+            check(completed_events, f"approval call {call_id} has no approval_completed event")
+            check(
+                events.index(requested_events[-1]) < events.index(completed_events[-1]),
+                f"approval call {call_id} completed before it was requested",
+            )
+            check(
+                completed_events[-1].data["action"] == decision.action,
+                f"approval call {call_id} expected action {decision.action}, "
+                f"got {completed_events[-1].data['action']}",
+            )
+            lifecycle_events = [
+                event
+                for event in events
+                if event.type in {EventTypes.TOOL_STARTED, EventTypes.TOOL_COMPLETED}
+                and event.data["id"] == call_id
+            ]
+            if decision.action == "pause":
+                check(
+                    not lifecycle_events,
+                    f"paused approval call {call_id} must not start tool lifecycle",
+                )
+                pause_events = [
+                    event
+                    for event in events
+                    if event.type == EventTypes.PAUSE_REQUESTED
+                    and event.data["request"]["wait_id"] == call_id
+                ]
+                check(pause_events, f"paused approval call {call_id} has no pause_requested")
+                check(
+                    events.index(completed_events[-1]) < events.index(pause_events[-1]),
+                    f"approval call {call_id} paused before approval_completed",
+                )
+                continue
+            check(lifecycle_events, f"approval call {call_id} has no tool lifecycle event")
+            check(
+                events.index(completed_events[-1]) < events.index(lifecycle_events[0]),
+                f"approval call {call_id} started lifecycle before approval_completed",
+            )
+            for event in lifecycle_events:
+                expected_invoked = decision.action == "allow"
+                check(
+                    event.data.get("implementation_invoked") is expected_invoked,
+                    f"{event.type} for approval call {call_id} expected "
+                    f"implementation_invoked={expected_invoked}",
+                )
+
+    def _assert_expected_trace_kinds(
+        self,
+        case: dict[str, Any],
+        result_trace: RunTrace,
+        event_trace: RunTrace,
+    ) -> None:
+        if "expected_trace_kinds" not in case:
+            return
+        expected_trace_kinds = expect_case_list_of_strings(
+            case["expected_trace_kinds"], "expected_trace_kinds"
+        )
+        result_kinds = [step.kind for step in result_trace.steps]
+        event_kinds = [step.kind for step in event_trace.steps]
+        missing_result = [kind for kind in expected_trace_kinds if kind not in result_kinds]
+        missing_event = [kind for kind in expected_trace_kinds if kind not in event_kinds]
+        check(not missing_result, f"result trace missing expected kind(s): {missing_result}")
+        check(not missing_event, f"event trace missing expected kind(s): {missing_event}")
 
     def _assert_expected_pause(
         self, case: dict[str, Any], result: AgentResult, events: Sequence[AgentEvent]
@@ -1160,6 +1858,35 @@ class ConformanceRunner:
             actual = set(forbidden_roles) & set(checkpoint_roles)
             check(not actual, f"forbidden checkpoint message roles emitted: {sorted(actual)}")
 
+    def _assert_expected_event_types(
+        self, case: dict[str, Any], events: Sequence[AgentEvent]
+    ) -> None:
+        if "expected_event_types" not in case:
+            return
+        expected_event_types = expect_case_list_of_strings(
+            case["expected_event_types"], "expected_event_types"
+        )
+        actual_event_types = [event.type for event in events]
+        missing = [
+            event_type
+            for event_type in expected_event_types
+            if event_type not in actual_event_types
+        ]
+        check(not missing, f"missing expected event type(s): {missing}")
+
+    def _assert_forbidden_journal_expectations(
+        self, case: dict[str, Any], records: Sequence[JournalRecord]
+    ) -> None:
+        if "forbidden_journal_event_types" not in case:
+            return
+        forbidden_events = set(
+            expect_case_list_of_strings(
+                case["forbidden_journal_event_types"], "forbidden_journal_event_types"
+            )
+        )
+        actual = [record.event_type for record in records if record.event_type in forbidden_events]
+        check(not actual, f"forbidden journal event type(s) recorded: {actual}")
+
     async def assert_resume_conformance_case(self, case: dict[str, Any]) -> None:
         initial_result_steps = [model_step_from_case_step(step) for step in case["model_steps"]]
         initial_event_steps = [model_step_from_case_step(step) for step in case["model_steps"]]
@@ -1231,6 +1958,7 @@ class ConformanceRunner:
             tools=case_tools(),
             limits=limits_from_case(case),
             hooks=hooks_from_case(case),
+            approval_policy=approval_policy_from_case(case, self.validators),
         ).run_snapshot(resume_input)
         resume_events = await self.collect_resume_case_events(
             case, resume_input, resume_event_steps
@@ -1346,6 +2074,14 @@ def build_validators(spec_dir: Path) -> ConformanceValidators:
             for schema in schemas.values()
         ]
     )
+    runtime_extensions_ref = "https://agent-runtime.local/spec/v0/runtime-extensions.schema.json"
+
+    def runtime_extension_validator(def_name: str) -> Draft202012Validator:
+        return Draft202012Validator(
+            {"$ref": f"{runtime_extensions_ref}#/$defs/{def_name}"},
+            registry=registry,
+        )
+
     return ConformanceValidators(
         event=Draft202012Validator(schemas["events.schema.json"], registry=registry),
         run_snapshot=Draft202012Validator(schemas["run-snapshot.schema.json"], registry=registry),
@@ -1357,6 +2093,11 @@ def build_validators(spec_dir: Path) -> ConformanceValidators:
             schemas["model-response.schema.json"], registry=registry
         ),
         limits=Draft202012Validator(schemas["limits.schema.json"], registry=registry),
+        approval_request=runtime_extension_validator("approval_request"),
+        approval_decision=runtime_extension_validator("approval_decision"),
+        checkpoint_summary=runtime_extension_validator("checkpoint_summary"),
+        stored_checkpoint=runtime_extension_validator("stored_checkpoint"),
+        journal_record=runtime_extension_validator("journal_record"),
     )
 
 
@@ -1369,6 +2110,18 @@ def reject_unknown_keys(keys: set[str], allowed: set[str], label: str) -> None:
 def check(condition: object, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def assert_validator_matches(label: str, validator: Any, instance: Mapping[str, Any]) -> None:
+    errors = sorted(
+        validator.iter_errors(instance),
+        key=lambda error: [str(part) for part in error.absolute_path],
+    )
+    if not errors:
+        return
+    error = errors[0]
+    path = ".".join(str(part) for part in error.absolute_path) or "$"
+    raise AssertionError(f"{label} schema violation at {path}: {error.message}") from error
 
 
 def expect_case_list(value: object, label: str) -> list[dict[str, Any]]:
@@ -1435,6 +2188,34 @@ def limits_from_case(case: dict[str, Any]) -> LoopLimits:
         max_parallel_tool_calls=cast(int, raw_limits.get("max_parallel_tool_calls", 1)),
         max_total_tokens=cast(int | None, raw_limits.get("max_total_tokens")),
         max_model_retries=cast(int, raw_limits.get("max_model_retries", 0)),
+    )
+
+
+def approval_policy_from_case(
+    case: dict[str, Any],
+    validators: ConformanceValidators,
+) -> CaseApprovalPolicy | None:
+    raw_decisions_obj = case.get("approval_decisions")
+    if not isinstance(raw_decisions_obj, dict):
+        return None
+    raw_decisions = cast(Mapping[str, object], raw_decisions_obj)
+    decisions: dict[str, ApprovalDecision] = {}
+    for call_id, raw_decision in raw_decisions.items():
+        decisions[expect_case_str(call_id, "approval decision call_id")] = (
+            ApprovalDecision.from_dict(cast(Mapping[str, Any], raw_decision))
+        )
+    return CaseApprovalPolicy(
+        decisions,
+        validate_request=lambda request: assert_validator_matches(
+            "approval request",
+            validators.approval_request,
+            request.to_dict(),
+        ),
+        validate_decision=lambda decision: assert_validator_matches(
+            "approval decision",
+            validators.approval_decision,
+            decision.to_dict(),
+        ),
     )
 
 
@@ -1526,6 +2307,7 @@ def case_tools() -> list[Tool]:
     return [
         EchoTool(),
         AcceptTool(),
+        HandoffTool(),
         FailTool(),
         DelayedEchoTool(),
         WaitTool(),

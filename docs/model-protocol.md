@@ -52,6 +52,9 @@ Streaming model failures are not retried because emitted deltas may already
 have reached live consumers. If a hook returns `ModelErrorDecision(retry=True)`
 for a streaming failure, the runtime still emits `model_error` with
 `data.retry == false`.
+Conformance fixtures may set `retry_model_errors: true`; that flag is only a
+runner instruction to install a hook that returns `retry=error.retryable`, not a
+separate runtime retry rule.
 
 Model adapters may expose capabilities through a `capabilities` value or method.
 The core recognizes streaming, tools, tool choice, parallel tool calls,

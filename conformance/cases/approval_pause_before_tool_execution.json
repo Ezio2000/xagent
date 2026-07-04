@@ -1,0 +1,54 @@
+{
+  "name": "approval_pause_before_tool_execution",
+  "approval_decisions": {
+    "call-1": {
+      "action": "pause",
+      "reason": "approval_required",
+      "metadata": {
+        "policy": "conformance"
+      }
+    }
+  },
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "echo",
+          "mode": "execute",
+          "arguments": {
+            "text": "waiting"
+          }
+        }
+      ]
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 0,
+  "expected_pending_tool_call_ids": [
+    "call-1"
+  ],
+  "expected_pause": {
+    "reason": "approval_required",
+    "resume_status": "executing_tools",
+    "source": "approval",
+    "wait_id": "call-1",
+    "metadata": {
+      "policy": "conformance"
+    }
+  },
+  "expected_event_types": [
+    "approval_requested",
+    "approval_completed",
+    "pause_requested"
+  ],
+  "expected_trace_kinds": [
+    "approval_requested",
+    "approval_completed",
+    "pause_requested"
+  ],
+  "forbidden_event_types": [
+    "tool_started"
+  ]
+}

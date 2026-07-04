@@ -1,0 +1,54 @@
+{
+  "name": "approval_allow_recovery",
+  "approval_decisions": {
+    "call-1": {
+      "action": "allow",
+      "reason": "safe",
+      "metadata": {
+        "policy": "conformance"
+      }
+    }
+  },
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "echo",
+          "mode": "execute",
+          "arguments": {
+            "text": "allowed"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "allowed"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "allowed",
+  "expected_tool_calls": 1,
+  "expected_tool_texts": [
+    "allowed"
+  ],
+  "expected_event_types": [
+    "approval_requested",
+    "approval_completed",
+    "tool_started",
+    "tool_completed"
+  ],
+  "expected_trace_kinds": [
+    "approval_requested",
+    "approval_completed",
+    "tool_call",
+    "tool_result"
+  ]
+}

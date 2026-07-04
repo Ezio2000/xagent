@@ -69,6 +69,7 @@ and contract validation. Most application code should import only
   streaming deltas.
 - Event stream: `run_started`, `model_started`, `model_delta`, `model_error`,
   `model_completed`, `tool_started`, `tool_completed`, `state_changed`,
+  `approval_requested`, `approval_completed`, `conversation_inserted`,
   `pause_requested`, `checkpoint`, `final`, `error`, `run_paused`, and
   `run_completed`.
 - Durable checkpoints and snapshots for host-owned persistence and resume.
@@ -79,12 +80,15 @@ and contract validation. Most application code should import only
   checks for core runtime behavior.
 - Tool scheduling, including conservative parallel execution for explicitly
   safe, read-only, idempotent tools.
+- Optional core extension protocols for checkpoint stores, tool approval
+  decisions, and durable event journals.
 - Hooks for observing or rewriting model/tool boundaries.
 - Open multimodal message parts for text, image, file, and future content types.
 
-The core deliberately does not include provider adapters, persistence stores,
-approval policies, UI rendering, tool packs, plugin systems, or deployment
-runtime. Those should layer on top of the SDK through stable protocols.
+The core deliberately does not include provider adapters, concrete persistence
+stores, concrete approval policies, approval UIs, UI rendering, tool packs,
+plugin systems, or deployment runtime. Those should layer on top of the SDK
+through stable protocols.
 
 ## Runtime Model
 
@@ -107,11 +111,11 @@ If a timeout interrupts a parallel batch, the next checkpoint remains at the las
 fully committed boundary; observed but uncommitted idempotent calls may be rerun
 when resuming from that prior non-terminal checkpoint.
 
-## Repository Quick Start
+## Repository Init And Quick Start
 
 ```bash
 cd sdks/python
-uv sync
+uv sync                                      # initialize or refresh the local environment
 uv run python examples/basic_tool_loop.py
 uv run python examples/pause_resume_trace.py
 ```
@@ -175,8 +179,9 @@ The intended package boundary is:
 
 - Core first: keep the loop, state machine, event stream, message protocol,
   limits, snapshots, hooks, and tool scheduling model-neutral.
-- Open for extension: provider adapters, persistence, approvals, plugins, tool
-  packs, and UI integrations stay outside core.
+- Open for extension: provider adapters, concrete persistence backends, concrete
+  approval policies and UIs, plugins, tool packs, and UI integrations stay
+  outside core.
 - Break cleanly when needed: this project has no historical compatibility burden
   yet. Prefer clear breaking refactors over compatibility shims or duplicate
   transitional APIs.
@@ -271,9 +276,10 @@ Core CR loop:
    event order, and contract changes.
 5. Rerun local validation after fixes, then rerun targeted lanes for changed or
    subtle risk areas.
-6. Repeat until there are no credible `Must-Fix` findings. Repeated
-   `Should-Fix` findings may remain only when they are documented as accepted
-   residual risk with a concrete reason.
+6. For core contract, runtime, durability, replay, event-order, or conformance
+   changes, repeat review and fixes until there are no credible `Must-Fix` or
+   `Should-Fix` findings. Treat accepted residual risk as exceptional and
+   explicitly document why it is outside the current change's contract.
 7. Close completed sub-agents after consuming reports and include the final
    validation commands in the handoff.
 

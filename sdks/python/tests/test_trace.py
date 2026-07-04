@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any, cast
 
@@ -104,6 +104,27 @@ def trace_tool_result_payload(
     }
 
 
+def trace_approval_requested_payload() -> dict[str, Any]:
+    return {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "risk_keys": [],
+        "metadata_keys": [],
+    }
+
+
+def trace_approval_completed_payload() -> dict[str, Any]:
+    return {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "action": "allow",
+        "reason": "approved",
+        "metadata_keys": [],
+    }
+
+
 def trace_final_payload() -> dict[str, Any]:
     return {
         "part_count": 1,
@@ -111,6 +132,177 @@ def trace_final_payload() -> dict[str, Any]:
         "text_length": 4,
         "metadata_keys": [],
     }
+
+
+def approval_completed_trace_steps() -> list[TraceStep]:
+    return [
+        TraceStep(
+            step_id=1,
+            kind=TraceStepKinds.RUN_STARTED,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_state_payload("planning"),
+        ),
+        TraceStep(
+            step_id=2,
+            kind=TraceStepKinds.MODEL_CALL,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload={"iteration": 1},
+        ),
+        TraceStep(
+            step_id=3,
+            kind=TraceStepKinds.MODEL_RESULT,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_model_result_payload(tool_call_count=1),
+        ),
+        TraceStep(
+            step_id=4,
+            kind=TraceStepKinds.STATE_CHANGED,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_transition_payload("planning", "executing_tools", iterations=1),
+        ),
+        TraceStep(
+            step_id=5,
+            kind=TraceStepKinds.CHECKPOINT,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_state_payload(
+                "executing_tools",
+                message_roles=("user", "assistant"),
+                pending_tool_call_ids=("call-1",),
+                iterations=1,
+                context_sequence=5,
+            ),
+        ),
+        TraceStep(
+            step_id=6,
+            kind=TraceStepKinds.APPROVAL_REQUESTED,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_approval_requested_payload(),
+        ),
+        TraceStep(
+            step_id=7,
+            kind=TraceStepKinds.APPROVAL_COMPLETED,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_approval_completed_payload(),
+        ),
+        TraceStep(
+            step_id=8,
+            kind=TraceStepKinds.TOOL_CALL,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload={
+                "id": "call-1",
+                "name": "echo",
+                "mode": "execute",
+                "batch_id": "tool-batch-1",
+                "parallel": False,
+                "index": 0,
+                "implementation_invoked": True,
+            },
+        ),
+        TraceStep(
+            step_id=9,
+            kind=TraceStepKinds.TOOL_RESULT,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload={
+                "id": "call-1",
+                "name": "echo",
+                "mode": "execute",
+                "batch_id": "tool-batch-1",
+                "parallel": False,
+                "index": 0,
+                "implementation_invoked": True,
+                "result": trace_tool_result_payload(),
+            },
+        ),
+        TraceStep(
+            step_id=10,
+            kind=TraceStepKinds.STATE_CHANGED,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_transition_payload(
+                "executing_tools", "planning", iterations=1, total_tool_calls=1
+            ),
+        ),
+        TraceStep(
+            step_id=11,
+            kind=TraceStepKinds.CHECKPOINT,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_state_payload(
+                "planning",
+                message_roles=("user", "assistant", "tool"),
+                iterations=1,
+                total_tool_calls=1,
+                context_sequence=11,
+            ),
+        ),
+        TraceStep(
+            step_id=12,
+            kind=TraceStepKinds.MODEL_CALL,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload={"iteration": 2},
+        ),
+        TraceStep(
+            step_id=13,
+            kind=TraceStepKinds.MODEL_RESULT,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_model_result_payload(),
+        ),
+        TraceStep(
+            step_id=14,
+            kind=TraceStepKinds.STATE_CHANGED,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.COMPLETED,
+            payload=trace_transition_payload(
+                "planning", "completed", iterations=2, total_tool_calls=1
+            ),
+        ),
+        TraceStep(
+            step_id=15,
+            kind=TraceStepKinds.CHECKPOINT,
+            before_status=AgentStatus.COMPLETED,
+            after_status=AgentStatus.COMPLETED,
+            payload=trace_state_payload(
+                "completed",
+                message_roles=("user", "assistant", "tool", "assistant"),
+                iterations=2,
+                total_tool_calls=1,
+                final_part_count=1,
+                context_sequence=15,
+            ),
+        ),
+        TraceStep(
+            step_id=16,
+            kind=TraceStepKinds.FINAL,
+            before_status=AgentStatus.COMPLETED,
+            after_status=AgentStatus.COMPLETED,
+            payload=trace_final_payload(),
+        ),
+        TraceStep(
+            step_id=17,
+            kind=TraceStepKinds.RUN_COMPLETED,
+            before_status=AgentStatus.COMPLETED,
+            after_status=AgentStatus.COMPLETED,
+            payload={
+                "state": trace_state_payload(
+                    "completed",
+                    message_roles=("user", "assistant", "tool", "assistant"),
+                    iterations=2,
+                    total_tool_calls=1,
+                    final_part_count=1,
+                )
+            },
+        ),
+    ]
 
 
 def test_trace_step_data_is_immutable_and_deepcopyable() -> None:
@@ -127,6 +319,381 @@ def test_trace_step_data_is_immutable_and_deepcopyable() -> None:
 
     assert copied == {"nested": {"value": 1}, "items": [{"value": 1}, {"value": 2}]}
     assert step.payload == {"nested": {"value": 1}, "items": [{"value": 1}]}
+
+
+def test_replay_rejects_approval_completed_without_request() -> None:
+    steps = approval_completed_trace_steps()
+    del steps[5]
+
+    with pytest.raises(ReplayError, match="approval_completed without approval_requested"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_terminal_trace_with_open_approval_request() -> None:
+    steps = approval_completed_trace_steps()
+    del steps[6]
+
+    with pytest.raises(ReplayError, match="approval request open"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_denied_approval_that_invokes_tool() -> None:
+    steps = approval_completed_trace_steps()
+    steps[6] = TraceStep(
+        step_id=7,
+        kind=TraceStepKinds.APPROVAL_COMPLETED,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=trace_approval_completed_payload() | {"action": "deny", "reason": "blocked"},
+    )
+
+    with pytest.raises(ReplayError, match="denied approval"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_paused_approval_that_starts_tool() -> None:
+    steps = approval_completed_trace_steps()
+    steps[6] = TraceStep(
+        step_id=7,
+        kind=TraceStepKinds.APPROVAL_COMPLETED,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=trace_approval_completed_payload() | {"action": "pause", "reason": "approval"},
+    )
+
+    with pytest.raises(ReplayError, match="paused approval"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_approval_requested_after_tool_call_started() -> None:
+    steps = approval_completed_trace_steps()
+    steps[8] = TraceStep(
+        step_id=9,
+        kind=TraceStepKinds.APPROVAL_REQUESTED,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=trace_approval_requested_payload(),
+    )
+
+    with pytest.raises(ReplayError, match="must precede tool_call"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_approval_requested_after_tool_call_completed() -> None:
+    steps = approval_completed_trace_steps()
+    steps[9] = TraceStep(
+        step_id=10,
+        kind=TraceStepKinds.APPROVAL_REQUESTED,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=trace_approval_requested_payload(),
+    )
+
+    with pytest.raises(ReplayError, match="must precede tool_call"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_tool_call_out_of_pending_order() -> None:
+    steps = [
+        TraceStep(
+            step_id=1,
+            kind=TraceStepKinds.RUN_STARTED,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_state_payload("planning"),
+        ),
+        TraceStep(
+            step_id=2,
+            kind=TraceStepKinds.MODEL_CALL,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload={"iteration": 1},
+        ),
+        TraceStep(
+            step_id=3,
+            kind=TraceStepKinds.MODEL_RESULT,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_model_result_payload(tool_call_count=2),
+        ),
+        TraceStep(
+            step_id=4,
+            kind=TraceStepKinds.STATE_CHANGED,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_transition_payload("planning", "executing_tools", iterations=1),
+        ),
+        TraceStep(
+            step_id=5,
+            kind=TraceStepKinds.CHECKPOINT,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_state_payload(
+                "executing_tools",
+                message_roles=("user", "assistant"),
+                pending_tool_call_ids=("call-1", "call-2"),
+                iterations=1,
+                context_sequence=5,
+            ),
+        ),
+        TraceStep(
+            step_id=6,
+            kind=TraceStepKinds.TOOL_CALL,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload={
+                "id": "call-2",
+                "name": "echo",
+                "mode": "execute",
+                "batch_id": "tool-batch-1",
+                "parallel": True,
+                "index": 0,
+                "implementation_invoked": True,
+            },
+        ),
+    ]
+
+    with pytest.raises(ReplayError, match="pending_tool_call_ids order"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_approval_request_out_of_pending_order() -> None:
+    steps = [
+        TraceStep(
+            step_id=1,
+            kind=TraceStepKinds.RUN_STARTED,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_state_payload("planning"),
+        ),
+        TraceStep(
+            step_id=2,
+            kind=TraceStepKinds.MODEL_CALL,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload={"iteration": 1},
+        ),
+        TraceStep(
+            step_id=3,
+            kind=TraceStepKinds.MODEL_RESULT,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload=trace_model_result_payload(tool_call_count=2),
+        ),
+        TraceStep(
+            step_id=4,
+            kind=TraceStepKinds.STATE_CHANGED,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_transition_payload("planning", "executing_tools", iterations=1),
+        ),
+        TraceStep(
+            step_id=5,
+            kind=TraceStepKinds.CHECKPOINT,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_state_payload(
+                "executing_tools",
+                message_roles=("user", "assistant"),
+                pending_tool_call_ids=("call-1", "call-2"),
+                iterations=1,
+                context_sequence=5,
+            ),
+        ),
+        TraceStep(
+            step_id=6,
+            kind=TraceStepKinds.APPROVAL_REQUESTED,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=trace_approval_requested_payload() | {"id": "call-2"},
+        ),
+    ]
+
+    with pytest.raises(ReplayError, match="pending_tool_call_ids order"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_allowed_approval_with_non_invoked_error_result() -> None:
+    steps = approval_completed_trace_steps()
+    call_payload = dict(steps[7].payload)
+    call_payload["implementation_invoked"] = False
+    steps[7] = TraceStep(
+        step_id=8,
+        kind=TraceStepKinds.TOOL_CALL,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=call_payload,
+    )
+    result_payload = dict(steps[8].payload)
+    result_payload["implementation_invoked"] = False
+    result_payload["result"] = dict(cast(Mapping[str, Any], result_payload["result"])) | {
+        "is_error": True,
+    }
+    steps[8] = TraceStep(
+        step_id=9,
+        kind=TraceStepKinds.TOOL_RESULT,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=result_payload,
+    )
+
+    with pytest.raises(ReplayError, match="allowed approval"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_non_invoked_tool_result_success() -> None:
+    steps = approval_completed_trace_steps()
+    del steps[5:7]
+    call_payload = dict(steps[5].payload)
+    call_payload["implementation_invoked"] = False
+    steps[5] = TraceStep(
+        step_id=8,
+        kind=TraceStepKinds.TOOL_CALL,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=call_payload,
+    )
+    result_payload = dict(steps[6].payload)
+    result_payload["implementation_invoked"] = False
+    steps[6] = TraceStep(
+        step_id=9,
+        kind=TraceStepKinds.TOOL_RESULT,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=result_payload,
+    )
+
+    with pytest.raises(ReplayError, match="non-invoked tool_result"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_non_invoked_tool_result_pause() -> None:
+    steps = approval_completed_trace_steps()
+    del steps[5:7]
+    call_payload = dict(steps[5].payload)
+    call_payload["implementation_invoked"] = False
+    steps[5] = TraceStep(
+        step_id=8,
+        kind=TraceStepKinds.TOOL_CALL,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=call_payload,
+    )
+    result_payload = dict(steps[6].payload)
+    result_payload["implementation_invoked"] = False
+    result_payload["result"] = dict(cast(Mapping[str, Any], result_payload["result"])) | {
+        "is_error": True,
+        "pause": {
+            "reason": "external_wait",
+            "source": "tool",
+            "wait_id": "job-1",
+            "metadata_keys": [],
+            "interrupt": False,
+        },
+    }
+    steps[6] = TraceStep(
+        step_id=9,
+        kind=TraceStepKinds.TOOL_RESULT,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=result_payload,
+    )
+
+    with pytest.raises(ReplayError, match="must not request pause"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_allowed_approval_name_drift() -> None:
+    steps = approval_completed_trace_steps()
+    payload = dict(steps[7].payload)
+    payload["name"] = "other"
+    steps[7] = TraceStep(
+        step_id=8,
+        kind=TraceStepKinds.TOOL_CALL,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=payload,
+    )
+
+    with pytest.raises(ReplayError, match="approval decision"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_allowed_approval_left_unresolved_by_pause() -> None:
+    request_pause: dict[str, Any] = {
+        "reason": "manual_pause",
+        "source": "control",
+        "wait_id": None,
+        "metadata_keys": [],
+        "interrupt": False,
+        "resume_status": "executing_tools",
+        "origin": "control",
+    }
+    state_pause: dict[str, Any] = {
+        "reason": "manual_pause",
+        "source": "control",
+        "wait_id": None,
+        "metadata_keys": [],
+        "resume_status": "executing_tools",
+    }
+    steps = approval_completed_trace_steps()[:7] + [
+        TraceStep(
+            step_id=8,
+            kind=TraceStepKinds.PAUSE_REQUESTED,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload=request_pause,
+        ),
+        TraceStep(
+            step_id=9,
+            kind=TraceStepKinds.STATE_CHANGED,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.PAUSED,
+            payload=trace_transition_payload(
+                "executing_tools",
+                "paused",
+                iterations=1,
+                pause=state_pause,
+            ),
+        ),
+        TraceStep(
+            step_id=10,
+            kind=TraceStepKinds.CHECKPOINT,
+            before_status=AgentStatus.PAUSED,
+            after_status=AgentStatus.PAUSED,
+            payload=trace_state_payload(
+                "paused",
+                message_roles=("user", "assistant"),
+                pending_tool_call_ids=("call-1",),
+                iterations=1,
+                pause=state_pause,
+                context_sequence=10,
+            ),
+        ),
+        TraceStep(
+            step_id=11,
+            kind=TraceStepKinds.RUN_PAUSED,
+            before_status=AgentStatus.PAUSED,
+            after_status=AgentStatus.PAUSED,
+            payload={"pause": state_pause},
+        ),
+        TraceStep(
+            step_id=12,
+            kind=TraceStepKinds.RUN_COMPLETED,
+            before_status=AgentStatus.PAUSED,
+            after_status=AgentStatus.PAUSED,
+            payload={
+                "state": trace_state_payload(
+                    "paused",
+                    message_roles=("user", "assistant"),
+                    pending_tool_call_ids=("call-1",),
+                    iterations=1,
+                    pause=state_pause,
+                )
+            },
+        ),
+    ]
+
+    with pytest.raises(ReplayError, match="approval decision unresolved"):
+        replay_trace(RunTrace(run_id="run-1", steps=steps))
 
 
 def test_run_trace_round_trip_rejects_invalid_shape() -> None:
@@ -288,6 +855,7 @@ def test_trace_compacts_event_metadata_values() -> None:
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": {
                         "part_count": 1,
                         "part_types": ["text"],
@@ -337,6 +905,224 @@ def test_trace_compacts_event_metadata_values() -> None:
         "text_length": 12,
         "metadata_keys": ["secret"],
     }
+
+
+def test_run_trace_from_events_normalizes_model_error_null_fields() -> None:
+    trace = RunTrace.from_events(
+        "run-1",
+        [
+            AgentEvent(
+                EventTypes.MODEL_ERROR,
+                {
+                    "error": {
+                        "message": "provider unavailable",
+                        "provider": None,
+                        "code": None,
+                        "status_code": None,
+                        "retryable": None,
+                        "request_id": None,
+                        "metadata": {"tenant": "acme"},
+                    },
+                    "retry": False,
+                },
+                run_id="run-1",
+            )
+        ],
+    )
+
+    step = trace.steps[0]
+    assert step.payload == {
+        "message": "provider unavailable",
+        "retry": False,
+        "retryable": False,
+        "metadata_keys": ["tenant"],
+    }
+    RunTrace.from_dict(trace.to_dict())
+
+
+def test_run_trace_from_events_rejects_schema_invalid_approval_events() -> None:
+    approval_requested: dict[str, Any] = {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "risk": {},
+        "metadata": {},
+    }
+    approval_completed: dict[str, Any] = {
+        "id": "call-1",
+        "name": "echo",
+        "mode": "execute",
+        "action": "allow",
+        "reason": "approved",
+        "metadata": {},
+    }
+
+    for event_type, event_data, required_key in (
+        (EventTypes.APPROVAL_REQUESTED, approval_requested, "risk"),
+        (EventTypes.APPROVAL_REQUESTED, approval_requested, "metadata"),
+        (EventTypes.APPROVAL_COMPLETED, approval_completed, "metadata"),
+    ):
+        with pytest.raises(KeyError):
+            RunTrace.from_events(
+                "run-1",
+                [
+                    AgentEvent(
+                        event_type,
+                        {key: value for key, value in event_data.items() if key != required_key},
+                        run_id="run-1",
+                    )
+                ],
+            )
+
+
+def event_state_summary(**overrides: Any) -> dict[str, Any]:
+    payload = trace_state_payload("planning")
+    payload["pending_tool_call_count"] = len(payload["pending_tool_call_ids"])
+    payload["has_final"] = payload["final_part_count"] > 0
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    "required_key", ["message_roles", "pending_tool_call_ids", "final_part_count"]
+)
+def test_run_trace_from_events_requires_state_summary_fields(required_key: str) -> None:
+    state = event_state_summary()
+    del state[required_key]
+    if required_key == "final_part_count":
+        state["has_final"] = True
+
+    with pytest.raises(KeyError):
+        RunTrace.from_events(
+            "run-1",
+            [
+                AgentEvent(
+                    EventTypes.RUN_STARTED,
+                    {"state": state},
+                    run_id="run-1",
+                )
+            ],
+        )
+
+
+def test_run_trace_from_events_rejects_full_state_for_state_summary_events() -> None:
+    full_state = {
+        "status": "planning",
+        "messages": [Message.user_text("hi").to_dict()],
+        "pending_tool_calls": [],
+        "iterations": 0,
+        "total_tool_calls": 0,
+        "total_usage": None,
+        "final_parts": [],
+        "error": None,
+        "pause": None,
+    }
+
+    for event_type in (EventTypes.RUN_STARTED, EventTypes.RUN_COMPLETED):
+        with pytest.raises(ValueError, match="unknown field"):
+            RunTrace.from_events(
+                "run-1",
+                [
+                    AgentEvent(
+                        event_type,
+                        {"state": full_state},
+                        run_id="run-1",
+                    )
+                ],
+            )
+
+
+def test_run_trace_from_events_rejects_schema_invalid_tool_result_summary() -> None:
+    result: dict[str, Any] = {
+        "part_count": 1,
+        "part_types": ["text"],
+        "text_length": 2,
+        "result_kind": "observation",
+        "is_error": False,
+        "metadata": {},
+        "pause": None,
+    }
+    del result["metadata"]
+
+    with pytest.raises(KeyError):
+        RunTrace.from_events(
+            "run-1",
+            [
+                AgentEvent(
+                    EventTypes.TOOL_COMPLETED,
+                    {
+                        "id": "call-1",
+                        "name": "echo",
+                        "mode": "execute",
+                        "batch_id": "batch-1",
+                        "parallel": False,
+                        "index": 0,
+                        "implementation_invoked": True,
+                        "result": result,
+                    },
+                    run_id="run-1",
+                )
+            ],
+        )
+
+
+def test_run_trace_from_events_rejects_schema_invalid_final_event() -> None:
+    with pytest.raises(KeyError):
+        RunTrace.from_events(
+            "run-1",
+            [
+                AgentEvent(
+                    EventTypes.FINAL,
+                    {
+                        "summary": {
+                            "part_count": 0,
+                            "part_types": [],
+                            "text_length": 0,
+                        }
+                    },
+                    run_id="run-1",
+                )
+            ],
+        )
+
+
+def test_run_trace_from_events_rejects_schema_invalid_checkpoint_state() -> None:
+    checkpoint: dict[str, Any] = {
+        "state": event_state_summary(status="planning"),
+        "context": {
+            "run_id": "run-1",
+            "started_at": 1.0,
+            "deadline": None,
+            "metadata": {},
+            "sequence": 1,
+        },
+    }
+
+    with pytest.raises(ValueError, match="unknown field"):
+        RunTrace.from_events(
+            "run-1",
+            [
+                AgentEvent(
+                    EventTypes.CHECKPOINT,
+                    checkpoint,
+                    run_id="run-1",
+                )
+            ],
+        )
+
+
+def test_run_trace_from_events_rejects_cross_run_events() -> None:
+    with pytest.raises(ValueError, match="run_id"):
+        RunTrace.from_events(
+            "run-1",
+            [
+                AgentEvent(
+                    EventTypes.RUN_STARTED,
+                    {"state": event_state_summary()},
+                    run_id="other-run",
+                )
+            ],
+        )
 
 
 @pytest.mark.asyncio
@@ -674,6 +1460,7 @@ def test_replay_rejects_planning_transition_with_unfinished_pending_tool_call() 
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -688,6 +1475,7 @@ def test_replay_rejects_planning_transition_with_unfinished_pending_tool_call() 
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": trace_tool_result_payload(),
                 },
             ),
@@ -738,6 +1526,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -752,6 +1541,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -766,6 +1556,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
+                    "implementation_invoked": True,
                     "result": trace_tool_result_payload(),
                 },
             ),
@@ -781,6 +1572,7 @@ def test_replay_accepts_parallel_pending_tool_results_in_completion_order() -> N
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": trace_tool_result_payload(),
                 },
             ),
@@ -1218,6 +2010,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -1232,6 +2025,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -1246,6 +2040,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
+                    "implementation_invoked": True,
                     "result": {
                         "part_count": 1,
                         "part_types": ["text"],
@@ -1269,6 +2064,7 @@ def test_replay_rejects_parallel_tool_pause_that_does_not_match_first_wait() -> 
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": {
                         "part_count": 1,
                         "part_types": ["text"],
@@ -1329,6 +2125,7 @@ def test_replay_rejects_paused_trace_with_open_tool_call() -> None:
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -1743,6 +2540,7 @@ def test_replay_rejects_tool_result_envelope_mismatch() -> None:
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -1757,6 +2555,7 @@ def test_replay_rejects_tool_result_envelope_mismatch() -> None:
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 1,
+                    "implementation_invoked": True,
                     "result": trace_tool_result_payload(),
                 },
             ),
@@ -1801,6 +2600,7 @@ def test_trace_rejects_custom_mode_reserved_result_kind(result_kind: str, is_err
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -1815,6 +2615,7 @@ def test_trace_rejects_custom_mode_reserved_result_kind(result_kind: str, is_err
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": result,
                 },
             ),
@@ -2021,6 +2822,7 @@ def test_replay_rejects_tool_call_before_model_result_pending_checkpoint() -> No
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
         ],
@@ -2057,6 +2859,7 @@ def test_replay_rejects_total_tool_calls_mismatching_tool_results() -> None:
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -2071,6 +2874,7 @@ def test_replay_rejects_total_tool_calls_mismatching_tool_results() -> None:
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": trace_tool_result_payload(),
                 },
             ),
@@ -2120,6 +2924,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -2134,6 +2939,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -2148,6 +2954,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 0,
+                    "implementation_invoked": True,
                     "result": trace_tool_result_payload(),
                 },
             ),
@@ -2163,6 +2970,7 @@ def test_replay_rejects_committed_total_tool_calls_undercount() -> None:
                     "batch_id": "batch-1",
                     "parallel": True,
                     "index": 1,
+                    "implementation_invoked": True,
                     "result": trace_tool_result_payload(),
                 },
             ),
@@ -2559,6 +3367,7 @@ def test_replay_rejects_planning_transition_missing_tool_result() -> None:
                     "batch_id": "batch-1",
                     "parallel": False,
                     "index": 0,
+                    "implementation_invoked": True,
                 },
             ),
             TraceStep(
@@ -2651,6 +3460,7 @@ async def test_replay_rejects_corrupted_terminal_tail() -> None:
         "batch_id": "batch-1",
         "parallel": False,
         "index": 0,
+        "implementation_invoked": True,
     }
     payload["steps"] = steps
     corrupted = RunTrace.from_dict(payload)

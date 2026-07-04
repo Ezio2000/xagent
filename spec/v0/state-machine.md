@@ -24,6 +24,13 @@ Execute-mode calls append observations. Accept-mode calls append acceptance
 acknowledgements or rejection errors and complete immediately from the runtime's
 perspective.
 
+If a runtime has an approval policy, it may ask for approval before calling a
+tool implementation. An `allow` decision continues normal tool execution. A
+`deny` decision commits a mode-appropriate tool error or rejection and keeps the
+normal tool-result ordering rules. A `pause` decision transitions to `paused`
+before tool execution and leaves the tool call pending with `resume_status:
+executing_tools`.
+
 When the model returns no tool calls, the runtime completes with the model
 content parts as the final answer.
 
@@ -50,8 +57,10 @@ must remain uncommitted.
 
 If external input is inserted while planning, SDKs must append it as an
 `external` message, emit `conversation_inserted`, checkpoint, and continue
-planning. If a model call is in flight, SDKs may cancel it before committing the
-insert. Conversation insertion is independent of pause and tool execution.
+planning. If a model call is in flight, SDKs may use provider-specific
+cancellation mechanics, but any preempted model response must be discarded and
+must not become durable. Conversation insertion is independent of pause and tool
+execution.
 
 The runtime must stop with `limit_exceeded` when any configured limit is
 exceeded. SDKs that track model usage must accumulate standard response usage
@@ -88,10 +97,11 @@ for that committed tool result. `RuntimeContext.started_at` and
 `RuntimeContext.deadline` are wall-clock epoch seconds; SDKs may use monotonic
 clocks internally for live timeout enforcement.
 
-For paused runs, SDKs should emit `pause_requested`, then `state_changed`, then
+For paused runs, SDKs must emit `pause_requested`, then `state_changed`, then
 `checkpoint`, then `run_paused`, then `run_completed`. For terminal failures and
-limits, SDKs should emit `state_changed`, then `checkpoint`, then `error`, then
-`run_completed`.
+limits, SDKs must emit `state_changed`, then `checkpoint`, then `error`, then
+`run_completed`. Post-terminal hook failures may append or replace the normal
+terminal marker with `error` as specified in `run-trace.md`.
 
 Tool scheduling semantics, including simple parallel execution, are specified in
 `tool-scheduling.md`.

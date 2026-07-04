@@ -261,6 +261,9 @@ def test_tool_result_from_dict_rejects_invalid_required_fields() -> None:
     with pytest.raises(KeyError):
         ToolObservation.from_dict({"kind": "observation", "parts": []})
 
+    with pytest.raises(KeyError):
+        ToolOutput.from_dict({"kind": "observation", "parts": []})
+
     with pytest.raises(ValueError, match="kind"):
         ToolObservation.from_dict({"kind": "acceptance", "parts": [], "is_error": False})
 

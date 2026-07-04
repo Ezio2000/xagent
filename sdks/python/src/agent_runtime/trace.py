@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from agent_runtime._frozen import freeze_value, thaw_value
+from agent_runtime.errors import ModelErrorInfo
 from agent_runtime.events import AgentEvent, EventTypes
 from agent_runtime.resume import ResumeInput
 from agent_runtime.state import AgentState, AgentStatus
@@ -92,6 +93,8 @@ class TraceStepKinds:
     MODEL_DELTA = "model_delta"
     MODEL_ERROR = "model_error"
     MODEL_RESULT = "model_result"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_COMPLETED = "approval_completed"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     CONVERSATION_INSERT = "conversation_insert"
@@ -111,6 +114,8 @@ VALID_TRACE_STEP_KINDS = {
     TraceStepKinds.MODEL_DELTA,
     TraceStepKinds.MODEL_ERROR,
     TraceStepKinds.MODEL_RESULT,
+    TraceStepKinds.APPROVAL_REQUESTED,
+    TraceStepKinds.APPROVAL_COMPLETED,
     TraceStepKinds.TOOL_CALL,
     TraceStepKinds.TOOL_RESULT,
     TraceStepKinds.CONVERSATION_INSERT,
@@ -149,6 +154,8 @@ EVENT_TRACE_KIND: Mapping[str, str] = {
     EventTypes.MODEL_DELTA: TraceStepKinds.MODEL_DELTA,
     EventTypes.MODEL_ERROR: TraceStepKinds.MODEL_ERROR,
     EventTypes.MODEL_COMPLETED: TraceStepKinds.MODEL_RESULT,
+    EventTypes.APPROVAL_REQUESTED: TraceStepKinds.APPROVAL_REQUESTED,
+    EventTypes.APPROVAL_COMPLETED: TraceStepKinds.APPROVAL_COMPLETED,
     EventTypes.TOOL_STARTED: TraceStepKinds.TOOL_CALL,
     EventTypes.TOOL_COMPLETED: TraceStepKinds.TOOL_RESULT,
     EventTypes.CONVERSATION_INSERTED: TraceStepKinds.CONVERSATION_INSERT,
@@ -284,6 +291,8 @@ class RunTrace:
     ) -> RunTrace:
         recorder = TraceRecorder(run_id)
         for event in events:
+            if event.run_id != run_id:
+                raise ValueError("trace event run_id must match trace run_id")
             recorder.record_event(event)
         return recorder.to_trace(metadata=metadata)
 
@@ -435,6 +444,10 @@ def _validate_trace_payload(kind: str, payload: Mapping[str, Any]) -> None:
             _expect_non_empty_str(data["response_id"], "model_result response_id")
     elif kind == TraceStepKinds.TOOL_CALL:
         _validate_tool_call_payload(payload, "tool_call payload")
+    elif kind == TraceStepKinds.APPROVAL_REQUESTED:
+        _validate_approval_requested_payload(payload)
+    elif kind == TraceStepKinds.APPROVAL_COMPLETED:
+        _validate_approval_completed_payload(payload)
     elif kind == TraceStepKinds.TOOL_RESULT:
         data = _validate_tool_call_payload(
             payload, "tool_result payload", extra_required={"result"}
@@ -668,7 +681,15 @@ def _validate_tool_call_payload(
     *,
     extra_required: set[str] | None = None,
 ) -> Mapping[str, Any]:
-    required = {"id", "name", "mode", "batch_id", "parallel", "index"} | (extra_required or set())
+    required = {
+        "id",
+        "name",
+        "mode",
+        "batch_id",
+        "parallel",
+        "index",
+        "implementation_invoked",
+    } | (extra_required or set())
     data = _validate_object_shape(value, required, set(), label)
     _expect_non_empty_str(data["id"], f"{label} id")
     _expect_non_empty_str(data["name"], f"{label} name")
@@ -676,7 +697,39 @@ def _validate_tool_call_payload(
     _expect_non_empty_str(data["batch_id"], f"{label} batch_id")
     _expect_bool(data["parallel"], f"{label} parallel")
     _expect_nonnegative_int(data["index"], f"{label} index")
+    _expect_bool(data["implementation_invoked"], f"{label} implementation_invoked")
     return data
+
+
+def _validate_approval_requested_payload(value: Mapping[str, Any]) -> None:
+    data = _validate_object_shape(
+        value,
+        {"id", "name", "mode", "risk_keys", "metadata_keys"},
+        set(),
+        "approval_requested payload",
+    )
+    _expect_non_empty_str(data["id"], "approval_requested id")
+    _expect_non_empty_str(data["name"], "approval_requested name")
+    _expect_tool_mode(data["mode"], "approval_requested mode")
+    _expect_str_list(data["risk_keys"], "approval_requested risk_keys")
+    _expect_str_list(data["metadata_keys"], "approval_requested metadata_keys")
+
+
+def _validate_approval_completed_payload(value: Mapping[str, Any]) -> None:
+    data = _validate_object_shape(
+        value,
+        {"id", "name", "mode", "action", "reason", "metadata_keys"},
+        set(),
+        "approval_completed payload",
+    )
+    _expect_non_empty_str(data["id"], "approval_completed id")
+    _expect_non_empty_str(data["name"], "approval_completed name")
+    _expect_tool_mode(data["mode"], "approval_completed mode")
+    action = _expect_str(data["action"], "approval_completed action")
+    if action not in {"allow", "deny", "pause"}:
+        raise ValueError("approval_completed action must be allow, deny, or pause")
+    _expect_non_empty_str(data["reason"], "approval_completed reason")
+    _expect_str_list(data["metadata_keys"], "approval_completed metadata_keys")
 
 
 def _validate_tool_result_summary(value: object, label: str) -> Mapping[str, Any]:
@@ -920,6 +973,7 @@ class _ReplayValidator:
         self.model_result_ready = False
         self.model_result_tool_call_count = 0
         self.open_tool_calls: dict[str, Mapping[str, Any]] = {}
+        self.completed_tool_call_ids: set[str] = set()
         self.tool_call_ids_since_checkpoint: list[str] = []
         self.tool_result_count = 0
         self.tool_result_ready = False
@@ -930,6 +984,9 @@ class _ReplayValidator:
         self.expected_pending_checkpoint_count: int | None = None
         self.pending_tool_call_ids: tuple[str, ...] = ()
         self.tool_result_ids_since_checkpoint: list[str] = []
+        self.pending_approvals: dict[str, Mapping[str, Any]] = {}
+        self.approval_decisions: dict[str, Mapping[str, Any]] = {}
+        self.approval_request_ids_since_checkpoint: list[str] = []
         self.pending_tool_pause_requests: list[tuple[int, Mapping[str, Any]]] = []
         self.pending_pause_request: Mapping[str, Any] | None = None
         self.pending_conversation_insert_baseline = 0
@@ -1023,6 +1080,11 @@ class _ReplayValidator:
             self._validate_model_result(step)
         elif step.kind == TraceStepKinds.TOOL_CALL:
             self._validate_tool_call(step)
+        elif step.kind in {
+            TraceStepKinds.APPROVAL_REQUESTED,
+            TraceStepKinds.APPROVAL_COMPLETED,
+        }:
+            self._validate_approval(index, step)
         elif step.kind == TraceStepKinds.TOOL_RESULT:
             self._validate_tool_result(step)
         elif step.kind == TraceStepKinds.CONVERSATION_INSERT:
@@ -1102,6 +1164,8 @@ class _ReplayValidator:
                 self.pending_tool_call_ids = ()
                 self.tool_call_ids_since_checkpoint = []
                 self.tool_result_ids_since_checkpoint = []
+                self.completed_tool_call_ids = set()
+                self.approval_request_ids_since_checkpoint = []
             self.model_result_ready = False
         if before is AgentStatus.EXECUTING_TOOLS and after is AgentStatus.PLANNING:
             if not self.tool_result_ready:
@@ -1116,6 +1180,8 @@ class _ReplayValidator:
             self.pending_tool_call_ids = ()
             self.tool_call_ids_since_checkpoint = []
             self.tool_result_ids_since_checkpoint = []
+            self.completed_tool_call_ids = set()
+            self.approval_request_ids_since_checkpoint = []
         if (
             before is AgentStatus.EXECUTING_TOOLS
             and after is AgentStatus.PLANNING
@@ -1181,11 +1247,15 @@ class _ReplayValidator:
             self.pending_tool_call_ids = ()
             self.tool_call_ids_since_checkpoint = []
             self.tool_result_ids_since_checkpoint = []
+            self.completed_tool_call_ids = set()
+            self.approval_request_ids_since_checkpoint = []
         if status is AgentStatus.EXECUTING_TOOLS:
             self.tool_result_ready = False
             self.pending_tool_call_ids = checkpoint_pending_tool_call_ids
             self.tool_call_ids_since_checkpoint = []
             self.tool_result_ids_since_checkpoint = []
+            self.completed_tool_call_ids = set()
+            self.approval_request_ids_since_checkpoint = []
         self.last_checkpoint_status = status
         self.last_checkpoint_payload = step.payload
         self.last_checkpoint_index = index
@@ -1245,18 +1315,94 @@ class _ReplayValidator:
         call_id = _payload_str(step.payload, "id")
         if self.pending_tool_call_ids and call_id not in self.pending_tool_call_ids:
             raise ReplayError(f"tool_call is not pending: {call_id}")
+        if self.pending_tool_call_ids:
+            expected_index = len(self.tool_call_ids_since_checkpoint)
+            if expected_index >= len(self.pending_tool_call_ids):
+                raise ReplayError(f"tool_call exceeds pending tool calls: {call_id}")
+            expected_call_id = self.pending_tool_call_ids[expected_index]
+            if call_id != expected_call_id:
+                raise ReplayError("tool_call must follow pending_tool_call_ids order")
         if call_id in self.open_tool_calls:
             raise ReplayError(f"tool_call already open: {call_id}")
         if call_id in self.tool_call_ids_since_checkpoint:
             raise ReplayError(f"tool_call id must be unique in execution segment: {call_id}")
+        implementation_invoked = _expect_bool(
+            step.payload.get("implementation_invoked"), "tool_call implementation_invoked"
+        )
+        name = _payload_str(step.payload, "name")
+        mode = _payload_str(step.payload, "mode")
+        approval = self.approval_decisions.get(call_id)
+        approval_action = None if approval is None else _payload_str(approval, "action")
+        if approval is not None and (
+            _payload_str(approval, "name") != name or _payload_str(approval, "mode") != mode
+        ):
+            raise ReplayError("tool_call does not match approval decision")
+        if approval_action == "pause":
+            raise ReplayError("paused approval must not start tool_call")
+        if approval_action == "deny" and implementation_invoked:
+            raise ReplayError("denied approval must not invoke tool implementation")
+        if approval_action == "allow" and not implementation_invoked:
+            raise ReplayError("allowed approval must invoke tool implementation")
+        if approval_action == "allow" and implementation_invoked:
+            self.approval_decisions.pop(call_id, None)
         self.open_tool_calls[call_id] = {
-            "name": _payload_str(step.payload, "name"),
-            "mode": _payload_str(step.payload, "mode"),
+            "name": name,
+            "mode": mode,
             "batch_id": _payload_str(step.payload, "batch_id"),
             "parallel": _expect_bool(step.payload.get("parallel"), "tool_call parallel"),
             "index": _expect_nonnegative_int(step.payload.get("index"), "tool_call index"),
+            "implementation_invoked": implementation_invoked,
+            "approval_action": approval_action,
         }
         self.tool_call_ids_since_checkpoint.append(call_id)
+
+    def _validate_approval(self, index: int, step: TraceStep) -> None:
+        self._validate_same_status(step)
+        if self.current_status is not AgentStatus.EXECUTING_TOOLS:
+            raise ReplayError(f"{step.kind} is only valid while executing_tools")
+        if self.expected_pending_checkpoint_count is not None:
+            raise ReplayError(f"{step.kind} requires a checkpoint after model_result tool calls")
+        call_id = _payload_str(step.payload, "id")
+        name = _payload_str(step.payload, "name")
+        mode = _payload_str(step.payload, "mode")
+        if self.pending_tool_call_ids and call_id not in self.pending_tool_call_ids:
+            raise ReplayError(f"{step.kind} is not pending: {call_id}")
+        if call_id in self.open_tool_calls or call_id in self.completed_tool_call_ids:
+            raise ReplayError(f"{step.kind} must precede tool_call for: {call_id}")
+        if step.kind == TraceStepKinds.APPROVAL_REQUESTED:
+            if call_id in self.pending_approvals:
+                raise ReplayError(f"approval already requested: {call_id}")
+            if self.pending_tool_call_ids:
+                expected_index = len(self.approval_request_ids_since_checkpoint)
+                if expected_index >= len(self.pending_tool_call_ids):
+                    raise ReplayError(f"approval_requested exceeds pending tool calls: {call_id}")
+                expected_call_id = self.pending_tool_call_ids[expected_index]
+                if call_id != expected_call_id:
+                    raise ReplayError("approval_requested must follow pending_tool_call_ids order")
+            self.pending_approvals[call_id] = {
+                "name": name,
+                "mode": mode,
+                "index": index,
+            }
+            self.approval_request_ids_since_checkpoint.append(call_id)
+            return
+        pending = self.pending_approvals.pop(call_id, None)
+        if pending is None:
+            raise ReplayError(f"approval_completed without approval_requested: {call_id}")
+        if pending["name"] != name or pending["mode"] != mode:
+            raise ReplayError("approval_completed does not match approval_requested")
+        if cast(int, pending["index"]) >= index:
+            raise ReplayError("approval_completed must follow approval_requested")
+        action = _payload_str(step.payload, "action")
+        if call_id in self.approval_decisions:
+            raise ReplayError(f"approval decision already pending resolution: {call_id}")
+        self.approval_decisions[call_id] = {
+            "name": name,
+            "mode": mode,
+            "action": action,
+            "reason": _payload_str(step.payload, "reason"),
+            "metadata_keys": step.payload["metadata_keys"],
+        }
 
     def _validate_tool_result(self, step: TraceStep) -> None:
         self._validate_same_status(step)
@@ -1274,14 +1420,39 @@ class _ReplayValidator:
             "batch_id": _payload_str(step.payload, "batch_id"),
             "parallel": _expect_bool(step.payload.get("parallel"), "tool_result parallel"),
             "index": result_index,
+            "implementation_invoked": _expect_bool(
+                step.payload.get("implementation_invoked"), "tool_result implementation_invoked"
+            ),
         }
-        if actual != expected:
+        expected_envelope = {
+            key: expected[key]
+            for key in ("name", "mode", "batch_id", "parallel", "index", "implementation_invoked")
+        }
+        if actual != expected_envelope:
             raise ReplayError("tool_result envelope does not match matching tool_call")
         result = _expect_mapping(step.payload["result"], "tool result payload")
         result_kind = _expect_str(result.get("result_kind"), "tool result kind")
         if not _tool_result_kind_matches_mode(mode, result_kind):
             raise ReplayError("tool_result result_kind must match tool invocation mode")
+        if not actual["implementation_invoked"] and not _expect_bool(
+            result.get("is_error"), "tool result is_error"
+        ):
+            raise ReplayError("non-invoked tool_result must commit an error result")
+        if not actual["implementation_invoked"] and result.get("pause") is not None:
+            raise ReplayError("non-invoked tool_result must not request pause")
+        approval_action = expected.get("approval_action")
+        if approval_action == "deny":
+            if actual["implementation_invoked"]:
+                raise ReplayError("denied approval must not invoke tool implementation")
+            if not _expect_bool(result.get("is_error"), "tool result is_error"):
+                raise ReplayError("denied approval must commit an error result")
+            if mode == "accept" and result_kind != "rejection":
+                raise ReplayError("denied accept approval must commit a rejection")
+            self.approval_decisions.pop(call_id, None)
+        elif approval_action == "allow":
+            self.approval_decisions.pop(call_id, None)
         del self.open_tool_calls[call_id]
+        self.completed_tool_call_ids.add(call_id)
         self.tool_result_count += 1
         self.tool_result_ready = True
         self.tool_result_ids_since_checkpoint.append(call_id)
@@ -1390,7 +1561,36 @@ class _ReplayValidator:
                 raise ReplayError("tool pause result must be applied before control pause")
         else:
             raise ReplayError(f"unsupported pause origin: {origin}")
+        self._validate_approval_pause_request(step.payload)
         self.pending_pause_request = step.payload
+
+    def _validate_approval_pause_request(self, payload: Mapping[str, Any]) -> None:
+        if _payload_str(payload, "source") != "approval":
+            if any(
+                _payload_str(decision, "action") == "pause"
+                for decision in self.approval_decisions.values()
+            ):
+                raise ReplayError("approval pause must be applied before other control pauses")
+            return
+        call_id = _expect_optional_str(payload.get("wait_id"), "approval pause wait_id")
+        if call_id is None:
+            raise ReplayError("approval pause wait_id must be the tool call id")
+        approval = self.approval_decisions.get(call_id)
+        if approval is None or _payload_str(approval, "action") != "pause":
+            raise ReplayError("approval pause requires matching approval_completed pause decision")
+        if call_id in self.open_tool_calls:
+            raise ReplayError("approval pause must happen before tool_call starts")
+        if _payload_str(payload, "reason") != _payload_str(approval, "reason"):
+            raise ReplayError("approval pause reason must match approval decision")
+        metadata_keys = _expect_str_list(
+            payload.get("metadata_keys"), "approval pause metadata_keys"
+        )
+        decision_metadata_keys = _expect_str_list(
+            approval.get("metadata_keys"), "approval decision metadata_keys"
+        )
+        if metadata_keys != decision_metadata_keys:
+            raise ReplayError("approval pause metadata_keys must match approval decision")
+        self.approval_decisions.pop(call_id, None)
 
     def _validate_pause_payload(self, value: object, label: str) -> None:
         if self.pending_pause_request is None:
@@ -1428,6 +1628,11 @@ class _ReplayValidator:
         if steps[-1].kind != TraceStepKinds.RUN_COMPLETED:
             raise ReplayError("trace must end with run_completed")
         final_status = self.current_status
+        if final_status not in {AgentStatus.FAILED, AgentStatus.LIMIT_EXCEEDED}:
+            if self.pending_approvals:
+                raise ReplayError("trace cannot leave approval request open")
+            if self.approval_decisions:
+                raise ReplayError("trace cannot leave approval decision unresolved")
         if final_status is AgentStatus.PAUSED:
             if self.open_tool_calls:
                 raise ReplayError("paused trace cannot leave tool_call open")
@@ -1577,10 +1782,10 @@ def _statuses_from_event(
 def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
     if kind == TraceStepKinds.RUN_STARTED:
         state = _expect_mapping(data["state"], "run_started state")
-        return _compact_state_snapshot(state)
+        return _compact_state_summary(state, "run_started state")
     if kind == TraceStepKinds.CHECKPOINT:
         state = _expect_mapping(data["state"], "checkpoint state")
-        payload = _compact_state_snapshot(state)
+        payload = _compact_checkpoint_state(state)
         payload["context_sequence"] = _expect_mapping(data["context"], "checkpoint context")[
             "sequence"
         ]
@@ -1606,6 +1811,27 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
             "batch_id": data["batch_id"],
             "parallel": data["parallel"],
             "index": data["index"],
+            "implementation_invoked": data["implementation_invoked"],
+        }
+    if kind == TraceStepKinds.APPROVAL_REQUESTED:
+        risk = _expect_mapping(data["risk"], "approval risk")
+        metadata = _expect_mapping(data["metadata"], "approval request metadata")
+        return {
+            "id": data["id"],
+            "name": data["name"],
+            "mode": data["mode"],
+            "risk_keys": sorted(str(key) for key in risk),
+            "metadata_keys": sorted(str(key) for key in metadata),
+        }
+    if kind == TraceStepKinds.APPROVAL_COMPLETED:
+        metadata = _expect_mapping(data["metadata"], "approval decision metadata")
+        return {
+            "id": data["id"],
+            "name": data["name"],
+            "mode": data["mode"],
+            "action": data["action"],
+            "reason": data["reason"],
+            "metadata_keys": sorted(str(key) for key in metadata),
         }
     if kind == TraceStepKinds.TOOL_RESULT:
         return {
@@ -1615,6 +1841,7 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
             "batch_id": data["batch_id"],
             "parallel": data["parallel"],
             "index": data["index"],
+            "implementation_invoked": data["implementation_invoked"],
             "result": _compact_tool_result_summary(
                 _expect_mapping(data["result"], "tool result summary")
             ),
@@ -1641,7 +1868,11 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
     if kind == TraceStepKinds.STATE_CHANGED:
         return _compact_state_change(data)
     if kind == TraceStepKinds.RUN_COMPLETED:
-        return {"state": _compact_state_snapshot(_expect_mapping(data["state"], "completed state"))}
+        return {
+            "state": _compact_state_summary(
+                _expect_mapping(data["state"], "completed state"), "completed state"
+            )
+        }
     if kind == TraceStepKinds.RUN_PAUSED:
         return {"pause": _compact_pause(data["pause"])}
     if kind == TraceStepKinds.FINAL:
@@ -1652,7 +1883,7 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _compact_tool_result_summary(result: Mapping[str, Any]) -> dict[str, Any]:
-    metadata = _expect_mapping(result.get("metadata", {}), "tool result metadata")
+    metadata = _expect_mapping(result["metadata"], "tool result metadata")
     payload = {
         "part_count": result["part_count"],
         "part_types": list(_expect_sequence(result["part_types"], "tool result part_types")),
@@ -1718,17 +1949,17 @@ def _compact_model_result_summary(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _compact_model_error(data: Mapping[str, Any]) -> dict[str, Any]:
-    error = _expect_mapping(data["error"], "model error")
-    metadata = _expect_mapping(error.get("metadata", {}), "model error metadata")
+    error = ModelErrorInfo.from_dict(_expect_mapping(data["error"], "model error"))
+    error_payload = error.to_dict()
     payload: dict[str, Any] = {
-        "message": error["message"],
+        "message": error.message,
         "retry": data["retry"],
-        "retryable": error.get("retryable", False),
-        "metadata_keys": sorted(str(key) for key in metadata),
+        "retryable": error.retryable,
+        "metadata_keys": sorted(str(key) for key in error.metadata),
     }
     for key in ("provider", "code", "status_code", "request_id"):
-        if key in error:
-            payload[key] = error[key]
+        if key in error_payload:
+            payload[key] = error_payload[key]
     return payload
 
 
@@ -1776,7 +2007,7 @@ def _compact_final(data: Mapping[str, Any]) -> dict[str, Any]:
     summary = _expect_mapping(data["summary"], "final summary")
     parts = [
         _expect_mapping(part, "final part")
-        for part in _expect_sequence(data.get("parts", []), "final parts")
+        for part in _expect_sequence(data["parts"], "final parts")
     ]
     metadata_keys = {
         str(key)
@@ -1791,6 +2022,85 @@ def _compact_final(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compact_state_summary(state: Mapping[str, Any], label: str) -> dict[str, Any]:
+    _reject_unknown_keys(
+        state,
+        {
+            "status",
+            "message_count",
+            "message_roles",
+            "pending_tool_call_count",
+            "pending_tool_call_ids",
+            "iterations",
+            "total_tool_calls",
+            "total_usage",
+            "has_final",
+            "final_part_count",
+            "error",
+            "pause",
+        },
+        label,
+    )
+    message_count = _expect_nonnegative_int(state["message_count"], f"{label} message_count")
+    message_roles = [
+        _expect_str(role, "state message role")
+        for role in _expect_sequence(state["message_roles"], "state message_roles")
+    ]
+    if len(message_roles) != message_count:
+        raise ValueError(f"{label} message_roles length must match message_count")
+
+    pending_tool_call_count = _expect_nonnegative_int(
+        state["pending_tool_call_count"], f"{label} pending_tool_call_count"
+    )
+    pending_tool_call_ids = [
+        _expect_str(call_id, "pending tool call id")
+        for call_id in _expect_sequence(state["pending_tool_call_ids"], "pending tool_call_ids")
+    ]
+    if len(pending_tool_call_ids) != pending_tool_call_count:
+        raise ValueError(f"{label} pending_tool_call_ids length must match pending_tool_call_count")
+    if len(pending_tool_call_ids) != len(set(pending_tool_call_ids)):
+        raise ValueError(f"{label} pending_tool_call_ids must be unique")
+
+    final_part_count = _expect_nonnegative_int(
+        state["final_part_count"], f"{label} final_part_count"
+    )
+    has_final = _expect_bool(state["has_final"], f"{label} has_final")
+    if has_final != (final_part_count > 0):
+        raise ValueError(f"{label} has_final must match final_part_count")
+
+    return {
+        "status": state["status"],
+        "message_count": message_count,
+        "message_roles": message_roles,
+        "pending_tool_call_ids": pending_tool_call_ids,
+        "iterations": state["iterations"],
+        "total_tool_calls": state["total_tool_calls"],
+        "total_usage": _compact_usage_or_null(state["total_usage"]),
+        "final_part_count": final_part_count,
+        "error": state["error"],
+        "pause": _compact_pause(state["pause"]),
+    }
+
+
+def _compact_checkpoint_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    _reject_unknown_keys(
+        state,
+        {
+            "status",
+            "messages",
+            "pending_tool_calls",
+            "iterations",
+            "total_tool_calls",
+            "total_usage",
+            "final_parts",
+            "error",
+            "pause",
+        },
+        "checkpoint state",
+    )
+    return _compact_state_snapshot(state)
+
+
 def _compact_state_snapshot(state: Mapping[str, Any]) -> dict[str, Any]:
     if "messages" in state:
         messages = [
@@ -1801,10 +2111,9 @@ def _compact_state_snapshot(state: Mapping[str, Any]) -> dict[str, Any]:
         message_count = len(messages)
     else:
         message_count = _expect_nonnegative_int(state["message_count"], "state message_count")
-        raw_roles = state.get("message_roles", [])
         message_roles = [
             _expect_str(role, "state message role")
-            for role in _expect_sequence(raw_roles, "state message_roles")
+            for role in _expect_sequence(state["message_roles"], "state message_roles")
         ]
 
     if "pending_tool_calls" in state:
@@ -1816,20 +2125,17 @@ def _compact_state_snapshot(state: Mapping[str, Any]) -> dict[str, Any]:
             _expect_str(call["id"], "pending tool call id") for call in pending
         ]
     else:
-        raw_pending_ids = state.get("pending_tool_call_ids", [])
         pending_tool_call_ids = [
             _expect_str(call_id, "pending tool call id")
-            for call_id in _expect_sequence(raw_pending_ids, "pending tool_call_ids")
+            for call_id in _expect_sequence(state["pending_tool_call_ids"], "pending tool_call_ids")
         ]
 
     if "final_parts" in state:
         final_part_count = len(_expect_sequence(state["final_parts"], "state final_parts"))
-    elif "final_part_count" in state:
+    else:
         final_part_count = _expect_nonnegative_int(
             state["final_part_count"], "state final_part_count"
         )
-    else:
-        final_part_count = 1 if state.get("has_final") is True else 0
 
     return {
         "status": state["status"],

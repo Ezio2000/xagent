@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import time as time_module
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from time import monotonic
 from time import time as wall_time
 from typing import Any, cast
@@ -16,10 +16,16 @@ from agent_runtime import (
     AgentLoop,
     AgentState,
     AgentStatus,
+    ApprovalDecision,
+    ApprovalRequest,
+    CheckpointSummary,
     ContentPart,
     ConversationInsert,
     EventEmitter,
     EventTypes,
+    JournalRecord,
+    LimitExceeded,
+    LimitReasons,
     LoopLimits,
     Message,
     ModelCapabilities,
@@ -41,16 +47,17 @@ from agent_runtime import (
     RuntimeContext,
     RuntimeHook,
     RunTrace,
+    StoredCheckpoint,
     ToolAcceptance,
     ToolBatch,
     ToolCall,
+    ToolCatalog,
     ToolChoice,
     ToolCompleted,
     ToolExecutionContext,
     ToolInvocation,
     ToolObservation,
     ToolOutput,
-    ToolRegistry,
     ToolRejection,
     ToolScheduler,
     ToolSpec,
@@ -278,6 +285,153 @@ class RecordingTool:
         call_id = str(invocation.arguments["id"])
         self.calls.append(call_id)
         return ToolObservation.text(call_id)
+
+
+class MemoryRunStore:
+    def __init__(self) -> None:
+        self.checkpoints: list[StoredCheckpoint] = []
+
+    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
+        self.checkpoints.append(
+            StoredCheckpoint(
+                run_id=checkpoint.run_id,
+                checkpoint_id=checkpoint.checkpoint_id,
+                parent_checkpoint_id=checkpoint.parent_checkpoint_id,
+                sequence=checkpoint.sequence,
+                status=checkpoint.status,
+                snapshot=checkpoint.snapshot,
+                created_at=checkpoint.created_at,
+                metadata=checkpoint.metadata,
+            )
+        )
+
+    async def load_checkpoint(self, run_id: str, checkpoint_id: str | None = None) -> RunSnapshot:
+        matches = [checkpoint for checkpoint in self.checkpoints if checkpoint.run_id == run_id]
+        if checkpoint_id is not None:
+            matches = [
+                checkpoint for checkpoint in matches if checkpoint.checkpoint_id == checkpoint_id
+            ]
+        if not matches:
+            raise KeyError(run_id)
+        return RunSnapshot.from_dict(matches[-1].snapshot.to_dict())
+
+    async def list_checkpoints(self, run_id: str) -> Sequence[CheckpointSummary]:
+        return [
+            checkpoint.summary() for checkpoint in self.checkpoints if checkpoint.run_id == run_id
+        ]
+
+
+class FailingRunStore(MemoryRunStore):
+    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
+        _ = checkpoint
+        raise RuntimeError("store unavailable")
+
+
+class FailingSecondCheckpointStore(MemoryRunStore):
+    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
+        if self.checkpoints:
+            raise RuntimeError("store unavailable")
+        await super().save_checkpoint(checkpoint)
+
+
+class SlowRunStore(MemoryRunStore):
+    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
+        _ = checkpoint
+        await asyncio.sleep(10)
+
+
+class MemoryRunJournal:
+    def __init__(self) -> None:
+        self.records: list[JournalRecord] = []
+
+    async def append(self, record: JournalRecord) -> None:
+        self.records.append(
+            JournalRecord(
+                event=AgentEvent(**record.event.to_dict()),
+                checkpoint_id=record.checkpoint_id,
+                trace_step_id=record.trace_step_id,
+                payload_ref=record.payload_ref,
+                payload_hash=record.payload_hash,
+                metadata=record.metadata,
+            )
+        )
+
+    async def read(
+        self, run_id: str, *, after_sequence: int | None = None
+    ) -> AsyncIterator[JournalRecord]:
+        for record in self.records:
+            if record.run_id != run_id:
+                continue
+            if after_sequence is not None and record.sequence <= after_sequence:
+                continue
+            yield record
+
+
+def timeline_event_label(prefix: str, event: AgentEvent) -> str:
+    if event.type == EventTypes.STATE_CHANGED:
+        return f"{prefix}:{event.type}:{event.data['to']}"
+    return f"{prefix}:{event.type}"
+
+
+class TimelineRunJournal(MemoryRunJournal):
+    def __init__(self, timeline: list[str]) -> None:
+        super().__init__()
+        self.timeline = timeline
+
+    async def append(self, record: JournalRecord) -> None:
+        self.timeline.append(timeline_event_label("journal", record.event))
+        await super().append(record)
+
+
+class FailingCheckpointJournal(MemoryRunJournal):
+    async def append(self, record: JournalRecord) -> None:
+        if record.event_type == EventTypes.CHECKPOINT:
+            raise RuntimeError("journal unavailable")
+        await super().append(record)
+
+
+class SlowRunJournal(MemoryRunJournal):
+    async def append(self, record: JournalRecord) -> None:
+        _ = record
+        await asyncio.sleep(10)
+
+
+class StaticApprovalPolicy:
+    def __init__(self, decision: ApprovalDecision) -> None:
+        self.decision = decision
+        self.requests: list[ApprovalRequest] = []
+
+    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+        self.requests.append(request)
+        return self.decision
+
+
+class ApprovalPolicyByCall:
+    def __init__(self, decisions: Mapping[str, ApprovalDecision]) -> None:
+        self.decisions = dict(decisions)
+        self.requests: list[ApprovalRequest] = []
+
+    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+        self.requests.append(request)
+        return self.decisions.get(request.tool_call.id, ApprovalDecision.allow())
+
+
+class SequencedApprovalPolicy:
+    def __init__(self, decisions: Sequence[ApprovalDecision]) -> None:
+        self.decisions = list(decisions)
+        self.requests: list[ApprovalRequest] = []
+
+    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+        self.requests.append(request)
+        if not self.decisions:
+            return ApprovalDecision.allow()
+        return self.decisions.pop(0)
+
+
+class FailingApprovalPolicy:
+    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
+        _ = request
+        raise RuntimeError("approval backend unavailable")
 
 
 class TimedTool:
@@ -853,10 +1007,75 @@ class RewritingHook(RuntimeHook):
         return ModelResponse.text("hooked")
 
 
+class RecordingEventHook(RuntimeHook):
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context, emitter
+        self.events.append(event.type)
+
+
+class RecordingFullEventHook(RuntimeHook):
+    def __init__(self) -> None:
+        self.events: list[AgentEvent] = []
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context, emitter
+        self.events.append(AgentEvent(**event.to_dict()))
+
+
+class RecordingVisibilityHook(RuntimeHook):
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context, emitter
+        self.seen.append(event.type)
+
+    def on_transition(
+        self,
+        previous: AgentStatus,
+        current: AgentStatus,
+        state: AgentState,
+        context: RuntimeContext,
+    ) -> None:
+        _ = state, context
+        self.seen.append(f"transition:{previous.value}->{current.value}")
+
+
+class TimelineVisibilityHook(RuntimeHook):
+    def __init__(self, timeline: list[str]) -> None:
+        self.timeline = timeline
+
+    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
+        _ = context, emitter
+        self.timeline.append(timeline_event_label("hook", event))
+
+    def on_transition(
+        self,
+        previous: AgentStatus,
+        current: AgentStatus,
+        state: AgentState,
+        context: RuntimeContext,
+    ) -> None:
+        _ = state, context
+        self.timeline.append(f"hook:transition:{previous.value}->{current.value}")
+
+
 class ToolArgumentHook(RuntimeHook):
     def before_tool(self, call: ToolCall, context: RuntimeContext) -> ToolCall:
         _ = context
         return ToolCall(id=call.id, name=call.name, arguments={"text": "rewritten"})
+
+
+class MutatingToolIdentityHook(RuntimeHook):
+    def before_tool(self, call: ToolCall, context: RuntimeContext) -> ToolCall:
+        _ = context
+        call.id = "mutated-id"
+        call.name = "missing"
+        call.mode = "accept"
+        return call
 
 
 class ReplacingEventHook(RuntimeHook):
@@ -930,6 +1149,22 @@ class BadAfterToolHook(RuntimeHook):
         return observation
 
 
+class SuccessfulAfterToolHook(RuntimeHook):
+    def after_tool(self, result: ToolOutput, context: RuntimeContext) -> ToolObservation:
+        _ = result, context
+        return ToolObservation.text("rewritten")
+
+
+class PausingAfterToolHook(RuntimeHook):
+    def after_tool(self, result: ToolOutput, context: RuntimeContext) -> ToolObservation:
+        _ = result, context
+        return ToolObservation(
+            parts=[ContentPart.text_part("waiting")],
+            is_error=True,
+            pause=PauseRequest(reason="external_wait", source="tool", wait_id="job-1"),
+        )
+
+
 class SlowAfterModelHook(RuntimeHook):
     async def after_model(self, response: ModelResponse, context: RuntimeContext) -> ModelResponse:
         _ = context
@@ -955,6 +1190,18 @@ class SlowEventHook(RuntimeHook):
     ) -> None:
         _ = event, context, emitter
         await asyncio.sleep(0.05)
+
+
+class SlowOnEventHook(RuntimeHook):
+    def __init__(self, event_type: str) -> None:
+        self.event_type = event_type
+
+    async def on_event(
+        self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter
+    ) -> None:
+        _ = context, emitter
+        if event.type == self.event_type:
+            await asyncio.sleep(0.05)
 
 
 class RaisingEventHook(RuntimeHook):
@@ -1036,6 +1283,128 @@ class StandaloneSerialScheduler:
             yield ToolCompleted(batch=batch, index=index, call=call, result=result)
             if stop_on_error and result.is_error:
                 return
+
+
+class NonPrefixScheduler(StandaloneSerialScheduler):
+    def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
+        if len(calls) < 2:
+            return super().next_batch(calls)
+        self.batch_count += 1
+        return ToolBatch(f"non-prefix-{self.batch_count}", (calls[1],), parallel=False)
+
+
+class MutatingNextBatchScheduler(StandaloneSerialScheduler):
+    def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
+        if not calls:
+            return None
+        self.batch_count += 1
+        cast(dict[str, Any], calls[0].arguments)["id"] = "mutated"
+        return ToolBatch(f"mutating-next-{self.batch_count}", (calls[0],), parallel=False)
+
+
+class WrongProgressCallScheduler(StandaloneSerialScheduler):
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        _ = stop_on_error
+        wrong_call = ToolCall(id="call-2", name="echo", arguments={"text": "second"})
+        yield ToolStarted(batch=batch, index=0, call=wrong_call)
+        result = await execute(wrong_call)
+        yield ToolCompleted(batch=batch, index=0, call=wrong_call, result=result)
+
+
+class FakeCompletionScheduler(StandaloneSerialScheduler):
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        _ = execute, stop_on_error
+        call = batch.calls[0]
+        yield ToolStarted(batch=batch, index=0, call=call)
+        yield ToolCompleted(
+            batch=batch,
+            index=0,
+            call=call,
+            result=ToolObservation.text("fake"),
+        )
+
+
+class ExecuteBeforeStartScheduler(StandaloneSerialScheduler):
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        _ = stop_on_error
+        call = batch.calls[0]
+        result = await execute(call)
+        yield ToolStarted(batch=batch, index=0, call=call)
+        yield ToolCompleted(batch=batch, index=0, call=call, result=result)
+
+
+class ConcurrentDuplicateExecuteScheduler(StandaloneSerialScheduler):
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        _ = stop_on_error
+        call = batch.calls[0]
+        yield ToolStarted(batch=batch, index=0, call=call)
+        first, second = await asyncio.gather(
+            execute(call),
+            execute(call),
+            return_exceptions=True,
+        )
+        _ = second
+        if isinstance(first, BaseException):
+            raise first
+        yield ToolCompleted(batch=batch, index=0, call=call, result=first)
+
+
+class MutatingRunBatchScheduler(StandaloneSerialScheduler):
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        _ = stop_on_error
+        call = batch.calls[0]
+        yield ToolStarted(batch=batch, index=0, call=call)
+        cast(dict[str, Any], call.arguments)["id"] = "mutated"
+        result = await execute(call)
+        yield ToolCompleted(batch=batch, index=0, call=call, result=result)
+
+
+class MutatingResultScheduler(StandaloneSerialScheduler):
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        _ = stop_on_error
+        call = batch.calls[0]
+        yield ToolStarted(batch=batch, index=0, call=call)
+        result = await execute(call)
+        if result.parts:
+            result.parts[0].text = "mutated"
+        cast(dict[str, Any], result.metadata)["scheduler"] = "mutated"
+        yield ToolCompleted(batch=batch, index=0, call=call, result=result)
 
 
 class KeyboardInterruptOnCloseIterator:
@@ -1498,11 +1867,13 @@ async def test_trace_can_be_disabled() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_tool_scheduler_factory_is_used_per_run() -> None:
-    calls: list[tuple[ToolRegistry, LoopLimits]] = []
+    calls: list[tuple[ToolCatalog, LoopLimits]] = []
     limits = LoopLimits(max_parallel_tool_calls=3)
 
-    def factory(tools: ToolRegistry, runtime_limits: LoopLimits) -> ToolScheduler:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> ToolScheduler:
         calls.append((tools, runtime_limits))
+        assert not hasattr(tools, "invoke")
+        assert not hasattr(tools, "validate_call")
         return ToolScheduler(tools, max_parallel_tool_calls=1)
 
     result = await AgentLoop(
@@ -1524,10 +1895,45 @@ async def test_custom_tool_scheduler_factory_is_used_per_run() -> None:
 
 
 @pytest.mark.asyncio
+async def test_custom_tool_scheduler_receives_defensive_tool_catalog() -> None:
+    catalogs: list[ToolCatalog] = []
+
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> ToolScheduler:
+        _ = runtime_limits
+        catalogs.append(tools)
+        return ToolScheduler(tools)
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})]),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[EchoTool()],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.COMPLETED
+    catalog = catalogs[0]
+    specs = catalog.specs()
+    cast(dict[str, Any], specs[0].input_schema)["type"] = "string"
+    spec = catalog.spec_for("echo")
+    assert spec is not None
+    cast(dict[str, Any], spec.annotations)["parallel_safe"] = True
+
+    fresh_spec = catalog.spec_for("echo")
+    assert fresh_spec is not None
+    assert fresh_spec.input_schema["type"] == "object"
+    assert fresh_spec.annotations == {}
+    assert catalog.specs()[0].input_schema["type"] == "object"
+
+
+@pytest.mark.asyncio
 async def test_custom_tool_scheduler_factory_accepts_protocol_implementations() -> None:
     schedulers: list[StandaloneSerialScheduler] = []
 
-    def factory(tools: ToolRegistry, runtime_limits: LoopLimits) -> StandaloneSerialScheduler:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> StandaloneSerialScheduler:
         _ = tools, runtime_limits
         scheduler = StandaloneSerialScheduler()
         schedulers.append(scheduler)
@@ -1550,8 +1956,255 @@ async def test_custom_tool_scheduler_factory_accepts_protocol_implementations() 
 
 
 @pytest.mark.asyncio
+async def test_custom_tool_scheduler_must_return_non_empty_prefix_batch() -> None:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> NonPrefixScheduler:
+        _ = tools, runtime_limits
+        return NonPrefixScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="call-1", name="echo", arguments={"text": "first"}),
+                        ToolCall(id="call-2", name="echo", arguments={"text": "second"}),
+                    ]
+                )
+            ]
+        ),
+        tools=[EchoTool()],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == "tool scheduler must return a non-empty prefix batch"
+    assert result.total_tool_calls == 0
+    assert result.snapshot is not None
+    assert [call.id for call in result.snapshot.state.pending_tool_calls] == [
+        "call-1",
+        "call-2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_cannot_mutate_pending_calls_in_next_batch() -> None:
+    tool = RecordingTool()
+
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingNextBatchScheduler:
+        _ = tools, runtime_limits
+        return MutatingNextBatchScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "original"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == "tool scheduler must return a non-empty prefix batch"
+    assert tool.calls == []
+    assert result.snapshot is not None
+    assert result.snapshot.state.pending_tool_calls[0].arguments["id"] == "original"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scheduler", "message"),
+    [
+        (WrongProgressCallScheduler(), "progress call does not match batch index"),
+        (FakeCompletionScheduler(), "complete results produced by execute"),
+    ],
+)
+async def test_custom_tool_scheduler_progress_is_validated(
+    scheduler: StandaloneSerialScheduler,
+    message: str,
+) -> None:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> StandaloneSerialScheduler:
+        _ = tools, runtime_limits
+        return scheduler
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})])]
+        ),
+        tools=[EchoTool()],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error is not None
+    assert message in result.error
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scheduler", "message", "expected_calls"),
+    [
+        (
+            ExecuteBeforeStartScheduler(),
+            "start a batch call before executing it",
+            [],
+        ),
+        (
+            ConcurrentDuplicateExecuteScheduler(),
+            "execute each batch call at most once",
+            ["job"],
+        ),
+    ],
+)
+async def test_custom_tool_scheduler_execute_gate_prevents_lifecycle_violations(
+    scheduler: StandaloneSerialScheduler,
+    message: str,
+    expected_calls: list[str],
+) -> None:
+    tool = RecordingTool()
+
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> StandaloneSerialScheduler:
+        _ = tools, runtime_limits
+        return scheduler
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "job"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error is not None
+    assert message in result.error
+    assert tool.calls == expected_calls
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_cannot_mutate_call_after_start() -> None:
+    tool = RecordingTool()
+
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingRunBatchScheduler:
+        _ = tools, runtime_limits
+        return MutatingRunBatchScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "original"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error is not None
+    assert "outside the selected batch" in result.error
+    assert tool.calls == []
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_cannot_mutate_execute_result() -> None:
+    tool = RecordingTool()
+
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingResultScheduler:
+        _ = tools, runtime_limits
+        return MutatingResultScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "original"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error is not None
+    assert "must not replace execute results" in result.error
+    assert tool.calls == ["original"]
+    assert result.total_tool_calls == 0
+    assert all(message.role != "tool" for message in result.messages)
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_cannot_mutate_approval_allowed_result() -> None:
+    tool = RecordingTool()
+    policy = StaticApprovalPolicy(ApprovalDecision.allow("safe"))
+
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingResultScheduler:
+        _ = tools, runtime_limits
+        return MutatingResultScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "allowed"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        approval_policy=policy,
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error is not None
+    assert "must not replace execute results" in result.error
+    assert tool.calls == ["allowed"]
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_cannot_mutate_approval_denied_result() -> None:
+    tool = RecordingTool()
+    policy = StaticApprovalPolicy(ApprovalDecision.deny("blocked"))
+
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingResultScheduler:
+        _ = tools, runtime_limits
+        return MutatingResultScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "denied"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        approval_policy=policy,
+        tool_scheduler_factory=factory,
+    ).run([Message.user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error is not None
+    assert "must not replace execute results" in result.error
+    assert tool.calls == []
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_custom_tool_scheduler_factory_must_return_scheduler() -> None:
-    def factory(tools: ToolRegistry, runtime_limits: LoopLimits) -> Any:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> Any:
         _ = tools, runtime_limits
         return object()
 
@@ -2710,6 +3363,27 @@ async def test_unknown_tool_is_observation_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unknown_tool_is_not_implementation_invoked() -> None:
+    model = ScriptedModel(
+        [
+            ModelResponse(tool_calls=[ToolCall(id="call-1", name="missing", arguments={})]),
+            ModelResponse.text("handled"),
+        ]
+    )
+    result = await AgentLoop(model=model).run([Message.user_text("call missing")])
+
+    assert result.trace is not None
+    tool_call = next(step for step in result.trace.steps if step.kind == TraceStepKinds.TOOL_CALL)
+    tool_result = next(
+        step for step in result.trace.steps if step.kind == TraceStepKinds.TOOL_RESULT
+    )
+    assert tool_call.payload["implementation_invoked"] is False
+    assert tool_result.payload["implementation_invoked"] is False
+    assert tool_result.payload["result"]["is_error"] is True
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_tool_input_schema_error_is_committed_as_observation_error() -> None:
     tool = StrictCountTool()
     model = ScriptedModel(
@@ -2734,6 +3408,124 @@ async def test_tool_input_schema_error_is_committed_as_observation_error() -> No
     assert tool.calls == 0
     assert "input_schema" in result.messages[-2].text
     assert result.messages[-2].metadata["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_tool_input_schema_error_is_not_implementation_invoked() -> None:
+    tool = StrictCountTool()
+    model = ScriptedModel(
+        [
+            ModelResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="strict_count",
+                        arguments={"count": "bad"},
+                    )
+                ]
+            ),
+            ModelResponse.text("handled"),
+        ]
+    )
+
+    result = await AgentLoop(model=model, tools=[tool]).run([Message.user_text("call strict")])
+
+    assert tool.calls == 0
+    assert result.trace is not None
+    tool_call = next(step for step in result.trace.steps if step.kind == TraceStepKinds.TOOL_CALL)
+    tool_result = next(
+        step for step in result.trace.steps if step.kind == TraceStepKinds.TOOL_RESULT
+    )
+    assert tool_call.payload["implementation_invoked"] is False
+    assert tool_result.payload["implementation_invoked"] is False
+    assert tool_result.payload["result"]["is_error"] is True
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_after_tool_cannot_turn_runtime_validation_error_into_success() -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel(
+                [ModelResponse(tool_calls=[ToolCall(id="call-1", name="missing", arguments={})])]
+            ),
+            hooks=[SuccessfulAfterToolHook()],
+        ),
+        [Message.user_text("call missing")],
+    )
+
+    assert EventTypes.TOOL_COMPLETED not in [event.type for event in events]
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+    assert "non-invoked tool result" in events[-2].data["message"]
+
+
+@pytest.mark.asyncio
+async def test_after_tool_cannot_turn_approval_denial_into_success() -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel(
+                [
+                    ModelResponse(
+                        tool_calls=[
+                            ToolCall(id="call-1", name="record", arguments={"id": "denied"})
+                        ]
+                    )
+                ]
+            ),
+            tools=[RecordingTool()],
+            approval_policy=StaticApprovalPolicy(ApprovalDecision.deny("blocked")),
+            hooks=[SuccessfulAfterToolHook()],
+        ),
+        [Message.user_text("use tool")],
+    )
+
+    assert EventTypes.TOOL_COMPLETED not in [event.type for event in events]
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+    assert "non-invoked tool result" in events[-2].data["message"]
+
+
+@pytest.mark.asyncio
+async def test_after_tool_cannot_turn_runtime_validation_error_into_pause() -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel(
+                [ModelResponse(tool_calls=[ToolCall(id="call-1", name="missing", arguments={})])]
+            ),
+            hooks=[PausingAfterToolHook()],
+        ),
+        [Message.user_text("call missing")],
+    )
+
+    assert EventTypes.TOOL_COMPLETED not in [event.type for event in events]
+    assert EventTypes.PAUSE_REQUESTED not in [event.type for event in events]
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+    assert "must not request pause" in events[-2].data["message"]
+
+
+@pytest.mark.asyncio
+async def test_after_tool_cannot_turn_approval_denial_into_pause() -> None:
+    events = await collect_events(
+        AgentLoop(
+            model=ScriptedModel(
+                [
+                    ModelResponse(
+                        tool_calls=[
+                            ToolCall(id="call-1", name="record", arguments={"id": "denied"})
+                        ]
+                    )
+                ]
+            ),
+            tools=[RecordingTool()],
+            approval_policy=StaticApprovalPolicy(ApprovalDecision.deny("blocked")),
+            hooks=[PausingAfterToolHook()],
+        ),
+        [Message.user_text("use tool")],
+    )
+
+    assert EventTypes.TOOL_COMPLETED not in [event.type for event in events]
+    assert EventTypes.PAUSE_REQUESTED not in [event.type for event in events]
+    assert events[-1].data["state"]["status"] == AgentStatus.FAILED.value
+    assert "must not request pause" in events[-2].data["message"]
 
 
 @pytest.mark.asyncio
@@ -2951,19 +3743,17 @@ async def test_run_started_event_hook_failure_trace_still_replays() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_event_hook_failure_rolls_back_uncheckpointed_trace() -> None:
+async def test_checkpoint_event_hook_failure_preserves_persisted_terminal_checkpoint() -> None:
     result = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("done")]),
         hooks=[RaisingOnEventHook(EventTypes.CHECKPOINT)],
     ).run([Message.user_text("finish")])
 
-    assert result.status is AgentStatus.FAILED
+    assert result.status is AgentStatus.COMPLETED
     assert result.trace is not None
-    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
     transitions = [step for step in result.trace.steps if step.kind == TraceStepKinds.STATE_CHANGED]
-    assert transitions == [
-        step for step in transitions if step.after_status is not AgentStatus.COMPLETED
-    ]
+    assert transitions[-1].after_status is AgentStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -2979,17 +3769,17 @@ async def test_failed_run_completed_hook_failure_trace_still_replays() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_custom_event_failure_rolls_back_trace_durability() -> None:
+async def test_checkpoint_custom_event_failure_preserves_trace_durability() -> None:
     result = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("done")]),
         hooks=[FailingQueuedEventAfterHook(EventTypes.CHECKPOINT)],
     ).run([Message.user_text("finish")])
 
-    assert result.status is AgentStatus.FAILED
+    assert result.status is AgentStatus.COMPLETED
     assert result.trace is not None
-    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+    assert replay_trace(result.trace).final_status is AgentStatus.COMPLETED
     assert result.snapshot is not None
-    assert result.snapshot.state.status is AgentStatus.FAILED
+    assert result.snapshot.state.status is AgentStatus.COMPLETED
 
 
 @pytest.mark.asyncio
@@ -3106,6 +3896,26 @@ async def test_tool_timeout_is_hard_limit() -> None:
     assert result.status is AgentStatus.LIMIT_EXCEEDED
     assert result.error == "timeout_seconds"
     assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_approval_allow_tool_timeout_trace_replays() -> None:
+    model = ScriptedModel(
+        [ModelResponse(tool_calls=[ToolCall(id="call-1", name="slow", arguments={})])]
+    )
+    result = await AgentLoop(
+        model=model,
+        tools=[SlowTool()],
+        limits=LoopLimits(timeout_seconds=0.01),
+        approval_policy=StaticApprovalPolicy(ApprovalDecision.allow("safe")),
+    ).run([Message.user_text("slow")])
+
+    assert result.status is AgentStatus.LIMIT_EXCEEDED
+    assert result.trace is not None
+    tool_call = next(step for step in result.trace.steps if step.kind == TraceStepKinds.TOOL_CALL)
+    assert tool_call.payload["implementation_invoked"] is True
+    assert not any(step.kind == TraceStepKinds.TOOL_RESULT for step in result.trace.steps)
+    assert replay_trace(result.trace).final_status is AgentStatus.LIMIT_EXCEEDED
 
 
 @pytest.mark.asyncio
@@ -4443,6 +5253,36 @@ async def test_before_tool_argument_rewrite_updates_assistant_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_before_tool_cannot_mutate_tool_call_identity_in_place() -> None:
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "x"})]
+                )
+            ]
+        ),
+        tools=[EchoTool()],
+        hooks=[MutatingToolIdentityHook()],
+    ).run([Message.user_text("echo")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == "before_tool cannot change tool call id, name, or mode"
+    assert result.total_tool_calls == 0
+    assert result.snapshot is not None
+    assistant_call = next(
+        message for message in result.messages if message.role == "assistant"
+    ).tool_calls[0]
+    assert assistant_call.id == "call-1"
+    assert assistant_call.name == "echo"
+    assert assistant_call.mode == "execute"
+    assert [call.id for call in result.snapshot.state.pending_tool_calls] == ["call-1"]
+    assert result.snapshot.state.pending_tool_calls[0].name == "echo"
+    assert result.snapshot.state.pending_tool_calls[0].mode == "execute"
+    assert all(message.role != "tool" for message in result.messages)
+
+
+@pytest.mark.asyncio
 async def test_event_replacement_cannot_change_core_runtime_events() -> None:
     events = await collect_events(
         AgentLoop(
@@ -4544,3 +5384,1003 @@ async def test_event_order_is_stable() -> None:
     ]
     assert [event.sequence for event in events] == list(range(1, len(events) + 1))
     assert len({event.run_id for event in events}) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_store_and_journal_record_checkpoint_identity() -> None:
+    store = MemoryRunStore()
+    journal = MemoryRunJournal()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        run_store=store,
+        run_journal=journal,
+    )
+
+    result = await agent.run([Message.user_text("hello")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert result.snapshot is not None
+    assert len(store.checkpoints) == 1
+    stored = store.checkpoints[0]
+    assert stored.run_id == result.run_id
+    assert stored.checkpoint_id == f"checkpoint-{result.snapshot.context.sequence}"
+    assert stored.parent_checkpoint_id is None
+    assert stored.snapshot.to_dict() == result.snapshot.to_dict()
+    loaded_latest = await store.load_checkpoint(result.run_id)
+    loaded_by_id = await store.load_checkpoint(result.run_id, stored.checkpoint_id)
+    summaries = await store.list_checkpoints(result.run_id)
+    assert loaded_latest.to_dict() == result.snapshot.to_dict()
+    assert loaded_by_id.to_dict() == result.snapshot.to_dict()
+    assert summaries == [stored.summary()]
+
+    journal_types = [record.event_type for record in journal.records]
+    assert journal_types == [
+        EventTypes.RUN_STARTED,
+        EventTypes.MODEL_STARTED,
+        EventTypes.MODEL_COMPLETED,
+        EventTypes.STATE_CHANGED,
+        EventTypes.CHECKPOINT,
+        EventTypes.FINAL,
+        EventTypes.RUN_COMPLETED,
+    ]
+    checkpoint_records = [
+        record for record in journal.records if record.event_type == EventTypes.CHECKPOINT
+    ]
+    assert len(checkpoint_records) == 1
+    assert checkpoint_records[0].checkpoint_id == stored.checkpoint_id
+    read_records = [
+        record async for record in journal.read(result.run_id, after_sequence=stored.sequence - 1)
+    ]
+    assert [record.sequence for record in read_records] == [
+        stored.sequence,
+        stored.sequence + 1,
+        stored.sequence + 2,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stored_checkpoint_rejects_snapshot_identity_mismatch() -> None:
+    store = MemoryRunStore()
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        run_store=store,
+    ).run([Message.user_text("hello")])
+    assert result.snapshot is not None
+    stored = store.checkpoints[0]
+
+    with pytest.raises(ValueError, match="run_id must match"):
+        StoredCheckpoint(
+            run_id="other-run",
+            checkpoint_id=stored.checkpoint_id,
+            parent_checkpoint_id=stored.parent_checkpoint_id,
+            sequence=stored.sequence,
+            status=stored.status,
+            snapshot=stored.snapshot,
+            created_at=stored.created_at,
+            metadata=stored.metadata,
+        )
+    with pytest.raises(ValueError, match="sequence must match"):
+        StoredCheckpoint(
+            run_id=stored.run_id,
+            checkpoint_id=stored.checkpoint_id,
+            parent_checkpoint_id=stored.parent_checkpoint_id,
+            sequence=stored.sequence + 1,
+            status=stored.status,
+            snapshot=stored.snapshot,
+            created_at=stored.created_at,
+            metadata=stored.metadata,
+        )
+    with pytest.raises(ValueError, match="status must match"):
+        StoredCheckpoint(
+            run_id=stored.run_id,
+            checkpoint_id=stored.checkpoint_id,
+            parent_checkpoint_id=stored.parent_checkpoint_id,
+            sequence=stored.sequence,
+            status=AgentStatus.FAILED,
+            snapshot=stored.snapshot,
+            created_at=stored.created_at,
+            metadata=stored.metadata,
+        )
+
+
+def test_extension_value_objects_round_trip_and_reject_unknown_fields() -> None:
+    context = RuntimeContext(
+        run_id="run-1",
+        started_at=1.0,
+        deadline=2.0,
+        metadata={"tenant": "acme"},
+    )
+    call = ToolCall(id="call-1", name="record", arguments={"id": "a"})
+    for decision in (
+        ApprovalDecision.allow("safe", metadata={"policy": "test"}),
+        ApprovalDecision.deny("blocked", metadata={"policy": "test"}),
+        ApprovalDecision.pause("approval_required", metadata={"policy": "test"}),
+    ):
+        decision_payload = decision.to_dict()
+        assert ApprovalDecision.from_dict(decision_payload).to_dict() == decision_payload
+        with pytest.raises(ValueError, match="unknown"):
+            ApprovalDecision.from_dict(decision_payload | {"legacy": True})
+        with pytest.raises(KeyError):
+            ApprovalDecision.from_dict(
+                {key: payload for key, payload in decision_payload.items() if key != "metadata"}
+            )
+    with pytest.raises(ValueError, match="action"):
+        ApprovalDecision.from_dict({"action": "later", "reason": "bad", "metadata": {}})
+    with pytest.raises(KeyError):
+        ApprovalDecision.from_dict({"action": "allow", "metadata": {}})
+
+    spec = ToolSpec(
+        name="record",
+        description="Record.",
+        input_schema={"type": "object", "properties": {}},
+        annotations={"read_only": True},
+    )
+    request = ApprovalRequest(
+        tool_call=call,
+        context=context,
+        tool_spec=spec,
+        risk={"read_only": True},
+        metadata={"policy": "test"},
+    )
+    request_payload = request.to_dict()
+    assert ApprovalRequest.from_dict(request_payload).to_dict() == request_payload
+    with pytest.raises(ValueError, match="unknown"):
+        ApprovalRequest.from_dict(request_payload | {"legacy": True})
+    for required_key in ("tool_spec", "risk", "metadata"):
+        with pytest.raises(KeyError):
+            ApprovalRequest.from_dict(
+                {key: payload for key, payload in request_payload.items() if key != required_key}
+            )
+
+    snapshot = RunSnapshot(
+        state=AgentState(status=AgentStatus.PLANNING, messages=[Message.user_text("hi")]),
+        context=context,
+    )
+    summary = CheckpointSummary(
+        run_id="run-1",
+        checkpoint_id="checkpoint-1",
+        parent_checkpoint_id=None,
+        sequence=0,
+        status=AgentStatus.PLANNING,
+        created_at=3.0,
+        metadata={"tier": "gold"},
+    )
+    summary_payload = summary.to_dict()
+    assert CheckpointSummary.from_dict(summary_payload).to_dict() == summary_payload
+    with pytest.raises(ValueError, match="unknown"):
+        CheckpointSummary.from_dict(summary_payload | {"legacy": True})
+    with pytest.raises(KeyError):
+        CheckpointSummary.from_dict(
+            {key: payload for key, payload in summary_payload.items() if key != "metadata"}
+        )
+
+    stored = StoredCheckpoint(
+        run_id="run-1",
+        checkpoint_id="checkpoint-0",
+        parent_checkpoint_id=None,
+        sequence=0,
+        status=AgentStatus.PLANNING,
+        snapshot=snapshot,
+        created_at=3.0,
+        metadata={"tier": "gold"},
+    )
+    stored_payload = stored.to_dict()
+    assert StoredCheckpoint.from_dict(stored_payload).to_dict() == stored_payload
+    with pytest.raises(ValueError, match="unknown"):
+        StoredCheckpoint.from_dict(stored_payload | {"legacy": True})
+    with pytest.raises(KeyError):
+        StoredCheckpoint.from_dict(
+            {key: payload for key, payload in stored_payload.items() if key != "metadata"}
+        )
+
+    event = AgentEvent(EventTypes.RUN_STARTED, {"state": snapshot.state.summary()}, run_id="run-1")
+    record = JournalRecord(
+        event=event,
+        checkpoint_id=None,
+        trace_step_id=1,
+        payload_ref="blob://event",
+        payload_hash="sha256:test",
+        metadata={"sink": "memory"},
+    )
+    record_payload = record.to_dict()
+    assert JournalRecord.from_dict(record_payload).to_dict() == record_payload
+    with pytest.raises(ValueError, match="unknown"):
+        JournalRecord.from_dict(record_payload | {"legacy": True})
+    with pytest.raises(KeyError):
+        JournalRecord.from_dict(
+            {key: payload for key, payload in record_payload.items() if key != "metadata"}
+        )
+    with pytest.raises(ValueError, match="run_id must match"):
+        JournalRecord.from_dict(record_payload | {"run_id": "other-run"})
+
+
+def test_approval_request_nested_objects_are_defensive_copies() -> None:
+    request = ApprovalRequest(
+        tool_call=ToolCall(
+            id="call-1",
+            name="record",
+            arguments={"nested": {"value": 1}},
+        ),
+        context=RuntimeContext(run_id="run-1", metadata={"tenant": "acme"}),
+        risk={"risk": {"level": "low"}},
+    )
+    payload = request.to_dict()
+
+    returned_call = request.tool_call
+    cast(dict[str, Any], returned_call.arguments)["nested"] = {"value": 2}
+    returned_context = request.context
+    cast(dict[str, Any], returned_context.metadata)["tenant"] = "other"
+
+    assert request.to_dict() == payload
+    with pytest.raises(TypeError, match="immutable"):
+        cast(dict[str, Any], request.risk)["risk"] = {"level": "high"}
+
+
+@pytest.mark.asyncio
+async def test_approval_denial_commits_tool_error_without_invoking_tool() -> None:
+    tool = RecordingTool()
+    policy = StaticApprovalPolicy(
+        ApprovalDecision.deny("requires human approval", metadata={"policy": "test"})
+    )
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "denied"})]
+                ),
+                ModelResponse.text("recovered"),
+            ]
+        ),
+        tools=[tool],
+        approval_policy=policy,
+    )
+
+    events = [event async for event in agent.run_events([Message.user_text("use tool")])]
+
+    assert tool.calls == []
+    assert len(policy.requests) == 1
+    assert policy.requests[0].tool_call.id == "call-1"
+    event_types = [event.type for event in events]
+    assert event_types.index(EventTypes.APPROVAL_REQUESTED) < event_types.index(
+        EventTypes.APPROVAL_COMPLETED
+    )
+    assert event_types.index(EventTypes.APPROVAL_COMPLETED) < event_types.index(
+        EventTypes.TOOL_STARTED
+    )
+    tool_started = next(event for event in events if event.type == EventTypes.TOOL_STARTED)
+    assert tool_started.data["implementation_invoked"] is False
+    tool_completed = next(event for event in events if event.type == EventTypes.TOOL_COMPLETED)
+    assert tool_completed.data["implementation_invoked"] is False
+    assert tool_completed.data["result"]["is_error"] is True
+    assert tool_completed.data["result"]["metadata"]["approval"] == "denied"
+    checkpoint = RunSnapshot.from_dict(
+        [event for event in events if event.type == EventTypes.CHECKPOINT][-1].data
+    )
+    tool_messages = [message for message in checkpoint.state.messages if message.role == "tool"]
+    assert tool_messages
+    assert tool_messages[0].metadata["is_error"] is True
+
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_approval_allow_invokes_tool_implementation() -> None:
+    tool = RecordingTool()
+    policy = StaticApprovalPolicy(ApprovalDecision.allow("safe"))
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "allowed"})]
+                ),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[tool],
+        approval_policy=policy,
+    )
+
+    events = [event async for event in agent.run_events([Message.user_text("use tool")])]
+
+    assert tool.calls == ["allowed"]
+    tool_started = next(event for event in events if event.type == EventTypes.TOOL_STARTED)
+    tool_completed = next(event for event in events if event.type == EventTypes.TOOL_COMPLETED)
+    assert tool_started.data["implementation_invoked"] is True
+    assert tool_completed.data["implementation_invoked"] is True
+
+
+@pytest.mark.asyncio
+async def test_approval_denial_of_accept_mode_commits_tool_rejection() -> None:
+    tool = AcceptingWebSearchTool()
+    policy = StaticApprovalPolicy(ApprovalDecision.deny("web access blocked"))
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call-1",
+                            name="web_search",
+                            mode="accept",
+                            arguments={"query": "runtime"},
+                        )
+                    ]
+                ),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[tool],
+        approval_policy=policy,
+    )
+
+    events = [event async for event in agent.run_events([Message.user_text("search")])]
+
+    assert tool.accepted == []
+    tool_completed = next(event for event in events if event.type == EventTypes.TOOL_COMPLETED)
+    assert tool_completed.data["implementation_invoked"] is False
+    assert tool_completed.data["result"]["result_kind"] == "rejection"
+    assert tool_completed.data["result"]["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_approval_denial_of_extension_mode_commits_tool_error_output() -> None:
+    policy = StaticApprovalPolicy(ApprovalDecision.deny("handoff blocked"))
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="call-1",
+                            name="handoff",
+                            mode="handoff",
+                            arguments={"text": "delegate"},
+                        )
+                    ]
+                ),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[CustomHandoffTool()],
+        approval_policy=policy,
+    )
+
+    events = [event async for event in agent.run_events([Message.user_text("handoff")])]
+
+    tool_completed = next(event for event in events if event.type == EventTypes.TOOL_COMPLETED)
+    assert tool_completed.data["implementation_invoked"] is False
+    assert tool_completed.data["result"]["result_kind"] == "tool_error"
+    assert tool_completed.data["result"]["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_call_is_not_sent_to_approval_policy() -> None:
+    policy = StaticApprovalPolicy(ApprovalDecision.pause("approval_required"))
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="missing", arguments={})]),
+                ModelResponse.text("handled"),
+            ]
+        ),
+        approval_policy=policy,
+    ).run([Message.user_text("use missing")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert policy.requests == []
+    assert result.messages[-2].metadata["is_error"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("decision", "slow_event_type"),
+    [
+        (ApprovalDecision.allow("safe"), EventTypes.TOOL_STARTED),
+        (ApprovalDecision.deny("blocked"), EventTypes.TOOL_STARTED),
+        (ApprovalDecision.pause("approval_required"), EventTypes.PAUSE_REQUESTED),
+    ],
+)
+async def test_approval_event_trace_replays_when_resolution_event_hook_times_out(
+    decision: ApprovalDecision,
+    slow_event_type: str,
+) -> None:
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "x"})]
+                )
+            ]
+        ),
+        tools=[RecordingTool()],
+        approval_policy=StaticApprovalPolicy(decision),
+        limits=LoopLimits(timeout_seconds=0.01),
+        hooks=[SlowOnEventHook(slow_event_type)],
+    )
+
+    events = [event async for event in agent.run_events([Message.user_text("use tool")])]
+
+    event_types = [event.type for event in events]
+    assert EventTypes.APPROVAL_REQUESTED in event_types
+    assert EventTypes.APPROVAL_COMPLETED in event_types
+    assert slow_event_type not in event_types
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    assert events[-1].data["state"]["status"] == AgentStatus.LIMIT_EXCEEDED.value
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).final_status is AgentStatus.LIMIT_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_store_failure_does_not_journal_unemitted_state_change() -> None:
+    journal = MemoryRunJournal()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        run_store=FailingRunStore(),
+        run_journal=journal,
+    )
+
+    events: list[AgentEvent] = []
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        async for event in agent.run_events([Message.user_text("hello")]):
+            events.append(event)
+
+    assert [event.type for event in events] == [
+        EventTypes.RUN_STARTED,
+        EventTypes.MODEL_STARTED,
+        EventTypes.MODEL_COMPLETED,
+        EventTypes.STATE_CHANGED,
+    ]
+    assert events[-1].data["to"] == AgentStatus.FAILED.value
+    journal_types = [record.event_type for record in journal.records]
+    assert journal_types == [
+        EventTypes.RUN_STARTED,
+        EventTypes.MODEL_STARTED,
+        EventTypes.MODEL_COMPLETED,
+        EventTypes.STATE_CHANGED,
+    ]
+    assert journal.records[-1].event.data["to"] == AgentStatus.FAILED.value
+    assert EventTypes.CHECKPOINT not in journal_types
+
+
+@pytest.mark.asyncio
+async def test_store_failure_does_not_dispatch_unpersisted_checkpoint_to_hooks() -> None:
+    hook = RecordingEventHook()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[hook],
+        run_store=FailingRunStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        async for _event in agent.run_events([Message.user_text("hello")]):
+            pass
+
+    assert EventTypes.CHECKPOINT not in hook.events
+
+
+@pytest.mark.asyncio
+async def test_store_failure_does_not_dispatch_uncheckpointed_state_change_to_hooks() -> None:
+    hook = RecordingVisibilityHook()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[hook],
+        run_store=FailingRunStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        async for _event in agent.run_events([Message.user_text("hello")]):
+            pass
+
+    assert EventTypes.STATE_CHANGED not in hook.seen
+    assert "transition:planning->completed" not in hook.seen
+
+
+@pytest.mark.asyncio
+async def test_store_failure_does_not_dispatch_uncheckpointed_pause_request_to_hooks() -> None:
+    controller = RunController()
+    controller.request_pause(reason="manual_pause")
+    hook = RecordingVisibilityHook()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[hook],
+        run_store=FailingRunStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        async for _event in agent.run_events(
+            [Message.user_text("hello")],
+            controller=controller,
+        ):
+            pass
+
+    assert EventTypes.PAUSE_REQUESTED not in hook.seen
+    assert EventTypes.STATE_CHANGED not in hook.seen
+    assert EventTypes.CHECKPOINT not in hook.seen
+    assert "transition:planning->paused" not in hook.seen
+
+
+@pytest.mark.asyncio
+async def test_store_failure_does_not_dispatch_uncheckpointed_insert_to_hooks() -> None:
+    controller = RunController()
+    controller.insert(ConversationInsert.text("external result", id="insert-1", source="test"))
+    hook = RecordingVisibilityHook()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[hook],
+        run_store=FailingRunStore(),
+    )
+
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        async for _event in agent.run_events(
+            [Message.user_text("hello")],
+            controller=controller,
+        ):
+            pass
+
+    assert EventTypes.CONVERSATION_INSERTED not in hook.seen
+    assert EventTypes.CHECKPOINT not in hook.seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_journal", [False, True])
+async def test_run_store_pause_hook_order_matches_trace_order(with_journal: bool) -> None:
+    controller = RunController()
+    controller.request_pause(reason="manual_pause")
+    hook = RecordingVisibilityHook()
+    store = MemoryRunStore()
+    journal = MemoryRunJournal() if with_journal else None
+
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[hook],
+        run_store=store,
+        run_journal=journal,
+    ).run(
+        [Message.user_text("hello")],
+        controller=controller,
+    )
+
+    assert result.status is AgentStatus.PAUSED
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.PAUSED
+    assert hook.seen.index(EventTypes.PAUSE_REQUESTED) < hook.seen.index(
+        "transition:planning->paused"
+    )
+    assert hook.seen.index("transition:planning->paused") < hook.seen.index(
+        EventTypes.STATE_CHANGED
+    )
+    assert hook.seen.index(EventTypes.STATE_CHANGED) < hook.seen.index(EventTypes.CHECKPOINT)
+    if journal is not None:
+        journal_types = [record.event_type for record in journal.records]
+        assert journal_types.index(EventTypes.PAUSE_REQUESTED) < journal_types.index(
+            EventTypes.STATE_CHANGED
+        )
+        assert journal_types.index(EventTypes.STATE_CHANGED) < journal_types.index(
+            EventTypes.CHECKPOINT
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_store_journal_pause_global_visibility_order_is_consistent() -> None:
+    timeline: list[str] = []
+    controller = RunController()
+    controller.request_pause(reason="manual_pause")
+    journal = TimelineRunJournal(timeline)
+
+    events: list[AgentEvent] = []
+    async for event in AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[TimelineVisibilityHook(timeline)],
+        run_store=MemoryRunStore(),
+        run_journal=journal,
+    ).run_events(
+        [Message.user_text("hello")],
+        controller=controller,
+    ):
+        events.append(event)
+        timeline.append(timeline_event_label("caller", event))
+
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    filtered = [
+        item
+        for item in timeline
+        if item
+        in {
+            f"journal:{EventTypes.PAUSE_REQUESTED}",
+            f"hook:{EventTypes.PAUSE_REQUESTED}",
+            f"caller:{EventTypes.PAUSE_REQUESTED}",
+            f"journal:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+            "hook:transition:planning->paused",
+            f"hook:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+            f"caller:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+            f"journal:{EventTypes.CHECKPOINT}",
+            f"hook:{EventTypes.CHECKPOINT}",
+            f"caller:{EventTypes.CHECKPOINT}",
+        }
+    ]
+    assert filtered == [
+        f"journal:{EventTypes.PAUSE_REQUESTED}",
+        f"hook:{EventTypes.PAUSE_REQUESTED}",
+        f"caller:{EventTypes.PAUSE_REQUESTED}",
+        f"journal:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+        "hook:transition:planning->paused",
+        f"hook:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+        f"caller:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+        f"journal:{EventTypes.CHECKPOINT}",
+        f"hook:{EventTypes.CHECKPOINT}",
+        f"caller:{EventTypes.CHECKPOINT}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_store_journal_pause_after_deferred_transition_order_is_consistent() -> None:
+    timeline: list[str] = []
+    controller = RunController()
+    journal = TimelineRunJournal(timeline)
+
+    events: list[AgentEvent] = []
+    async for event in AgentLoop(
+        model=SelfPausingToolCallModel(controller),
+        tools=[EchoTool()],
+        hooks=[TimelineVisibilityHook(timeline)],
+        run_store=MemoryRunStore(),
+        run_journal=journal,
+    ).run_events(
+        [Message.user_text("hello")],
+        controller=controller,
+    ):
+        events.append(event)
+        timeline.append(timeline_event_label("caller", event))
+
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    filtered = [
+        item
+        for item in timeline
+        if item
+        in {
+            f"journal:{EventTypes.STATE_CHANGED}:{AgentStatus.EXECUTING_TOOLS.value}",
+            "hook:transition:planning->executing_tools",
+            f"hook:{EventTypes.STATE_CHANGED}:{AgentStatus.EXECUTING_TOOLS.value}",
+            f"caller:{EventTypes.STATE_CHANGED}:{AgentStatus.EXECUTING_TOOLS.value}",
+            f"journal:{EventTypes.PAUSE_REQUESTED}",
+            f"hook:{EventTypes.PAUSE_REQUESTED}",
+            f"caller:{EventTypes.PAUSE_REQUESTED}",
+            f"journal:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+            "hook:transition:executing_tools->paused",
+            f"hook:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+            f"caller:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+            f"journal:{EventTypes.CHECKPOINT}",
+            f"hook:{EventTypes.CHECKPOINT}",
+            f"caller:{EventTypes.CHECKPOINT}",
+        }
+    ]
+    assert filtered == [
+        f"journal:{EventTypes.STATE_CHANGED}:{AgentStatus.EXECUTING_TOOLS.value}",
+        "hook:transition:planning->executing_tools",
+        f"hook:{EventTypes.STATE_CHANGED}:{AgentStatus.EXECUTING_TOOLS.value}",
+        f"caller:{EventTypes.STATE_CHANGED}:{AgentStatus.EXECUTING_TOOLS.value}",
+        f"journal:{EventTypes.PAUSE_REQUESTED}",
+        f"hook:{EventTypes.PAUSE_REQUESTED}",
+        f"caller:{EventTypes.PAUSE_REQUESTED}",
+        f"journal:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+        "hook:transition:executing_tools->paused",
+        f"hook:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+        f"caller:{EventTypes.STATE_CHANGED}:{AgentStatus.PAUSED.value}",
+        f"journal:{EventTypes.CHECKPOINT}",
+        f"hook:{EventTypes.CHECKPOINT}",
+        f"caller:{EventTypes.CHECKPOINT}",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_store_failure_after_tool_result_rolls_back_to_prior_checkpoint() -> None:
+    store = FailingSecondCheckpointStore()
+    events: list[AgentEvent] = []
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "job"})]
+                )
+            ]
+        ),
+        tools=[RecordingTool()],
+        run_store=store,
+    )
+
+    with pytest.raises(RuntimeError, match="store unavailable"):
+        async for event in agent.run_events([Message.user_text("use tool")]):
+            events.append(event)
+
+    assert len(store.checkpoints) == 1
+    assert store.checkpoints[0].status is AgentStatus.EXECUTING_TOOLS
+    assert [call.id for call in store.checkpoints[0].snapshot.state.pending_tool_calls] == [
+        "call-1"
+    ]
+    assert EventTypes.TOOL_COMPLETED in [event.type for event in events]
+    failed_state = next(
+        event
+        for event in reversed(events)
+        if event.type == EventTypes.STATE_CHANGED and event.data["to"] == AgentStatus.FAILED.value
+    )
+    assert failed_state.data["total_tool_calls"] == 0
+    checkpoints = [
+        RunSnapshot.from_dict(event.data) for event in events if event.type == EventTypes.CHECKPOINT
+    ]
+    assert not any(snapshot.state.total_tool_calls == 1 for snapshot in checkpoints)
+
+
+@pytest.mark.asyncio
+async def test_journal_failure_prevents_checkpoint_delivery_after_store_save() -> None:
+    store = MemoryRunStore()
+    journal = FailingCheckpointJournal()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        run_store=store,
+        run_journal=journal,
+    )
+
+    events: list[AgentEvent] = []
+    with pytest.raises(RuntimeError, match="journal unavailable"):
+        async for event in agent.run_events([Message.user_text("hello")]):
+            events.append(event)
+
+    assert store.checkpoints
+    assert [event.type for event in events] == [
+        EventTypes.RUN_STARTED,
+        EventTypes.MODEL_STARTED,
+        EventTypes.MODEL_COMPLETED,
+        EventTypes.STATE_CHANGED,
+    ]
+    assert EventTypes.CHECKPOINT not in [record.event_type for record in journal.records]
+
+
+@pytest.mark.asyncio
+async def test_journal_failure_does_not_dispatch_unjournaled_checkpoint_to_hooks() -> None:
+    hook = RecordingEventHook()
+    store = MemoryRunStore()
+    journal = FailingCheckpointJournal()
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[hook],
+        run_store=store,
+        run_journal=journal,
+    )
+
+    with pytest.raises(RuntimeError, match="journal unavailable"):
+        async for _event in agent.run_events([Message.user_text("hello")]):
+            pass
+
+    assert store.checkpoints
+    assert EventTypes.STATE_CHANGED in hook.events
+    assert EventTypes.CHECKPOINT not in hook.events
+
+
+@pytest.mark.asyncio
+async def test_store_save_uses_runtime_deadline() -> None:
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        run_store=SlowRunStore(),
+        limits=LoopLimits(timeout_seconds=0.01),
+    )
+
+    with pytest.raises(LimitExceeded, match=LimitReasons.TIMEOUT_SECONDS):
+        await asyncio.wait_for(agent.run([Message.user_text("hello")]), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_journal_append_uses_runtime_deadline() -> None:
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        run_journal=SlowRunJournal(),
+        limits=LoopLimits(timeout_seconds=0.01),
+    )
+
+    with pytest.raises(LimitExceeded, match=LimitReasons.TIMEOUT_SECONDS):
+        await asyncio.wait_for(agent.run([Message.user_text("hello")]), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_approval_failure_journals_request_without_completion() -> None:
+    journal = MemoryRunJournal()
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "boom"})]
+                )
+            ]
+        ),
+        tools=[RecordingTool()],
+        approval_policy=FailingApprovalPolicy(),
+        run_journal=journal,
+    )
+
+    result = await agent.run([Message.user_text("use tool")])
+
+    assert result.status is AgentStatus.FAILED
+    journal_types = [record.event_type for record in journal.records]
+    assert EventTypes.APPROVAL_REQUESTED in journal_types
+    assert EventTypes.APPROVAL_COMPLETED not in journal_types
+    assert EventTypes.TOOL_STARTED not in journal_types
+    request_index = journal_types.index(EventTypes.APPROVAL_REQUESTED)
+    failed_index = next(
+        index
+        for index, record in enumerate(journal.records)
+        if record.event_type == EventTypes.STATE_CHANGED
+        and record.event.data["to"] == AgentStatus.FAILED.value
+    )
+    assert request_index < failed_index
+    approval_request = next(
+        record.event
+        for record in journal.records
+        if record.event_type == EventTypes.APPROVAL_REQUESTED
+    )
+    assert approval_request.data["id"] == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_resume_checkpoint_store_records_parent_checkpoint_id() -> None:
+    first = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="wait", arguments={"wait_id": "job-1"})]
+                )
+            ]
+        ),
+        tools=[WaitingTool()],
+    ).run([Message.user_text("start job")])
+    assert first.snapshot is not None
+    parent_id = f"checkpoint-{first.snapshot.context.sequence}"
+
+    store = MemoryRunStore()
+    resumed = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("resumed")]),
+        tools=[WaitingTool()],
+        run_store=store,
+    ).run_snapshot(
+        ResumeInput(
+            snapshot=first.snapshot,
+            append_messages=[Message.user_text("job done")],
+        )
+    )
+
+    assert resumed.status is AgentStatus.COMPLETED
+    assert store.checkpoints
+    assert store.checkpoints[0].parent_checkpoint_id == parent_id
+
+
+@pytest.mark.asyncio
+async def test_approval_pause_stops_before_tool_execution_and_preserves_pending_call() -> None:
+    tool = RecordingTool()
+    policy = StaticApprovalPolicy(
+        ApprovalDecision.pause("approval_required", metadata={"policy": "test"})
+    )
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "waiting"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        approval_policy=policy,
+    )
+
+    events = [event async for event in agent.run_events([Message.user_text("use tool")])]
+
+    assert tool.calls == []
+    event_types = [event.type for event in events]
+    assert EventTypes.TOOL_STARTED not in event_types
+    assert event_types.index(EventTypes.APPROVAL_COMPLETED) < event_types.index(
+        EventTypes.PAUSE_REQUESTED
+    )
+    paused = RunSnapshot.from_dict(
+        [event for event in events if event.type == EventTypes.CHECKPOINT][-1].data
+    )
+    assert paused.state.status is AgentStatus.PAUSED
+    assert paused.state.pause is not None
+    assert paused.state.pause.source == "approval"
+    assert paused.state.pause.wait_id == "call-1"
+    assert [call.id for call in paused.state.pending_tool_calls] == ["call-1"]
+
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_approval_pause_can_resume_and_execute_pending_call_once() -> None:
+    tool = RecordingTool()
+    policy = SequencedApprovalPolicy(
+        [
+            ApprovalDecision.pause("approval_required"),
+            ApprovalDecision.allow("approved_after_resume"),
+        ]
+    )
+    first = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "job"})]
+                )
+            ]
+        ),
+        tools=[tool],
+        approval_policy=policy,
+    ).run([Message.user_text("use tool")])
+
+    assert first.status is AgentStatus.PAUSED
+    assert first.snapshot is not None
+    assert tool.calls == []
+    parent_id = f"checkpoint-{first.snapshot.context.sequence}"
+
+    store = MemoryRunStore()
+    resumed = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        tools=[tool],
+        approval_policy=policy,
+        run_store=store,
+    ).run_snapshot(ResumeInput(snapshot=first.snapshot))
+
+    assert resumed.status is AgentStatus.COMPLETED
+    assert tool.calls == ["job"]
+    assert len(policy.requests) == 2
+    assert [request.tool_call.id for request in policy.requests] == ["call-1", "call-1"]
+    assert store.checkpoints
+    assert store.checkpoints[0].parent_checkpoint_id == parent_id
+    assert resumed.trace is not None
+    assert replay_trace(resumed.trace).final_status is AgentStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_approval_pause_after_prior_parallel_call_has_only_applied_approval_events() -> None:
+    tool = TimedTool("timed", parallel_safe=True)
+    policy = ApprovalPolicyByCall(
+        {
+            "call-1": ApprovalDecision.allow("safe"),
+            "call-2": ApprovalDecision.pause("approval_required"),
+        }
+    )
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="call-1", name="timed", arguments={"id": "allowed"}),
+                        ToolCall(id="call-2", name="timed", arguments={"id": "paused"}),
+                    ]
+                )
+            ]
+        ),
+        tools=[tool],
+        limits=LoopLimits(max_parallel_tool_calls=2),
+        approval_policy=policy,
+    )
+
+    events = [event async for event in agent.run_events([Message.user_text("use tools")])]
+
+    assert [entry[1] for entry in tool.timeline if entry[0] == "start"] == ["allowed"]
+    assert [request.tool_call.id for request in policy.requests] == ["call-1", "call-2"]
+    approval_events = [
+        event
+        for event in events
+        if event.type in {EventTypes.APPROVAL_REQUESTED, EventTypes.APPROVAL_COMPLETED}
+    ]
+    assert [event.data["id"] for event in approval_events] == [
+        "call-1",
+        "call-1",
+        "call-2",
+        "call-2",
+    ]
+    assert [event.data["id"] for event in events if event.type == EventTypes.TOOL_STARTED] == [
+        "call-1"
+    ]
+    paused = RunSnapshot.from_dict(
+        [event for event in events if event.type == EventTypes.CHECKPOINT][-1].data
+    )
+    assert paused.state.total_tool_calls == 1
+    assert [call.id for call in paused.state.pending_tool_calls] == ["call-2"]
+    assert replay_trace(RunTrace.from_events(events[0].run_id, events)).valid
