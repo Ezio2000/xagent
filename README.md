@@ -7,14 +7,31 @@ owns the execution trunk and the extension slots. Provider adapters, tool packs,
 storage backends, approval UIs, queues, and product applications live outside the
 kernel and are injected through its public ports.
 
-## Package Structure
+## Repository Index
+
+| Area | Path | Use for |
+|---|---|---|
+| Contract map | `contracts/v0/README.md` | Cross-language wire shapes, semantic contract ownership, and schema `$id` policy. |
+| Architecture notes | `docs/architecture.md` | Kernel boundary and runtime architecture overview. |
+| Model protocol | `docs/model-protocol.md` | Model adapter request/response rules. |
+| Tool protocol | `docs/tool-protocol.md` | Tool spec, invocation, approval risk, scheduling, and output rules. |
+| Event stream | `docs/event-stream.md` | Runtime event names, event ordering, and hook-emitted custom events. |
+| State machine | `docs/state-machine.md` | Status meanings, transitions, checkpoints, pause, and resume behavior. |
+| Public API audit | `docs/public-api-audit.md` | Exported Python SDK names and public/internal boundary decisions. |
+| Conformance guide | `conformance/README.md` | Shared case format and runner expectations for SDK implementations. |
+| CI workflow | `.github/workflows/ci.yml` | Required repository validation gate. |
+| Agent instructions | `AGENTS.md` | Coding-agent operating rules generated from the current repo shape. |
+
+## Repository Structure
 
 | Path | Import package | Responsibility |
 |---|---|---|
 | `contracts/v0` | none | Cross-language JSON Schemas and portable runtime contract docs. |
 | `conformance/cases` | none | Shared JSON behavior fixtures that every SDK must pass. |
+| `docs` | none | Architecture, public API, model/tool/event/state protocol notes. |
 | `python/packages/kernel` | `kernel` | Runtime kernel: loop, scheduler, model/tool protocols, events, state, snapshots, resume, limits, approval/store/journal/hook ports, trace/replay, and public SDK exports. |
 | `python/packages/conformance` | `conformance` | Python conformance CLI, case loader, scripted harness, validators, and assertions. |
+| `pyproject.toml` / `uv.lock` | none | Root uv workspace, dependency groups, lint, type-check, and test configuration. |
 
 ## Dependency Rules
 
@@ -23,9 +40,23 @@ kernel and are injected through its public ports.
 | `kernel` | Python stdlib and runtime-neutral validation libraries needed by kernel-owned protocols | Any internal runtime package, conformance, provider adapter, tool pack, app, concrete store, UI, queue, or deployment runtime |
 | `conformance` | `kernel`, JSON Schema validation libraries | Being imported by `kernel` |
 
-Retired runtime packages must not reappear: `engine`, `protocol`, `run-state`,
-`extensions`, and `tracing`. Their responsibilities were folded into `kernel` or
-made kernel ports. There are no compatibility shims or legacy aliases.
+Hard boundary rules:
+
+- `kernel` must not import any workspace package. External implementations
+  depend on `kernel` and are injected through public ports.
+- `conformance` may import `kernel`; `kernel` must never import `conformance`.
+- No top-level `sdks/` source tree. Python packages live under
+  `python/packages`.
+- Retired runtime imports must not reappear: `agent_runtime`,
+  `agent_runtime_conformance`, `engine`, `protocol`, `run_state`,
+  `run-state`, `extensions`, and `tracing`.
+- Project and package names must not use the retired fragments `xagent`,
+  `agent_`, `agent-`, `runtime_`, or `runtime-`. The current package names are
+  `kernel` and `conformance`.
+- Do not add compatibility shims, deprecated aliases, or re-export packages for
+  old names.
+- Portable behavior changes require updates to `contracts/v0`,
+  `conformance/cases`, and relevant docs in the same change.
 
 ## Python Development
 
@@ -37,7 +68,7 @@ uv run pytest -q -p no:cacheprovider
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
-uv run conformance conformance/cases
+uv run conformance conformance/cases --spec-dir contracts/v0
 ```
 
 Run examples from the repository root:

@@ -14,9 +14,23 @@ Python packages:
   approval/store/journal/hook ports, trace/replay, and the public SDK surface.
 - `conformance`: CLI and harness for validating implementations.
 
-Retired runtime packages are not allowed back: `engine`, `protocol`,
-`run-state`, `extensions`, and `tracing`. Do not add compatibility shims,
-deprecated aliases, or re-export packages for those names.
+Documentation index:
+
+- `contracts/v0/README.md`: cross-language contract map and schema `$id`
+  policy.
+- `docs/architecture.md`: kernel architecture and package boundary.
+- `docs/model-protocol.md`: model adapter protocol.
+- `docs/tool-protocol.md`: tool spec, scheduling, approval, and output rules.
+- `docs/event-stream.md`: runtime event stream and hook-emitted custom events.
+- `docs/state-machine.md`: status transitions, checkpoints, pause, and resume.
+- `docs/public-api-audit.md`: Python public API naming and export decisions.
+- `conformance/README.md`: shared conformance case format and runner contract.
+
+Retired runtime packages and imports are not allowed back: `agent_runtime`,
+`agent_runtime_conformance`, `engine`, `protocol`, `run_state`, `run-state`,
+`extensions`, and `tracing`. Do not add compatibility shims, deprecated aliases,
+or re-export packages for those names. Do not reintroduce a top-level `sdks/`
+source tree.
 
 ## Dependency Rules
 
@@ -28,6 +42,10 @@ kernel ports such as `ModelClient`, `Tool`, `ApprovalPolicy`, `RunStore`,
 
 `conformance` may depend on `kernel`, but `kernel` must never import
 `conformance`.
+
+Project and package names must not use retired fragments: `xagent`, `agent_`,
+`agent-`, `runtime_`, or `runtime-`. The current Python package names are
+`kernel` and `conformance`.
 
 ## Build, Test, And Development Commands
 
@@ -42,7 +60,7 @@ uv run pytest -q -p no:cacheprovider
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
-uv run conformance conformance/cases
+uv run conformance conformance/cases --spec-dir contracts/v0
 uv run python python/packages/kernel/examples/basic_tool_loop.py
 uv run python python/packages/kernel/examples/pause_resume_trace.py
 ```

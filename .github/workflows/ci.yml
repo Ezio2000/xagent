@@ -67,7 +67,12 @@ jobs:
         run: uv run pyright
 
       - name: Run conformance CLI
-        run: uv run conformance conformance/cases
+        run: uv run conformance conformance/cases --spec-dir contracts/v0
+
+      - name: Run examples
+        run: |
+          uv run python python/packages/kernel/examples/basic_tool_loop.py
+          uv run python python/packages/kernel/examples/pause_resume_trace.py
 
       - name: Test
         run: uv run pytest -q -p no:cacheprovider
