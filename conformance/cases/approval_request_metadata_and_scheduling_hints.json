@@ -1,0 +1,63 @@
+{
+  "name": "approval_request_metadata_and_scheduling_hints",
+  "approval_metadata": {
+    "surface": "conformance"
+  },
+  "approval_decisions": {
+    "call-1": {
+      "action": "allow",
+      "reason": "safe",
+      "metadata": {
+        "policy": "conformance"
+      }
+    }
+  },
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "delayed_echo",
+          "mode": "execute",
+          "arguments": {
+            "text": "allowed"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "allowed"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "allowed",
+  "expected_tool_calls": 1,
+  "expected_tool_texts": ["allowed"],
+  "expected_approval_requests": {
+    "call-1": {
+      "risk": {},
+      "metadata": {
+        "surface": "conformance"
+      }
+    }
+  },
+  "expected_event_types": [
+    "approval_requested",
+    "approval_completed",
+    "tool_started",
+    "tool_completed"
+  ],
+  "expected_trace_kinds": [
+    "approval_requested",
+    "approval_completed",
+    "tool_call",
+    "tool_result"
+  ]
+}

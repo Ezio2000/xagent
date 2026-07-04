@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   python:
-    name: Python SDK
+    name: Python workspace
     runs-on: ubuntu-latest
 
     steps:
@@ -27,23 +27,20 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
-        working-directory: sdks/python
         run: uv sync --locked
 
       - name: Smoke test package CLI
-        working-directory: sdks/python
         run: |
-          uv run --isolated --with . agent-runtime-conformance --help
-          uv run --isolated --with . python - <<'PY'
-          import agent_runtime
-          import agent_runtime_conformance
+          uv run conformance --help
+          uv run python - <<'PY'
+          import kernel
+          import conformance
 
-          assert agent_runtime.AgentLoop.__name__ == "AgentLoop"
-          assert agent_runtime_conformance.ConformanceRunner.__name__ == "ConformanceRunner"
+          assert kernel.AgentLoop.__name__ == "AgentLoop"
+          assert conformance.ConformanceRunner.__name__ == "ConformanceRunner"
           PY
 
       - name: Check JSON contracts
-        working-directory: sdks/python
         run: |
           uv run python - <<'PY'
           import json
@@ -51,7 +48,7 @@ jobs:
 
           from jsonschema import Draft202012Validator
 
-          for root in ["../../spec/v0", "../../conformance/cases"]:
+          for root in ["contracts/v0", "conformance/cases"]:
               for path in sorted(Path(root).glob("*.json")):
                   data = json.loads(path.read_text())
                   if path.name.endswith(".schema.json"):
@@ -61,21 +58,16 @@ jobs:
           PY
 
       - name: Lint
-        working-directory: sdks/python
         run: uv run ruff check .
 
       - name: Check formatting
-        working-directory: sdks/python
         run: uv run ruff format --check .
 
       - name: Type-check
-        working-directory: sdks/python
         run: uv run pyright
 
       - name: Run conformance CLI
-        working-directory: sdks/python
-        run: uv run agent-runtime-conformance ../../conformance/cases
+        run: uv run conformance conformance/cases
 
       - name: Test
-        working-directory: sdks/python
         run: uv run pytest -q -p no:cacheprovider

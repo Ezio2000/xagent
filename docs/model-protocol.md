@@ -42,7 +42,7 @@ Python adapters may raise `ModelProviderError(ModelErrorInfo(...))` for
 structured provider failures. `ModelErrorInfo` is runtime exception detail for
 the current SDK invocation; checkpoint state records the portable error message,
 not provider metadata or request objects. The portable structured error shape is
-specified in `spec/v0/model-error.schema.json`. `ModelErrorInfo.retryable` is
+specified in `contracts/v0/model-error.schema.json`. `ModelErrorInfo.retryable` is
 advisory provider metadata. The runtime retries only when host code returns
 `ModelErrorDecision(retry=True)` from `RuntimeHook.on_model_error`, the call was
 not streaming, and `LoopLimits.max_model_retries` still permits another attempt.

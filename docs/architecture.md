@@ -1,6 +1,6 @@
 # Architecture
 
-`agent-runtime` is a small execution kernel for tool-using agents.
+`runtime` is a small execution kernel for tool-using agents.
 
 The core SDK owns:
 

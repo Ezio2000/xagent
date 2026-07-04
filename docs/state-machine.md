@@ -11,7 +11,7 @@ The v0.1 state machine has six states:
   limits.
 
 State values are closed runtime-owned contract values. Adding a state requires
-updating the SDK enum, `spec/v0/state.schema.json`, event and trace schemas,
+updating the SDK enum, `contracts/v0/state.schema.json`, event and trace schemas,
 transition/replay validation, loop dispatch, docs, and conformance cases in the
 same change.
 

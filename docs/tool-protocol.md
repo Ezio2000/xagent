@@ -42,8 +42,9 @@ nested `annotations.risk` object, core validates the standardized fields
 `filesystem`, `network`, `subprocess`, `destructive`, and
 `requires_approval`, while preserving additional risk fields for host policy.
 `filesystem` and `network` are open non-empty strings with recommended values,
-not closed vocabularies. If no nested `risk` object is present, legacy
-annotations remain the risk summary passed to the approval policy.
+not closed vocabularies. If no nested `risk` object is present, the risk summary
+passed to the approval policy is `{}`. Scheduling hints such as `parallel_safe`,
+`read_only`, and `idempotent` are not approval risk.
 
 Execute-mode tools return `ToolObservation`:
 
@@ -82,7 +83,7 @@ durable tool message. Tool output metadata is available to hooks/events during
 the current invocation, but it is not copied into model-visible history,
 checkpoints, or trace payload values.
 
-The portable output shape is specified in `spec/v0/tool-result.schema.json`.
+The portable output shape is specified in `contracts/v0/tool-result.schema.json`.
 
 When an execute-mode tool starts external work and needs a callback before the
 run should continue, it can return a waiting observation. The runtime commits

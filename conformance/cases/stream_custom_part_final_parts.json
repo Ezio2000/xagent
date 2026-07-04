@@ -1,0 +1,52 @@
+{
+  "name": "stream_custom_part_final_parts",
+  "model_steps": [],
+  "stream_model_steps": [
+    {
+      "events": [
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "hel",
+          "part_type": "custom",
+          "metadata": {
+            "adapter": "stream-fixture"
+          }
+        },
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "lo",
+          "part_type": "custom"
+        }
+      ]
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "hello",
+  "expected_final_part_types": ["custom"],
+  "expected_final_parts": [
+    {
+      "type": "custom",
+      "text": "hello"
+    }
+  ],
+  "expected_tool_calls": 0,
+  "expected_model_deltas": [
+    {
+      "kind": "text_delta",
+      "index": 0,
+      "text_delta": "hel",
+      "part_type": "custom",
+      "metadata": {
+        "adapter": "stream-fixture"
+      }
+    },
+    {
+      "kind": "text_delta",
+      "index": 0,
+      "text_delta": "lo",
+      "part_type": "custom"
+    }
+  ]
+}

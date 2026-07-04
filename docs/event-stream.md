@@ -32,10 +32,11 @@ Known v0.1 event types:
 
 Event `type` is an open string. SDKs should expose these known constants.
 Known core event types are runtime-owned: hooks must not replace core events or
-emit custom events using those type strings. `RuntimeHook.on_event` receives an
-`EventEmitter` and may call `emitter.emit(type, data)` to append non-core events
-to the same ordered stream. Other hook methods do not receive an emitter; they
-should encode data in returned protocol objects or emit from a later `on_event`.
+emit custom events using those type strings. A hook object that implements
+`on_event(event, context, emitter)` receives an `EventEmitter` and may call
+`emitter.emit(type, data)` to append non-core events to the same ordered stream.
+Other hook methods do not receive an emitter; they should encode data in
+returned protocol objects or emit from a later `on_event`.
 If an SDK allows `on_event` to return a replacement for a non-core event, the
 runtime-owned envelope remains authoritative: `run_id`, `sequence`,
 `created_at`, and `schema_version` stay unchanged, and only the replacement
@@ -47,8 +48,8 @@ loop forever.
 
 `model_delta` is emitted only when model streaming is enabled and the model
 adapter supports it. It is live rendering progress, not durable state. Known
-payload kinds are standardized in `spec/v0/events.schema.json` and
-`spec/v0/model-stream.md`: `text_delta`, `tool_call_delta`, `reasoning_delta`,
+payload kinds are standardized in `contracts/v0/events.schema.json` and
+`contracts/v0/model-stream.md`: `text_delta`, `tool_call_delta`, `reasoning_delta`,
 and `usage_delta`.
 
 `model_error` is emitted when a model attempt raises a structured provider

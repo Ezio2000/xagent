@@ -3,9 +3,9 @@
 Date: 2026-07-02
 
 This audit covers the Python reference SDK import surface exported from
-`agent_runtime.__all__`. The current decision is to keep the exported names as
+`kernel.__all__`. The current decision is to keep the exported names as
 the v0.1 public API and avoid compatibility aliases. Anything not exported from
-`agent_runtime.__all__` is internal unless a later audit promotes it.
+`kernel.__all__` is internal unless a later audit promotes it.
 
 ## Boundary Decisions
 
@@ -30,7 +30,7 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
   `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`, `ToolObservation`,
   `ToolAcceptance`, `ToolRejection`, `ToolOutput`, `BackgroundTask`,
   `ExecutableTool`, `AcceptableTool`, `InvocableTool`, `Tool`, `ToolRegistry`,
-  and `normalized_tool_risk`.
+  `ToolRegistryProtocol`, and `normalized_tool_risk`.
 - Keep model streaming names: `ModelStreamEvent`, `ModelContentDelta`,
   `ModelToolCallDelta`, `ModelReasoningDelta`, `ModelUsageDelta`,
   `ModelStreamStarted`, `ModelStreamCompleted`, and `ModelStreamAccumulator`.
@@ -87,9 +87,11 @@ envelopes, core event ordering, run ids, and sequence numbers. `QueuedEvent` is
 public because `EventEmitter.drain()` returns queued custom events without a
 runtime envelope.
 
-`RuntimeHook` is the public extension base class for observing and rewriting
-runtime boundaries. The name is intentionally broader than event hook because
-the same class covers model, tool, transition, and event hooks.
+`RuntimeHook` is the public structural hook marker for observing and rewriting
+runtime boundaries. Hook objects do not need to inherit behavior from a base
+class; the kernel discovers implemented hook methods structurally. The name is
+intentionally broader than event hook because the same hook object can cover
+model, tool, transition, and event boundaries.
 `ModelErrorDecision` is the typed return value for `on_model_error`, keeping
 retry and user-facing message policy host-owned instead of deriving it directly
 from provider metadata.

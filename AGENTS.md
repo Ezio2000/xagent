@@ -1,33 +1,53 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Project Structure
 
-This repository is a model-neutral agent loop runtime designed for multiple
-language SDKs. Cross-language contracts live in `spec/v0`; portable behavior
-fixtures live in `conformance/cases`; design notes live in `docs`. The current
-reference SDK is Python under `sdks/python`, with package code in
-`sdks/python/src/agent_runtime`, conformance tooling in
-`sdks/python/src/agent_runtime_conformance`, tests in `sdks/python/tests`, and
-runnable examples in `sdks/python/examples`. `sdks/typescript` and `sdks/go` are
-reserved for future SDKs.
+This repository is a model-neutral agent runtime monorepo. Cross-language
+contracts live in `contracts/v0`; portable behavior fixtures live in
+`conformance/cases`; design notes live in `docs`; Python workspace packages live
+under `python/packages`.
 
-## Build, Test, and Development Commands
+Python packages:
 
-Use `uv` for all Python work, use the Python interpreter selected by `uv`, and
-do not use `pip`. Run Python commands from `sdks/python`:
+- `kernel`: the OS-like runtime kernel. It owns the execution loop, scheduler,
+  model/tool protocols, events, durable state, snapshots, resume, limits,
+  approval/store/journal/hook ports, trace/replay, and the public SDK surface.
+- `conformance`: CLI and harness for validating implementations.
+
+Retired runtime packages are not allowed back: `engine`, `protocol`,
+`run-state`, `extensions`, and `tracing`. Do not add compatibility shims,
+deprecated aliases, or re-export packages for those names.
+
+## Dependency Rules
+
+`kernel` must not depend on any internal runtime package, conformance package,
+provider adapter, tool pack, app code, concrete store, UI, queue, or deployment
+runtime. External implementations depend on `kernel` and are injected through
+kernel ports such as `ModelClient`, `Tool`, `ApprovalPolicy`, `RunStore`,
+`RunJournal`, and `RuntimeHook`.
+
+`conformance` may depend on `kernel`, but `kernel` must never import
+`conformance`.
+
+## Build, Test, And Development Commands
+
+Python must be managed with `uv`; use the Python interpreter selected by `uv`.
+Do not use `pip`.
+
+Run commands from the repository root:
 
 ```bash
-uv sync                                      # install dependencies
-uv run pytest -q -p no:cacheprovider        # run tests
-uv run ruff check .                         # lint
-uv run ruff format --check .                # check formatting
-uv run pyright                              # type-check
-uv run agent-runtime-conformance ../../conformance/cases
-uv run python examples/basic_tool_loop.py
-uv run python examples/pause_resume_trace.py
+uv sync
+uv run pytest -q -p no:cacheprovider
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
+uv run conformance conformance/cases
+uv run python python/packages/kernel/examples/basic_tool_loop.py
+uv run python python/packages/kernel/examples/pause_resume_trace.py
 ```
 
-When editing JSON specs or conformance cases, parse all changed contracts:
+When editing JSON contracts or conformance cases, validate changed contracts:
 
 ```bash
 uv run python - <<'PY'
@@ -35,7 +55,7 @@ import json
 from pathlib import Path
 from jsonschema import Draft202012Validator
 
-for root in ["../../spec/v0", "../../conformance/cases"]:
+for root in ["contracts/v0", "conformance/cases"]:
     for path in sorted(Path(root).glob("*.json")):
         data = json.loads(path.read_text())
         if path.name.endswith(".schema.json"):
@@ -44,35 +64,28 @@ print("json ok")
 PY
 ```
 
-## Coding Style & Naming Conventions
+## Coding Style
 
 Python targets 3.11+ with strict Pyright. Ruff enforces imports, bugbear,
 modernization, simplification, and `E/F` rules with a 100-character line limit.
-Use 4-space indentation and explicit, model-neutral public types. Keep module
-names direct, for example `loop.py`, `models.py`, `messages.py`, `scheduler.py`,
-and `tools.py`.
+Use explicit, model-neutral public types. Add abstractions only when they reduce
+real complexity or enforce a boundary.
 
 ## Testing Guidelines
 
-Use `pytest` and `pytest-asyncio`. Test files should be named `test_*.py`, and
-test functions should describe the behavior being protected. Add Python
-regression tests for narrow runtime changes and conformance cases for behavior
-all SDKs must share. Core changes to checkpointing, resume, limits, streaming,
-tool scheduling, event order, or run traces require focused tests.
+Use `pytest` and `pytest-asyncio`. Add focused regression tests for kernel
+changes. Core changes to checkpointing, resume, limits, streaming, tool
+scheduling, event order, or run traces require focused tests and, when portable,
+conformance cases.
 
-## Commit & Pull Request Guidelines
+## Commit And PR Guidelines
 
-Recent commits use concise imperative summaries, for example `Update repository
-metadata`. Keep commits focused. Pull requests should include the problem,
-implementation summary, validation commands run, and related issues. For
-contract changes, call out updated `spec/v0`, conformance cases, and docs.
+Keep commits focused. Pull requests should include the problem, implementation
+summary, validation commands run, and contract/conformance/doc updates.
 
 ## Agent-Specific Instructions
 
 This project has no historical compatibility burden. Prefer clean breaking
-refactors over shims or legacy aliases. Keep provider adapters, persistence,
-approval flows, plugins, UI integrations, queues, and deployment runtime outside
-core. Put portable behavior in `spec/v0` and `conformance/cases`, not only in
-Python code. Use sub-agent CRs for bounded review; report `Must-Fix`,
-`Should-Fix`, and `Looks Good`, and fix credible `Must-Fix` items before
-handoff.
+refactors over compatibility shims or legacy aliases. Keep the kernel boundary
+strict. Put portable behavior in `contracts/v0` and `conformance/cases`, not
+only in Python code.
