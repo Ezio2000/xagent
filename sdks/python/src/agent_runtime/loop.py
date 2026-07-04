@@ -12,7 +12,7 @@ from time import monotonic, time
 from typing import Any, TypeAlias, TypeVar, cast
 
 from agent_runtime.approval import ApprovalDecision, ApprovalPolicy, ApprovalRequest
-from agent_runtime.control import ConversationInsert, PauseRequest, RunController
+from agent_runtime.control import ConversationInsert, PauseRequest, RunController, ToolCancelRequest
 from agent_runtime.errors import (
     AgentError,
     InvalidToolCall,
@@ -57,6 +57,7 @@ from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentState, AgentStatus, PauseState
 from agent_runtime.store import RunStore, StoredCheckpoint
 from agent_runtime.tools import (
+    BackgroundTask,
     Tool,
     ToolAcceptance,
     ToolInvocation,
@@ -64,8 +65,9 @@ from agent_runtime.tools import (
     ToolOutput,
     ToolRegistry,
     ToolRejection,
+    normalized_tool_risk,
 )
-from agent_runtime.trace import RunTrace, TraceRecorder
+from agent_runtime.trace import RunTrace, TraceRecorder, TraceStepKinds
 
 T = TypeVar("T")
 ToolSchedulerFactory: TypeAlias = Callable[[ToolCatalog, LoopLimits], ToolSchedulerProtocol]
@@ -135,6 +137,16 @@ class PreparedToolBatch:
 
 
 @dataclass(slots=True, frozen=True)
+class ToolProgressRecord:
+    """Live progress emitted by a tool implementation."""
+
+    call: ToolCall
+    batch_id: str
+    index: int
+    data: Mapping[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
 class AppliedTransition:
     """Runtime state transition that may be notified after a durable commit."""
 
@@ -157,6 +169,7 @@ class RunControlState:
     run_journal: RunJournal | None = None
     trace: TraceRecorder | None = None
     tool_scheduler: ToolSchedulerProtocol | None = None
+    active_tool_call_ids: set[str] = dataclass_field(default_factory=lambda: set[str]())
     initial_snapshot: RunSnapshot | None = None
     last_checkpoint: RunSnapshot | None = None
     last_checkpoint_id: str | None = None
@@ -387,6 +400,9 @@ class AgentLoop:
         stream: bool,
     ) -> AsyncIterator[AgentEvent]:
         terminal_checkpoint_committed = False
+        run_started_yielded = False
+        child_run_started = False
+        child_run_completed = False
         control.initial_snapshot = self._snapshot(state, context, control)
         try:
             for event in await self._events(
@@ -397,6 +413,16 @@ class AgentLoop:
                 trace_before_hooks=True,
             ):
                 yield event
+            run_started_yielded = True
+            if context.parent_run_id is not None:
+                for event in await self._events(
+                    context,
+                    control,
+                    EventTypes.CHILD_RUN_STARTED,
+                    self._child_run_event_data(context),
+                ):
+                    yield event
+                child_run_started = True
 
             drive_iterator = self._drive(state, context, control, stream=stream).__aiter__()
             async with aclosing(self._pump_events(drive_iterator)) as events:
@@ -435,12 +461,33 @@ class AgentLoop:
                 ):
                     yield event
 
+            if context.parent_run_id is not None:
+                for event in await self._events(
+                    context,
+                    control,
+                    EventTypes.CHILD_RUN_COMPLETED,
+                    self._child_run_event_data(context) | {"status": state.status.value},
+                ):
+                    yield event
+                child_run_completed = True
+
             for event in await self._events(
                 context, control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
             ):
                 yield event
             self._clear_pause_request(control)
         except RuntimeTimeoutError:
+            for event in await self._raw_run_started_events_if_needed(
+                state, control, run_started_yielded=run_started_yielded
+            ):
+                yield event
+            raw_child_started_events = await self._raw_child_run_started_events_if_needed(
+                context, control, child_run_started=child_run_started
+            )
+            for event in raw_child_started_events:
+                yield event
+            if raw_child_started_events:
+                child_run_started = True
             if terminal_checkpoint_committed:
                 self._clear_pause_request(control)
                 yield await self._raw_event(
@@ -448,6 +495,14 @@ class AgentLoop:
                     EventTypes.ERROR,
                     {"status": state.status.value, "message": LimitReasons.TIMEOUT_SECONDS},
                 )
+                for event in await self._raw_child_run_completed_events(
+                    context,
+                    control,
+                    state,
+                    child_run_started=child_run_started,
+                    child_run_completed=child_run_completed,
+                ):
+                    yield event
                 yield await self._raw_event(
                     control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
                 )
@@ -455,6 +510,7 @@ class AgentLoop:
             durable = control.last_checkpoint or control.initial_snapshot
             self._restore_state_from_snapshot(state, durable)
             self._rollback_trace_to_durable(control)
+            self._record_child_run_started_trace_if_needed(control, raw_child_started_events)
             if state.is_terminal:
                 self._clear_pause_request(control)
                 yield await self._raw_event(
@@ -462,6 +518,14 @@ class AgentLoop:
                     EventTypes.ERROR,
                     {"status": state.status.value, "message": LimitReasons.TIMEOUT_SECONDS},
                 )
+                for event in await self._raw_child_run_completed_events(
+                    context,
+                    control,
+                    state,
+                    child_run_started=child_run_started,
+                    child_run_completed=child_run_completed,
+                ):
+                    yield event
                 yield await self._raw_event(
                     control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
                 )
@@ -492,10 +556,29 @@ class AgentLoop:
                 EventTypes.ERROR,
                 {"status": state.status.value, "message": state.error},
             )
+            for event in await self._raw_child_run_completed_events(
+                context,
+                control,
+                state,
+                child_run_started=child_run_started,
+                child_run_completed=child_run_completed,
+            ):
+                yield event
             yield await self._raw_event(
                 control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
             )
         except Exception as exc:  # pragma: no cover - defensive boundary
+            for event in await self._raw_run_started_events_if_needed(
+                state, control, run_started_yielded=run_started_yielded
+            ):
+                yield event
+            raw_child_started_events = await self._raw_child_run_started_events_if_needed(
+                context, control, child_run_started=child_run_started
+            )
+            for event in raw_child_started_events:
+                yield event
+            if raw_child_started_events:
+                child_run_started = True
             if terminal_checkpoint_committed:
                 self._clear_pause_request(control)
                 yield await self._raw_event(
@@ -503,6 +586,14 @@ class AgentLoop:
                     EventTypes.ERROR,
                     {"status": state.status.value, "message": str(exc) or exc.__class__.__name__},
                 )
+                for event in await self._raw_child_run_completed_events(
+                    context,
+                    control,
+                    state,
+                    child_run_started=child_run_started,
+                    child_run_completed=child_run_completed,
+                ):
+                    yield event
                 yield await self._raw_event(
                     control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
                 )
@@ -510,6 +601,7 @@ class AgentLoop:
             durable = control.last_checkpoint or control.initial_snapshot
             self._restore_state_from_snapshot(state, durable)
             self._rollback_trace_to_durable(control)
+            self._record_child_run_started_trace_if_needed(control, raw_child_started_events)
             if state.is_terminal:
                 self._clear_pause_request(control)
                 yield await self._raw_event(
@@ -517,6 +609,14 @@ class AgentLoop:
                     EventTypes.ERROR,
                     {"status": state.status.value, "message": str(exc) or exc.__class__.__name__},
                 )
+                for event in await self._raw_child_run_completed_events(
+                    context,
+                    control,
+                    state,
+                    child_run_started=child_run_started,
+                    child_run_completed=child_run_completed,
+                ):
+                    yield event
                 yield await self._raw_event(
                     control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
                 )
@@ -547,6 +647,14 @@ class AgentLoop:
                 EventTypes.ERROR,
                 {"status": state.status.value, "message": state.error},
             )
+            for event in await self._raw_child_run_completed_events(
+                context,
+                control,
+                state,
+                child_run_started=child_run_started,
+                child_run_completed=child_run_completed,
+            ):
+                yield event
             yield await self._raw_event(
                 control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
             )
@@ -1042,6 +1150,7 @@ class AgentLoop:
             calls=self._tool_calls_from_snapshots(batch_snapshots),
             parallel=batch.parallel,
         )
+        progress_queue: asyncio.Queue[ToolProgressRecord] = asyncio.Queue()
 
         def reject_scheduler(message: str) -> None:
             nonlocal scheduler_error
@@ -1062,9 +1171,36 @@ class AgentLoop:
                 if precomputed is not None:
                     result = self._normalize_tool_output(precomputed)
                 else:
-                    result = await self._await_with_timeout(
-                        self._execute_tool(canonical_call, context), control
-                    )
+
+                    def emit_progress(data: Mapping[str, Any]) -> None:
+                        progress_queue.put_nowait(
+                            ToolProgressRecord(
+                                call=ToolCall.from_dict(canonical_call.to_dict()),
+                                batch_id=batch.id,
+                                index=call_index,
+                                data=dict(data),
+                            )
+                        )
+
+                    controller = control.run_controller
+                    try:
+                        result = await self._await_with_timeout(
+                            self._execute_tool(
+                                canonical_call,
+                                context,
+                                progress_emitter=emit_progress,
+                                cancel_checker=None
+                                if controller is None
+                                else lambda call_id=canonical_call.id: (
+                                    call_id in control.active_tool_call_ids
+                                    and controller.is_tool_cancelled(call_id)
+                                ),
+                            ),
+                            control,
+                        )
+                    except BaseException:
+                        self._finish_tool_execution(control, canonical_call.id)
+                        raise
                     result = self._normalize_tool_output(result)
                 result_snapshot = self._tool_output_snapshot(result)
                 execute_results[call_index] = result_snapshot
@@ -1072,9 +1208,46 @@ class AgentLoop:
             finally:
                 executing_indices.discard(call_index)
 
-        async for progress in self._tool_scheduler(control).run_batch(
-            scheduler_batch, execute, stop_on_error=self._limits.stop_on_tool_error
+        async for progress in self._run_tool_scheduler_events(
+            scheduler_batch,
+            execute,
+            control,
+            progress_queue,
         ):
+            if isinstance(progress, ToolProgressRecord):
+                for event in await self._events(
+                    context,
+                    control,
+                    EventTypes.TOOL_PROGRESS,
+                    {
+                        "id": progress.call.id,
+                        "name": progress.call.name,
+                        "mode": progress.call.mode,
+                        "batch_id": progress.batch_id,
+                        "parallel": batch.parallel,
+                        "index": progress.index,
+                        "progress": dict(progress.data),
+                    },
+                ):
+                    yield event
+                continue
+            if isinstance(progress, ToolCancelRequest):
+                if self._is_active_tool_cancel(control, progress):
+                    for event in await self._events(
+                        context,
+                        control,
+                        EventTypes.TOOL_CANCEL_REQUESTED,
+                        {
+                            "id": progress.tool_call_id,
+                            "reason": progress.reason,
+                            "source": progress.source,
+                            "metadata": progress.metadata,
+                        },
+                    ):
+                        yield event
+                else:
+                    self._clear_tool_cancel(control, progress.tool_call_id)
+                continue
             if scheduler_error is not None:
                 raise scheduler_error
             self._validate_scheduler_progress(batch, batch_snapshots, progress)
@@ -1086,6 +1259,8 @@ class AgentLoop:
                     raise AgentError("tool scheduler started a completed tool call")
                 started_indices.add(progress.index)
                 implementation_invoked = canonical_call.id not in precomputed_results
+                if implementation_invoked:
+                    self._begin_tool_execution(control, canonical_call.id)
                 for event in await self._events(
                     context,
                     control,
@@ -1116,30 +1291,45 @@ class AgentLoop:
                 raise AgentError("tool scheduler must not replace execute results")
             completed_indices.add(progress.index)
             implementation_invoked = canonical_call.id not in precomputed_results
-            result = await self._after_tool(
-                self._tool_output_from_snapshot(expected_result), context, control
-            )
-            self._validate_tool_output_mode(canonical_call, result)
-            if not implementation_invoked:
-                self._validate_non_invoked_tool_output(canonical_call, result)
-            invocation = ToolInvocation.from_tool_call(canonical_call)
-            tool_message = result.to_message(invocation)
-            completed[progress.index] = (canonical_call, result, tool_message)
-            for event in await self._events(
-                context,
-                control,
-                EventTypes.TOOL_COMPLETED,
-                {
-                    "id": canonical_call.id,
-                    "name": canonical_call.name,
-                    "mode": canonical_call.mode,
-                    "batch_id": batch.id,
-                    "parallel": batch.parallel,
-                    "index": progress.index,
-                    "implementation_invoked": implementation_invoked,
-                    "result": result.summary(),
-                },
-            ):
+            try:
+                result = await self._after_tool(
+                    self._tool_output_from_snapshot(expected_result), context, control
+                )
+                self._validate_tool_output_mode(canonical_call, result)
+                if not implementation_invoked:
+                    self._validate_non_invoked_tool_output(canonical_call, result)
+                invocation = ToolInvocation.from_tool_call(canonical_call)
+                tool_message = result.to_message(invocation)
+                completed[progress.index] = (canonical_call, result, tool_message)
+                tool_completed_events = await self._events(
+                    context,
+                    control,
+                    EventTypes.TOOL_COMPLETED,
+                    {
+                        "id": canonical_call.id,
+                        "name": canonical_call.name,
+                        "mode": canonical_call.mode,
+                        "batch_id": batch.id,
+                        "parallel": batch.parallel,
+                        "index": progress.index,
+                        "implementation_invoked": implementation_invoked,
+                        "result": result.summary(),
+                    },
+                )
+                background_events = await self._background_task_events(
+                    canonical_call,
+                    result,
+                    batch,
+                    progress.index,
+                    implementation_invoked,
+                    context,
+                    control,
+                )
+            finally:
+                self._finish_tool_execution(control, canonical_call.id)
+            for event in tool_completed_events:
+                yield event
+            for event in background_events:
                 yield event
 
             if len(completed) < len(batch.calls):
@@ -1268,6 +1458,211 @@ class AgentLoop:
         if completed_indices != set(range(len(batch.calls))):
             raise AgentError("tool scheduler ended before completing the selected batch")
 
+    async def _run_tool_scheduler_events(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        control: RunControlState,
+        progress_queue: asyncio.Queue[ToolProgressRecord],
+    ) -> AsyncIterator[ToolStarted | ToolCompleted | ToolProgressRecord | ToolCancelRequest]:
+        iterator = (
+            self._tool_scheduler(control)
+            .run_batch(
+                batch,
+                execute,
+                stop_on_error=self._limits.stop_on_tool_error,
+            )
+            .__aiter__()
+        )
+        scheduler_task: asyncio.Task[ToolStarted | ToolCompleted] | None = asyncio.ensure_future(
+            anext(iterator)
+        )
+        progress_task: asyncio.Task[ToolProgressRecord] | None = asyncio.ensure_future(
+            progress_queue.get()
+        )
+        cancel_task = self._tool_cancel_task(control)
+
+        def drain_progress_queue() -> tuple[ToolProgressRecord, ...]:
+            records: list[ToolProgressRecord] = []
+            while True:
+                try:
+                    records.append(progress_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    return tuple(records)
+
+        try:
+            while scheduler_task is not None:
+                tasks: set[asyncio.Task[Any]] = {scheduler_task}
+                if progress_task is not None:
+                    tasks.add(progress_task)
+                if cancel_task is not None:
+                    tasks.add(cancel_task)
+                done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                if progress_task is not None and progress_task in done:
+                    yield progress_task.result()
+                    for progress in drain_progress_queue():
+                        yield progress
+                    progress_task = asyncio.ensure_future(progress_queue.get())
+                if cancel_task is not None and cancel_task in done:
+                    yield cancel_task.result()
+                    cancel_task = self._tool_cancel_task(control)
+                if scheduler_task in done:
+                    if progress_task is not None and progress_task.done():
+                        yield progress_task.result()
+                        for progress in drain_progress_queue():
+                            yield progress
+                        progress_task = asyncio.ensure_future(progress_queue.get())
+                    else:
+                        for progress in drain_progress_queue():
+                            yield progress
+                    try:
+                        yield scheduler_task.result()
+                    except StopAsyncIteration:
+                        scheduler_task = None
+                    else:
+                        scheduler_task = asyncio.ensure_future(anext(iterator))
+        finally:
+            for call in batch.calls:
+                self._finish_tool_execution(control, call.id)
+            for task in (scheduler_task, progress_task, cancel_task):
+                if task is not None and not task.done():
+                    task.cancel()
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                with suppress(Exception):
+                    await close()
+
+    @staticmethod
+    def _tool_cancel_task(control: RunControlState) -> asyncio.Task[ToolCancelRequest] | None:
+        controller = control.run_controller
+        if controller is None:
+            return None
+        return asyncio.ensure_future(controller.wait_for_tool_cancel())
+
+    async def _background_task_events(
+        self,
+        call: ToolCall,
+        result: ToolOutput,
+        batch: ToolBatch,
+        index: int,
+        implementation_invoked: bool,
+        context: RuntimeContext,
+        control: RunControlState,
+    ) -> tuple[AgentEvent, ...]:
+        task = result.background_task
+        if task is None:
+            return ()
+        event_type = self._background_task_event_type(task)
+        return await self._events(
+            context,
+            control,
+            event_type,
+            {
+                "task": task.to_dict(),
+                "tool_call": {
+                    "id": call.id,
+                    "name": call.name,
+                    "mode": call.mode,
+                    "batch_id": batch.id,
+                    "parallel": batch.parallel,
+                    "index": index,
+                    "implementation_invoked": implementation_invoked,
+                },
+            },
+        )
+
+    @staticmethod
+    def _background_task_event_type(task: BackgroundTask) -> str:
+        if task.lifecycle == "started":
+            return EventTypes.BACKGROUND_TASK_STARTED
+        if task.lifecycle == "completed":
+            return EventTypes.BACKGROUND_TASK_COMPLETED
+        return EventTypes.BACKGROUND_TASK_UPDATED
+
+    async def _raw_child_run_started_events_if_needed(
+        self,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        child_run_started: bool,
+    ) -> tuple[AgentEvent, ...]:
+        if child_run_started or context.parent_run_id is None:
+            return ()
+        return (
+            await self._raw_event(
+                control,
+                EventTypes.CHILD_RUN_STARTED,
+                self._child_run_event_data(context),
+                record_trace=not self._trace_has_kind(control, TraceStepKinds.CHILD_RUN_STARTED),
+            ),
+        )
+
+    async def _raw_child_run_completed_events(
+        self,
+        context: RuntimeContext,
+        control: RunControlState,
+        state: AgentState,
+        *,
+        child_run_started: bool,
+        child_run_completed: bool,
+    ) -> tuple[AgentEvent, ...]:
+        if not child_run_started or child_run_completed:
+            return ()
+        record_trace = self._trace_has_child_run_started(control)
+        return (
+            await self._raw_event(
+                control,
+                EventTypes.CHILD_RUN_COMPLETED,
+                self._child_run_event_data(context) | {"status": state.status.value},
+                record_trace=record_trace,
+            ),
+        )
+
+    @staticmethod
+    def _trace_has_child_run_started(control: RunControlState) -> bool:
+        if control.trace is None:
+            return True
+        kinds = [step.kind for step in control.trace.to_trace().steps]
+        return (
+            TraceStepKinds.CHILD_RUN_STARTED in kinds
+            and TraceStepKinds.CHILD_RUN_COMPLETED not in kinds
+        )
+
+    async def _raw_run_started_events_if_needed(
+        self,
+        state: AgentState,
+        control: RunControlState,
+        *,
+        run_started_yielded: bool,
+    ) -> tuple[AgentEvent, ...]:
+        if run_started_yielded:
+            return ()
+        return (
+            await self._raw_event(
+                control,
+                EventTypes.RUN_STARTED,
+                {"state": state.summary()},
+                record_trace=not self._trace_has_kind(control, TraceStepKinds.RUN_STARTED),
+            ),
+        )
+
+    @staticmethod
+    def _trace_has_kind(control: RunControlState, kind: str) -> bool:
+        if control.trace is None:
+            return False
+        return any(step.kind == kind for step in control.trace.to_trace().steps)
+
+    def _record_child_run_started_trace_if_needed(
+        self,
+        control: RunControlState,
+        events: tuple[AgentEvent, ...],
+    ) -> None:
+        if not events or control.trace is None:
+            return
+        if self._trace_has_kind(control, TraceStepKinds.CHILD_RUN_STARTED):
+            return
+        control.trace.record_event(events[0])
+
     async def _approval_request(
         self, call: ToolCall, context: RuntimeContext, control: RunControlState
     ) -> tuple[ApprovalRequest, tuple[AgentEvent, ...]]:
@@ -1275,7 +1670,7 @@ class AgentLoop:
         if policy is None:
             raise RuntimeError("approval request requires an approval policy")
         spec = self._tools.spec_for(call.name)
-        risk = {} if spec is None else dict(spec.annotations)
+        risk = {} if spec is None else dict(normalized_tool_risk(spec.annotations))
         request = ApprovalRequest(
             tool_call=call,
             tool_spec=spec,
@@ -1352,10 +1747,22 @@ class AgentLoop:
             return self._tool_error_output(call, exc)
         return None
 
-    async def _execute_tool(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
+    async def _execute_tool(
+        self,
+        call: ToolCall,
+        context: RuntimeContext,
+        *,
+        progress_emitter: Callable[[Mapping[str, Any]], None] | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
+    ) -> ToolOutput:
         try:
             tool_context = RuntimeContext.from_dict(context.to_dict())
-            return await self._tools.invoke(call, tool_context)
+            return await self._tools.invoke(
+                call,
+                tool_context,
+                progress_emitter=progress_emitter,
+                cancel_checker=cancel_checker,
+            )
         except (InvalidToolCall, ToolError) as exc:
             return self._tool_error_output(call, exc)
 
@@ -1964,6 +2371,35 @@ class AgentLoop:
             controller.clear_pause()
 
     @staticmethod
+    def _begin_tool_execution(control: RunControlState, tool_call_id: str) -> None:
+        controller = control.run_controller
+        if controller is not None:
+            controller.clear_tool_cancel(tool_call_id)
+        control.active_tool_call_ids.add(tool_call_id)
+
+    @staticmethod
+    def _finish_tool_execution(control: RunControlState, tool_call_id: str) -> None:
+        control.active_tool_call_ids.discard(tool_call_id)
+        controller = control.run_controller
+        if controller is not None:
+            controller.clear_tool_cancel(tool_call_id)
+
+    @staticmethod
+    def _is_active_tool_cancel(control: RunControlState, request: ToolCancelRequest) -> bool:
+        controller = control.run_controller
+        return (
+            controller is not None
+            and request.tool_call_id in control.active_tool_call_ids
+            and controller.is_tool_cancelled(request.tool_call_id)
+        )
+
+    @staticmethod
+    def _clear_tool_cancel(control: RunControlState, tool_call_id: str) -> None:
+        controller = control.run_controller
+        if controller is not None:
+            controller.clear_tool_cancel(tool_call_id)
+
+    @staticmethod
     def _rollback_trace_to_durable(control: RunControlState) -> None:
         if control.trace is not None:
             control.trace.rollback_to_durable()
@@ -2324,7 +2760,12 @@ class AgentLoop:
         return f"checkpoint-{sequence}"
 
     async def _raw_event(
-        self, control: RunControlState, event_type: str, data: Mapping[str, Any]
+        self,
+        control: RunControlState,
+        event_type: str,
+        data: Mapping[str, Any],
+        *,
+        record_trace: bool = True,
     ) -> AgentEvent:
         event = AgentEvent(
             event_type,
@@ -2332,7 +2773,7 @@ class AgentLoop:
             run_id=control.run_id,
             sequence=control.next_sequence(),
         )
-        if control.trace is not None:
+        if record_trace and control.trace is not None:
             control.trace.record_event(event)
         return event
 
@@ -2527,6 +2968,17 @@ class AgentLoop:
             state=AgentState.from_dict(state.to_dict()),
             context=RuntimeContext.from_dict(context_data),
         )
+
+    @staticmethod
+    def _child_run_event_data(context: RuntimeContext) -> dict[str, Any]:
+        if context.parent_run_id is None:
+            raise RuntimeError("child run event requires parent_run_id")
+        data: dict[str, Any] = {"parent_run_id": context.parent_run_id}
+        if context.parent_tool_call_id is not None:
+            data["parent_tool_call_id"] = context.parent_tool_call_id
+        if context.run_kind is not None:
+            data["run_kind"] = context.run_kind
+        return data
 
     @staticmethod
     def _result(

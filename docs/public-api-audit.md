@@ -14,7 +14,8 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
   `LimitReasons`, `ModelErrorDecision`, `ToolSchedulerFactory`, and
   `RunSnapshot`.
 - Keep resume/control names: `ResumeInput`, `PauseSelector`, `PauseRequest`,
-  `RunController`, `ConversationInsert`, and `PauseState`.
+  `RunController`, `ConversationInsert`, `ToolCancelRequest`, and
+  `PauseState`.
 - Keep core extension protocol names: `RunStore`, `StoredCheckpoint`,
   `CheckpointSummary`, `ApprovalPolicy`, `ApprovalRequest`,
   `ApprovalDecision`, `ApprovalAction`, `RunJournal`, and `JournalRecord`.
@@ -22,13 +23,14 @@ the v0.1 public API and avoid compatibility aliases. Anything not exported from
   `ReplayResult`, `ReplayError`, and `replay_trace`.
 - Keep event names: `AgentEvent`, `EventType`, `EventTypes`, `EventEmitter`,
   and `QueuedEvent`.
-- Keep message names: `Message`, `ContentPart`, and `ToolCall`.
+- Keep message names: `Message`, `ContentPart`, `ArtifactRef`, and `ToolCall`.
 - Keep model and tool protocol names: `ModelRequest`, `ModelResponse`,
   `ModelClient`, `StreamingModelClient`, `ModelOptions`, `ToolChoice`,
   `ResponseFormat`, `ModelCapabilities`, `ModelUsage`, `model_capabilities`,
   `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`, `ToolObservation`,
-  `ToolAcceptance`, `ToolRejection`, `ToolOutput`, `ExecutableTool`,
-  `AcceptableTool`, `InvocableTool`, `Tool`, and `ToolRegistry`.
+  `ToolAcceptance`, `ToolRejection`, `ToolOutput`, `BackgroundTask`,
+  `ExecutableTool`, `AcceptableTool`, `InvocableTool`, `Tool`, `ToolRegistry`,
+  and `normalized_tool_risk`.
 - Keep model streaming names: `ModelStreamEvent`, `ModelContentDelta`,
   `ModelToolCallDelta`, `ModelReasoningDelta`, `ModelUsageDelta`,
   `ModelStreamStarted`, `ModelStreamCompleted`, and `ModelStreamAccumulator`.
@@ -49,19 +51,23 @@ The name keeps it aligned with `resume-input.schema.json`.
 
 `RunController` remains separate from `LoopLimits`. The controller is the
 host-owned imperative handle for pause, interrupt, and conversation insertion.
-Limits are static run configuration, including token budgets and bounded model
-retry counts.
+It also carries cooperative tool-cancel requests; cancellation remains a
+host/tool contract, not a forced process kill. Limits are static run
+configuration, including token budgets and bounded model retry counts.
 
 `PauseSelector` names the `expected_pause` matcher used by `ResumeInput`. It is
 not a general query object; it only matches the paused snapshot before resume.
 
 `Message`, `ContentPart`, and `ToolCall` are the public message protocol names.
 They intentionally avoid provider-specific terms such as chat, prompt, block,
-or function call. `ToolCall` is model-requested work. `ToolInvocation` is the
-tool-facing view of that work, including an open `mode` string. `ToolObservation`
-is execute-mode output, `ToolAcceptance` is accept-mode acknowledgement for
-external completion, `ToolRejection` is accept-mode failure output, and
-`ToolOutput` is the generic extension output shape.
+or function call. `ArtifactRef` is the portable host-owned artifact reference
+stored in content part data. `ToolCall` is model-requested work.
+`ToolInvocation` is the tool-facing view of that work, including an open `mode`
+string. `ToolObservation` is execute-mode output, `ToolAcceptance` is
+accept-mode acknowledgement for external completion, `ToolRejection` is
+accept-mode failure output, and `ToolOutput` is the generic extension output
+shape. `BackgroundTask` is the optional host-owned background work reference
+that tool outputs can surface in events and durable tool-message metadata.
 
 `RunTrace` and `TraceStep` name the compact semantic record and its entries.
 `TraceStepKinds` mirrors runtime-owned core `EventTypes`. Replay validates this

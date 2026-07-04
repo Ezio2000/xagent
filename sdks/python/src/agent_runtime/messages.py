@@ -64,6 +64,14 @@ def _expect_optional_str(value: object, label: str) -> str | None:
     return value
 
 
+def _expect_optional_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{label} must be an integer or null")
+    return value
+
+
 def _expect_present_optional_str(
     value: Mapping[str, Any],
     key: str,
@@ -82,6 +90,77 @@ def _reject_unknown_keys(value: Mapping[str, Any], allowed: set[str], label: str
     if unknown:
         names = ", ".join(sorted(unknown))
         raise ValueError(f"{label} has unknown field(s): {names}")
+
+
+@dataclass(slots=True, frozen=True)
+class ArtifactRef:
+    """Host-owned artifact reference carried by message content parts.
+
+    The runtime stores only the reference and integrity metadata. It does not
+    read, write, retain, or dereference artifact payloads.
+    """
+
+    ref: str
+    media_type: str | None = None
+    name: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
+
+    def __post_init__(self) -> None:
+        ref = _expect_str(self.ref, "artifact ref")
+        if not ref:
+            raise ValueError("artifact ref must not be empty")
+        media_type = _expect_optional_str(self.media_type, "artifact media_type")
+        name = _expect_optional_str(self.name, "artifact name")
+        size_bytes = _expect_optional_int(self.size_bytes, "artifact size_bytes")
+        sha256 = _expect_optional_str(self.sha256, "artifact sha256")
+        if media_type == "":
+            raise ValueError("artifact media_type must not be empty")
+        if name == "":
+            raise ValueError("artifact name must not be empty")
+        if size_bytes is not None and size_bytes < 0:
+            raise ValueError("artifact size_bytes must be >= 0")
+        if sha256 is not None and not sha256:
+            raise ValueError("artifact sha256 must not be empty")
+        object.__setattr__(self, "ref", ref)
+        object.__setattr__(self, "media_type", media_type)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "size_bytes", size_bytes)
+        object.__setattr__(self, "sha256", sha256)
+        object.__setattr__(
+            self,
+            "metadata",
+            _copy_mapping(_expect_mapping(self.metadata, "artifact metadata")),
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> ArtifactRef:
+        known = {"ref", "media_type", "name", "size_bytes", "sha256", "metadata"}
+        _reject_unknown_keys(value, known, "artifact ref")
+        raw_metadata: object = value.get("metadata", {})
+        return cls(
+            ref=_expect_str(value["ref"], "artifact ref"),
+            media_type=_expect_optional_str(value.get("media_type"), "artifact media_type"),
+            name=_expect_optional_str(value.get("name"), "artifact name"),
+            size_bytes=_expect_optional_int(value.get("size_bytes"), "artifact size_bytes"),
+            sha256=_expect_optional_str(value.get("sha256"), "artifact sha256"),
+            metadata=_expect_mapping(raw_metadata, "artifact metadata"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"ref": self.ref}
+        if self.media_type is not None:
+            data["media_type"] = self.media_type
+        if self.name is not None:
+            data["name"] = self.name
+        if self.size_bytes is not None:
+            data["size_bytes"] = self.size_bytes
+        if self.sha256 is not None:
+            data["sha256"] = self.sha256
+        if self.metadata:
+            data["metadata"] = _copy_mapping(self.metadata)
+        return data
 
 
 @dataclass(slots=True)
@@ -118,6 +197,14 @@ class ContentPart:
             raise ValueError("content part cannot set both uri and ref")
         self.data = _copy_mapping(self.data)
         self.metadata = _copy_mapping(self.metadata)
+        raw_artifact = self.data.get("artifact")
+        if self.type == "artifact" and (self.ref is None or raw_artifact is None):
+            raise ValueError("artifact parts require ref and data.artifact")
+        if raw_artifact is not None:
+            artifact = ArtifactRef.from_dict(_expect_mapping(raw_artifact, "content artifact"))
+            if self.ref is not None and artifact.ref != self.ref:
+                raise ValueError("content artifact ref must match content part ref")
+            self.data["artifact"] = artifact.to_dict()
 
     @classmethod
     def text_part(
@@ -193,6 +280,24 @@ class ContentPart:
             ref=ref,
             media_type=media_type,
             name=name,
+            metadata=metadata or {},
+        )
+
+    @classmethod
+    def artifact_ref(
+        cls,
+        artifact: ArtifactRef,
+        *,
+        part_type: str = "artifact",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> ContentPart:
+        canonical = ArtifactRef.from_dict(artifact.to_dict())
+        return cls(
+            type=part_type,
+            ref=canonical.ref,
+            media_type=canonical.media_type,
+            name=canonical.name,
+            data={"artifact": canonical.to_dict()},
             metadata=metadata or {},
         )
 

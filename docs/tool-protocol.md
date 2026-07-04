@@ -37,6 +37,13 @@ to approval policy. `deny` commits a mode-appropriate tool error or rejection
 without calling the tool. `pause` stops before tool execution with the call
 still pending and resumes through the normal run-control protocol. Approval is
 a runtime decision point, not an OS-level sandbox or UI implementation.
+Approval-facing risk is derived from `spec.annotations`. If a tool declares a
+nested `annotations.risk` object, core validates the standardized fields
+`filesystem`, `network`, `subprocess`, `destructive`, and
+`requires_approval`, while preserving additional risk fields for host policy.
+`filesystem` and `network` are open non-empty strings with recommended values,
+not closed vocabularies. If no nested `risk` object is present, legacy
+annotations remain the risk summary passed to the approval policy.
 
 Execute-mode tools return `ToolObservation`:
 
@@ -44,6 +51,8 @@ Execute-mode tools return `ToolObservation`:
 - `metadata`: optional small JSON-serializable details.
 - `is_error`: whether the result represents a tool failure.
 - `pause`: optional core pause request for external waits.
+- `background_task`: optional host-owned task reference when the tool accepted
+  or started background work.
 
 Accept-mode tools return `ToolAcceptance` when work was accepted, or
 `ToolRejection` when the invocation could not be accepted:
@@ -51,6 +60,7 @@ Accept-mode tools return `ToolAcceptance` when work was accepted, or
 - `parts`: short model-visible acknowledgement that the work was accepted.
 - `correlation_id`: stable id that a later external insertion can reference.
 - `metadata`: host-owned details for hooks/events only.
+- `background_task`: optional host-owned task reference.
 - `ToolRejection` carries `is_error: true`, optional `correlation_id`, and no
   pause request.
 
@@ -58,10 +68,19 @@ Extension-mode tools return `ToolOutput` with a non-empty custom `kind`. Core
 runtime validation preserves the generic output shape and only applies
 mode/result-kind coupling to known `execute` and `accept` modes.
 
-Only `parts` and runtime-owned markers such as `result_kind`, `is_error`, and
-`correlation_id` are copied into the durable tool message. Tool output metadata
-is available to hooks/events during the current invocation, but it is not copied
-into model-visible history, checkpoints, or trace payload values.
+Tool implementations receive a `ToolExecutionContext`. They can call
+`context.emit_progress({...})` to emit live `tool_progress` events and poll
+`context.cancel_requested` to observe host cancellation requests made through
+`RunController.cancel_tool(...)`. Cancellation is active-call scoped:
+requests for unknown, stale, or already completed tool-call ids are no-ops.
+Cancellation is cooperative and does not forcefully stop tool code or
+host-owned subprocesses.
+
+Only `parts` and runtime-owned markers such as `result_kind`, `is_error`,
+`correlation_id`, and optional `background_task` references are copied into the
+durable tool message. Tool output metadata is available to hooks/events during
+the current invocation, but it is not copied into model-visible history,
+checkpoints, or trace payload values.
 
 The portable output shape is specified in `spec/v0/tool-result.schema.json`.
 
@@ -81,6 +100,18 @@ Accept mode is different from a waiting observation. It completes immediately
 from the runtime's point of view and commits an acceptance or rejection tool
 message. Any later external result must enter through the conversation insertion
 protocol, not through the original tool call.
+
+Background task references are not queues. They identify host-owned work and
+surface task lifecycle events from tool results. `status` is host-owned and
+open; `lifecycle` is the runtime-owned `started`, `updated`, or `completed`
+classification used to choose the emitted event. The host owns workers, durable
+job state, retries, callbacks, later worker updates, and any eventual resume or
+conversation insertion.
+
+Message content can reference host-owned artifacts through
+`ContentPart(type="artifact", data={"artifact": ...})`. Core preserves the
+reference, media type, name, size, hash, and metadata but does not dereference,
+retain, or garbage-collect artifact payloads.
 
 The registry exposes neutral `ToolSpec` values. Provider adapters are
 responsible for converting those specs to provider-specific tool formats.
@@ -130,6 +161,28 @@ ToolSpec(
         "parallel_safe": True,
         "read_only": True,
         "idempotent": True,
+    },
+)
+```
+
+Common approval risk annotations:
+
+```python
+ToolSpec(
+    name="bash",
+    description="Run a shell command.",
+    input_schema={"type": "object"},
+    annotations={
+        "parallel_safe": False,
+        "read_only": False,
+        "idempotent": False,
+        "risk": {
+            "filesystem": "write",
+            "network": "none",
+            "subprocess": True,
+            "destructive": True,
+            "requires_approval": True,
+        },
     },
 )
 ```

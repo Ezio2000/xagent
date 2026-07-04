@@ -60,9 +60,16 @@ class EventTypes:
     MODEL_ERROR = "model_error"
     MODEL_COMPLETED = "model_completed"
     TOOL_STARTED = "tool_started"
+    TOOL_PROGRESS = "tool_progress"
+    TOOL_CANCEL_REQUESTED = "tool_cancel_requested"
     TOOL_COMPLETED = "tool_completed"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_COMPLETED = "approval_completed"
+    BACKGROUND_TASK_STARTED = "background_task_started"
+    BACKGROUND_TASK_UPDATED = "background_task_updated"
+    BACKGROUND_TASK_COMPLETED = "background_task_completed"
+    CHILD_RUN_STARTED = "child_run_started"
+    CHILD_RUN_COMPLETED = "child_run_completed"
     CONVERSATION_INSERTED = "conversation_inserted"
     PAUSE_REQUESTED = "pause_requested"
     CHECKPOINT = "checkpoint"
@@ -81,9 +88,16 @@ CORE_EVENT_TYPES = frozenset(
         EventTypes.MODEL_ERROR,
         EventTypes.MODEL_COMPLETED,
         EventTypes.TOOL_STARTED,
+        EventTypes.TOOL_PROGRESS,
+        EventTypes.TOOL_CANCEL_REQUESTED,
         EventTypes.TOOL_COMPLETED,
         EventTypes.APPROVAL_REQUESTED,
         EventTypes.APPROVAL_COMPLETED,
+        EventTypes.BACKGROUND_TASK_STARTED,
+        EventTypes.BACKGROUND_TASK_UPDATED,
+        EventTypes.BACKGROUND_TASK_COMPLETED,
+        EventTypes.CHILD_RUN_STARTED,
+        EventTypes.CHILD_RUN_COMPLETED,
         EventTypes.CONVERSATION_INSERTED,
         EventTypes.PAUSE_REQUESTED,
         EventTypes.CHECKPOINT,

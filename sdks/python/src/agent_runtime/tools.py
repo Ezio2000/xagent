@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, NoReturn, Protocol, cast
@@ -23,6 +23,9 @@ from agent_runtime.runtime import RuntimeContext
 
 ToolInvocationMode = str
 _RESERVED_TOOL_OUTPUT_KINDS = {"observation", "acceptance", "rejection"}
+_BACKGROUND_TASK_LIFECYCLES = {"started", "updated", "completed"}
+ToolProgressEmitter = Callable[[Mapping[str, Any]], None]
+ToolCancelChecker = Callable[[], bool]
 
 
 def _empty_mapping() -> Mapping[str, Any]:
@@ -153,17 +156,155 @@ class ToolInvocation:
 class ToolExecutionContext(RuntimeContext):
     """Tool-facing runtime context."""
 
+    __slots__ = ("_cancel_checker", "_progress_emitter")
+
     @classmethod
-    def from_runtime_context(cls, context: RuntimeContext) -> ToolExecutionContext:
+    def from_runtime_context(
+        cls,
+        context: RuntimeContext,
+        *,
+        progress_emitter: ToolProgressEmitter | None = None,
+        cancel_checker: ToolCancelChecker | None = None,
+    ) -> ToolExecutionContext:
         data = context.to_dict()
         tool_context = cls(
             run_id=_expect_str(data["run_id"], "tool context run_id"),
             started_at=cast(float, data["started_at"]),
             deadline=cast(float | None, data["deadline"]),
             metadata=_expect_mapping(data["metadata"], "tool context metadata"),
+            parent_run_id=_expect_optional_str(
+                data.get("parent_run_id"), "tool context parent_run_id"
+            ),
+            parent_tool_call_id=_expect_optional_str(
+                data.get("parent_tool_call_id"), "tool context parent_tool_call_id"
+            ),
+            run_kind=_expect_optional_str(data.get("run_kind"), "tool context run_kind"),
         )
         tool_context.sequence = cast(int, data["sequence"])
+        tool_context._progress_emitter = progress_emitter
+        tool_context._cancel_checker = cancel_checker
         return tool_context
+
+    def emit_progress(self, data: Mapping[str, Any]) -> None:
+        """Emit live, non-durable tool progress for hosts that subscribed to events."""
+
+        emitter = getattr(self, "_progress_emitter", None)
+        if emitter is None:
+            return
+        emitter(_copy_mapping(_expect_mapping(data, "tool progress data")))
+
+    @property
+    def cancel_requested(self) -> bool:
+        checker = getattr(self, "_cancel_checker", None)
+        return False if checker is None else checker()
+
+
+@dataclass(slots=True, frozen=True)
+class BackgroundTask:
+    """Host-owned background work reference surfaced by a tool result."""
+
+    id: str
+    status: str
+    kind: str = "background_task"
+    lifecycle: str | None = None
+    correlation_id: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
+
+    def __post_init__(self) -> None:
+        task_id = _expect_str(self.id, "background task id")
+        kind = _expect_str(self.kind, "background task kind")
+        status = _expect_str(self.status, "background task status")
+        lifecycle = _expect_optional_str(self.lifecycle, "background task lifecycle")
+        correlation_id = _expect_optional_str(self.correlation_id, "background task correlation_id")
+        if not task_id:
+            raise ValueError("background task id must not be empty")
+        if not kind:
+            raise ValueError("background task kind must not be empty")
+        if not status:
+            raise ValueError("background task status must not be empty")
+        if lifecycle is None:
+            lifecycle = _default_background_task_lifecycle(status)
+        if lifecycle not in _BACKGROUND_TASK_LIFECYCLES:
+            raise ValueError("background task lifecycle must be started, updated, or completed")
+        if correlation_id == "":
+            raise ValueError("background task correlation_id must not be empty")
+        object.__setattr__(self, "id", task_id)
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "lifecycle", lifecycle)
+        object.__setattr__(self, "correlation_id", correlation_id)
+        object.__setattr__(
+            self,
+            "metadata",
+            _copy_mapping(_expect_mapping(self.metadata, "background task metadata")),
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> BackgroundTask:
+        known = {"id", "status", "kind", "lifecycle", "correlation_id", "metadata"}
+        _reject_unknown_keys(value, known, "background task")
+        raw_metadata: object = value.get("metadata", {})
+        return cls(
+            id=_expect_str(value["id"], "background task id"),
+            status=_expect_str(value["status"], "background task status"),
+            kind=_expect_str(value.get("kind", "background_task"), "background task kind"),
+            lifecycle=_expect_optional_str(value.get("lifecycle"), "background task lifecycle"),
+            correlation_id=_expect_optional_str(
+                value.get("correlation_id"), "background task correlation_id"
+            ),
+            metadata=_expect_mapping(raw_metadata, "background task metadata"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "id": self.id,
+            "status": self.status,
+            "kind": self.kind,
+            "lifecycle": self.lifecycle,
+            "metadata": _copy_mapping(self.metadata),
+        }
+        if self.correlation_id is not None:
+            data["correlation_id"] = self.correlation_id
+        return data
+
+
+def normalized_tool_risk(annotations: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the approval-facing risk summary for a tool annotations mapping."""
+
+    raw_annotations = _expect_mapping(annotations, "tool annotations")
+    raw_risk = raw_annotations.get("risk")
+    if raw_risk is None:
+        return _copy_mapping(raw_annotations)
+    risk = _copy_mapping(_expect_mapping(raw_risk, "tool risk annotation"))
+    for key in ("parallel_safe", "read_only", "idempotent"):
+        if key in raw_annotations and key not in risk:
+            risk[key] = _expect_bool(raw_annotations[key], f"tool annotation {key}")
+    _validate_tool_risk(risk)
+    return risk
+
+
+def _validate_tool_risk(risk: Mapping[str, Any]) -> None:
+    filesystem = risk.get("filesystem")
+    if filesystem is not None:
+        filesystem = _expect_str(filesystem, "tool risk filesystem")
+        if not filesystem:
+            raise ValueError("tool risk filesystem must not be empty")
+    network = risk.get("network")
+    if network is not None:
+        network = _expect_str(network, "tool risk network")
+        if not network:
+            raise ValueError("tool risk network must not be empty")
+    for key in ("subprocess", "destructive", "requires_approval"):
+        if key in risk:
+            _expect_bool(risk[key], f"tool risk {key}")
+
+
+def _default_background_task_lifecycle(status: str) -> str:
+    if status == "accepted":
+        return "started"
+    if status in {"succeeded", "failed", "cancelled"}:
+        return "completed"
+    return "updated"
 
 
 @dataclass(slots=True)
@@ -199,6 +340,8 @@ class ToolSpec:
             self.output_schema = _copy_mapping(self.output_schema)
             _validate_json_schema(self.output_schema, "tool output_schema")
         self.annotations = _copy_mapping(self.annotations)
+        if "risk" in self.annotations:
+            normalized_tool_risk(self.annotations)
         self.metadata = _copy_mapping(self.metadata)
 
     @classmethod
@@ -261,6 +404,7 @@ class ToolOutput:
     is_error: bool = False
     pause: PauseRequest | None = None
     correlation_id: str | None = None
+    background_task: BackgroundTask | None = None
 
     def __post_init__(self) -> None:
         self.kind = _expect_str(self.kind, "tool output kind")
@@ -274,6 +418,10 @@ class ToolOutput:
             raise ValueError("tool output correlation_id must not be empty")
         if self.pause is not None and not isinstance(cast(object, self.pause), PauseRequest):
             raise TypeError("tool output pause must be a PauseRequest or None")
+        if self.background_task is not None and not isinstance(
+            cast(object, self.background_task), BackgroundTask
+        ):
+            raise TypeError("tool output background_task must be a BackgroundTask or None")
         parts: list[ContentPart] = []
         for part in _expect_sequence(self.parts, "tool output parts"):
             if not isinstance(part, ContentPart):
@@ -281,6 +429,8 @@ class ToolOutput:
             parts.append(ContentPart.from_dict(part.to_dict()))
         self.parts = parts
         self.metadata = _copy_mapping(_expect_mapping(self.metadata, "tool output metadata"))
+        if self.background_task is not None:
+            self.background_task = BackgroundTask.from_dict(self.background_task.to_dict())
         if self.pause is not None and self.pause.interrupt:
             raise ValueError("tool output pause cannot interrupt model execution")
         if self.kind == "acceptance":
@@ -298,7 +448,15 @@ class ToolOutput:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ToolOutput:
-        known = {"kind", "parts", "metadata", "is_error", "pause", "correlation_id"}
+        known = {
+            "kind",
+            "parts",
+            "metadata",
+            "is_error",
+            "pause",
+            "correlation_id",
+            "background_task",
+        }
         _reject_unknown_keys(value, known, "tool output")
         kind = _expect_str(value["kind"], "tool output kind")
         if kind == "observation":
@@ -308,6 +466,7 @@ class ToolOutput:
         if kind == "rejection":
             return ToolRejection.from_dict(value)
         raw_pause = value.get("pause")
+        raw_background_task = value.get("background_task")
         raw_metadata: object = value.get("metadata", {})
         return cls(
             kind=kind,
@@ -323,6 +482,11 @@ class ToolOutput:
             correlation_id=_expect_optional_str(
                 value.get("correlation_id"), "tool output correlation_id"
             ),
+            background_task=None
+            if raw_background_task is None
+            else BackgroundTask.from_dict(
+                _expect_mapping(raw_background_task, "tool output background_task")
+            ),
         )
 
     def to_message(self, invocation: ToolInvocation) -> Message:
@@ -331,6 +495,8 @@ class ToolOutput:
             metadata["is_error"] = True
         if self.correlation_id is not None:
             metadata["correlation_id"] = self.correlation_id
+        if self.background_task is not None:
+            metadata["background_task"] = self.background_task.to_dict()
         return Message.tool(
             [content_part_without_metadata(part) for part in self.parts],
             invocation.id,
@@ -354,6 +520,8 @@ class ToolOutput:
             data["pause"] = self.pause.to_dict()
         if self.correlation_id is not None:
             data["correlation_id"] = self.correlation_id
+        if self.background_task is not None:
+            data["background_task"] = self.background_task.to_dict()
         return data
 
     def summary(self) -> dict[str, Any]:
@@ -365,6 +533,8 @@ class ToolOutput:
         }
         if self.correlation_id is not None:
             data["correlation_id"] = self.correlation_id
+        if self.background_task is not None:
+            data["background_task"] = self.background_task.to_dict()
         return data
 
 
@@ -379,6 +549,7 @@ class ToolObservation(ToolOutput):
         metadata: Mapping[str, Any] | None = None,
         is_error: bool = False,
         pause: PauseRequest | None = None,
+        background_task: BackgroundTask | None = None,
     ) -> None:
         super().__init__(
             kind="observation",
@@ -386,6 +557,7 @@ class ToolObservation(ToolOutput):
             metadata={} if metadata is None else metadata,
             is_error=is_error,
             pause=pause,
+            background_task=background_task,
         )
 
     @classmethod
@@ -395,11 +567,13 @@ class ToolObservation(ToolOutput):
         *,
         metadata: Mapping[str, Any] | None = None,
         is_error: bool = False,
+        background_task: BackgroundTask | None = None,
     ) -> ToolObservation:
         return cls(
             parts=[ContentPart.text_part(text)],
             metadata={} if metadata is None else metadata,
             is_error=is_error,
+            background_task=background_task,
         )
 
     @classmethod
@@ -411,7 +585,12 @@ class ToolObservation(ToolOutput):
         reason: str = "external_wait",
         metadata: Mapping[str, Any] | None = None,
         pause_metadata: Mapping[str, Any] | None = None,
+        background_task: BackgroundTask | None = None,
     ) -> ToolObservation:
+        task_payload = None if background_task is None else background_task.to_dict()
+        combined_pause_metadata = _copy_mapping(pause_metadata)
+        if task_payload is not None:
+            combined_pause_metadata.setdefault("background_task", task_payload)
         return cls(
             parts=[ContentPart.text_part(text)],
             metadata={} if metadata is None else metadata,
@@ -419,18 +598,20 @@ class ToolObservation(ToolOutput):
                 reason=reason,
                 source="tool",
                 wait_id=wait_id,
-                metadata={} if pause_metadata is None else pause_metadata,
+                metadata=combined_pause_metadata,
             ),
+            background_task=background_task,
         )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ToolObservation:
-        known = {"kind", "parts", "metadata", "is_error", "pause"}
+        known = {"kind", "parts", "metadata", "is_error", "pause", "background_task"}
         _reject_unknown_keys(value, known, "tool observation")
         kind = _expect_str(value["kind"], "tool observation kind")
         if kind != "observation":
             raise ValueError("tool observation kind must be observation")
         raw_pause = value.get("pause")
+        raw_background_task = value.get("background_task")
         raw_metadata: object = value.get("metadata", {})
         return cls(
             parts=[
@@ -442,6 +623,11 @@ class ToolObservation(ToolOutput):
             pause=None
             if raw_pause is None
             else PauseRequest.from_dict(_expect_mapping(raw_pause, "tool observation pause")),
+            background_task=None
+            if raw_background_task is None
+            else BackgroundTask.from_dict(
+                _expect_mapping(raw_background_task, "tool observation background_task")
+            ),
         )
 
 
@@ -455,12 +641,14 @@ class ToolAcceptance(ToolOutput):
         parts: list[ContentPart],
         correlation_id: str,
         metadata: Mapping[str, Any] | None = None,
+        background_task: BackgroundTask | None = None,
     ) -> None:
         super().__init__(
             kind="acceptance",
             parts=parts,
             metadata={} if metadata is None else metadata,
             correlation_id=correlation_id,
+            background_task=background_task,
         )
 
     @classmethod
@@ -470,21 +658,24 @@ class ToolAcceptance(ToolOutput):
         *,
         correlation_id: str,
         metadata: Mapping[str, Any] | None = None,
+        background_task: BackgroundTask | None = None,
     ) -> ToolAcceptance:
         return cls(
             parts=[ContentPart.text_part(text)],
             correlation_id=correlation_id,
             metadata={} if metadata is None else metadata,
+            background_task=background_task,
         )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ToolAcceptance:
-        known = {"kind", "parts", "correlation_id", "metadata"}
+        known = {"kind", "parts", "correlation_id", "metadata", "background_task"}
         _reject_unknown_keys(value, known, "tool acceptance")
         kind = _expect_str(value["kind"], "tool acceptance kind")
         if kind != "acceptance":
             raise ValueError("tool acceptance kind must be acceptance")
         raw_metadata: object = value.get("metadata", {})
+        raw_background_task = value.get("background_task")
         return cls(
             parts=[
                 ContentPart.from_dict(_expect_mapping(part, "tool acceptance part"))
@@ -492,6 +683,11 @@ class ToolAcceptance(ToolOutput):
             ],
             correlation_id=_expect_str(value["correlation_id"], "tool acceptance correlation_id"),
             metadata=_expect_mapping(raw_metadata, "tool acceptance metadata"),
+            background_task=None
+            if raw_background_task is None
+            else BackgroundTask.from_dict(
+                _expect_mapping(raw_background_task, "tool acceptance background_task")
+            ),
         )
 
 
@@ -505,6 +701,7 @@ class ToolRejection(ToolOutput):
         parts: list[ContentPart],
         metadata: Mapping[str, Any] | None = None,
         correlation_id: str | None = None,
+        background_task: BackgroundTask | None = None,
     ) -> None:
         super().__init__(
             kind="rejection",
@@ -512,6 +709,7 @@ class ToolRejection(ToolOutput):
             metadata={} if metadata is None else metadata,
             is_error=True,
             correlation_id=correlation_id,
+            background_task=background_task,
         )
 
     @classmethod
@@ -521,16 +719,18 @@ class ToolRejection(ToolOutput):
         *,
         metadata: Mapping[str, Any] | None = None,
         correlation_id: str | None = None,
+        background_task: BackgroundTask | None = None,
     ) -> ToolRejection:
         return cls(
             parts=[ContentPart.text_part(text)],
             metadata={} if metadata is None else metadata,
             correlation_id=correlation_id,
+            background_task=background_task,
         )
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> ToolRejection:
-        known = {"kind", "parts", "metadata", "is_error", "correlation_id"}
+        known = {"kind", "parts", "metadata", "is_error", "correlation_id", "background_task"}
         _reject_unknown_keys(value, known, "tool rejection")
         kind = _expect_str(value["kind"], "tool rejection kind")
         if kind != "rejection":
@@ -538,6 +738,7 @@ class ToolRejection(ToolOutput):
         if not _expect_bool(value["is_error"], "tool rejection is_error"):
             raise ValueError("tool rejection is_error must be true")
         raw_metadata: object = value.get("metadata", {})
+        raw_background_task = value.get("background_task")
         return cls(
             parts=[
                 ContentPart.from_dict(_expect_mapping(part, "tool rejection part"))
@@ -546,6 +747,11 @@ class ToolRejection(ToolOutput):
             metadata=_expect_mapping(raw_metadata, "tool rejection metadata"),
             correlation_id=_expect_optional_str(
                 value.get("correlation_id"), "tool rejection correlation_id"
+            ),
+            background_task=None
+            if raw_background_task is None
+            else BackgroundTask.from_dict(
+                _expect_mapping(raw_background_task, "tool rejection background_task")
             ),
         )
 
@@ -636,11 +842,22 @@ class ToolRegistry:
         if not callable(getattr(tool, "invoke", None)):
             raise InvalidToolCall(f"tool {call.name} does not implement {call.mode} mode")
 
-    async def invoke(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
+    async def invoke(
+        self,
+        call: ToolCall,
+        context: RuntimeContext,
+        *,
+        progress_emitter: ToolProgressEmitter | None = None,
+        cancel_checker: ToolCancelChecker | None = None,
+    ) -> ToolOutput:
         self.validate_call(call)
         tool = self._tools[call.name]
         invocation = ToolInvocation.from_tool_call(call)
-        tool_context = ToolExecutionContext.from_runtime_context(context)
+        tool_context = ToolExecutionContext.from_runtime_context(
+            context,
+            progress_emitter=progress_emitter,
+            cancel_checker=cancel_checker,
+        )
         if call.mode == "execute":
             executable = cast(ExecutableTool, tool)
             try:

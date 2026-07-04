@@ -6,6 +6,7 @@ import pytest
 
 import agent_runtime.tools as tools_module
 from agent_runtime import (
+    BackgroundTask,
     ContentPart,
     DuplicateToolError,
     InvalidToolCall,
@@ -19,6 +20,7 @@ from agent_runtime import (
     ToolRegistry,
     ToolRejection,
     ToolSpec,
+    normalized_tool_risk,
 )
 
 
@@ -187,6 +189,47 @@ def test_tool_spec_lookup_uses_registered_snapshot() -> None:
     assert "mutated" not in fresh.input_schema
 
 
+def test_tool_risk_annotation_is_normalized_for_approval() -> None:
+    spec = ToolSpec(
+        name="risk",
+        description="Risky tool.",
+        input_schema={"type": "object", "properties": {}},
+        annotations={
+            "read_only": False,
+            "parallel_safe": False,
+            "risk": {
+                "filesystem": "delete",
+                "network": "write",
+                "subprocess": True,
+                "destructive": True,
+                "requires_approval": True,
+                "custom": "allowed",
+            },
+        },
+    )
+
+    assert normalized_tool_risk(spec.annotations) == {
+        "filesystem": "delete",
+        "network": "write",
+        "subprocess": True,
+        "destructive": True,
+        "requires_approval": True,
+        "custom": "allowed",
+        "read_only": False,
+        "parallel_safe": False,
+    }
+
+
+def test_tool_risk_annotation_rejects_invalid_standard_fields() -> None:
+    with pytest.raises(ValueError, match="filesystem"):
+        ToolSpec(
+            name="risk",
+            description="Risky tool.",
+            input_schema={"type": "object", "properties": {}},
+            annotations={"risk": {"filesystem": ""}},
+        )
+
+
 def test_tool_register_preserves_existing_spec_snapshots() -> None:
     tool = MutableSpecTool()
     registry = ToolRegistry([tool])
@@ -225,6 +268,27 @@ def test_waiting_tool_result_round_trips_pause_request() -> None:
     assert restored.pause.source == "tool"
     assert restored.pause.wait_id == "job-1"
     assert restored.pause.metadata == {"kind": "job"}
+
+
+def test_waiting_tool_result_round_trips_background_task() -> None:
+    task = BackgroundTask(
+        id="research-1",
+        status="accepted",
+        kind="research",
+        correlation_id="call-1",
+        metadata={"topic": "runtime"},
+    )
+    result = ToolObservation.waiting(
+        "started",
+        wait_id=task.id,
+        reason="research_callback",
+        background_task=task,
+    )
+    restored = ToolObservation.from_dict(result.to_dict())
+
+    assert restored.background_task == task
+    assert restored.pause is not None
+    assert restored.pause.metadata["background_task"] == task.to_dict()
 
 
 def test_tool_result_rejects_interrupt_pause() -> None:

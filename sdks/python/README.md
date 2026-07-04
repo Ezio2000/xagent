@@ -55,6 +55,8 @@ uv run python examples/pause_resume_trace.py
 ```python
 from agent_runtime import (
     AgentLoop,
+    ArtifactRef,
+    BackgroundTask,
     ContentPart,
     LoopLimits,
     Message,
@@ -148,6 +150,26 @@ checkpoint one result at a time.
 If `stop_on_tool_error=True`, tool execution is serial to preserve fail-fast
 semantics.
 
+Approval policies receive normalized risk annotations. Standard fields are
+validated while additional fields remain host-defined:
+
+```python
+bash_tool.spec = ToolSpec(
+    name="bash",
+    description="Run a command",
+    input_schema={"type": "object"},
+    annotations={
+        "risk": {
+            "filesystem": "write",
+            "network": "none",
+            "subprocess": True,
+            "destructive": True,
+            "requires_approval": True,
+        }
+    },
+)
+```
+
 Hooks subclass `RuntimeHook`. They can observe or rewrite model/tool boundaries.
 `on_model_error` can request a bounded non-streaming retry by returning
 `ModelErrorDecision(retry=True)` when `LoopLimits.max_model_retries` allows it.
@@ -193,6 +215,22 @@ async for event in agent.run_events(messages, stream=True):
 
 `model_delta` is for live rendering only. Durable resume state is still carried
 only by `checkpoint` events after the complete model response is available.
+
+Tools can also emit live progress and observe cooperative cancellation:
+
+```python
+async def execute(self, invocation, context):
+    context.emit_progress({"phase": "started"})
+    if context.cancel_requested:
+        return ToolObservation.text("cancelled", is_error=True)
+    return ToolObservation.text("done")
+
+controller = RunController()
+controller.cancel_tool("call-1", reason="operator_cancelled")
+```
+
+Cancellation requests apply only while that tool call is active. Unknown,
+stale, or already completed tool-call ids are ignored.
 
 `AgentState.total_usage` and `AgentResult.total_usage` accumulate the standard
 token fields from `ModelResponse.usage` across model calls. Set
@@ -255,14 +293,36 @@ return ToolObservation.waiting(
     "external job started",
     wait_id="job-123",
     reason="external_callback",
+    background_task=BackgroundTask(
+        id="job-123",
+        status="queued",
+        lifecycle="started",
+        kind="research",
+    ),
 )
 ```
 
 The paused snapshot records `pause.reason`, `pause.source`, `pause.wait_id`, and
 `pause.resume_status`, and `pause.metadata`. The host owns storage, callback
-handling, and any messages or metadata it adds through `ResumeInput` before
-calling `run_snapshot()`. `ResumeInput.metadata` is host-owned bookkeeping; put
-callback data in appended messages when the model should see it.
+handling, later worker updates, and any messages or metadata it adds through
+`ResumeInput` before calling `run_snapshot()`. `ResumeInput.metadata` is
+host-owned bookkeeping; put callback data in appended messages when the model
+should see it.
+
+Child or subagent runs can be correlated without putting subagent orchestration
+inside core:
+
+```python
+context = RuntimeContext(
+    run_id="child-run",
+    parent_run_id="parent-run",
+    parent_tool_call_id="call-1",
+    run_kind="subagent",
+)
+```
+
+`parent_tool_call_id` and `run_kind` require `parent_run_id`; root runs should
+leave all three fields unset.
 
 ## Multimodal Messages
 
@@ -282,6 +342,18 @@ message = Message.user(
 )
 ```
 
-The core runtime ships helpers for `text`, `image`, and `file` parts. The
-underlying part `type` is open so provider adapters can carry additional
-multimodal blocks such as audio, video, citations, or reasoning references.
+The core runtime ships helpers for `text`, `image`, `file`, and artifact
+reference parts. The underlying part `type` is open so provider adapters can
+carry additional multimodal blocks such as audio, video, citations, or
+reasoning references.
+
+```python
+part = ContentPart.artifact_ref(
+    ArtifactRef(
+        ref="artifact://run-1/report",
+        media_type="text/markdown",
+        name="report.md",
+        sha256="...",
+    )
+)
+```

@@ -38,6 +38,7 @@ from agent_runtime.snapshot import RunSnapshot
 from agent_runtime.state import AgentStatus
 from agent_runtime.store import CheckpointSummary, StoredCheckpoint
 from agent_runtime.tools import (
+    BackgroundTask,
     Tool,
     ToolAcceptance,
     ToolExecutionContext,
@@ -65,9 +66,12 @@ CASE_KEYS = {
     "resume_checkpoint_total_tool_calls",
     "retry_model_errors",
     "approval_decisions",
+    "runtime_context",
     "stream_model_steps",
     "expected_status",
     "expected_final_text",
+    "expected_final_part_types",
+    "expected_final_parts",
     "expected_tool_calls",
     "expected_resume_status",
     "expected_resume_final_text",
@@ -81,6 +85,8 @@ CASE_KEYS = {
     "expected_tool_text_contains",
     "expected_pending_tool_call_ids",
     "expected_pause",
+    "expected_tool_progress",
+    "expected_child_run",
     "expected_model_deltas",
     "expected_event_types",
     "expected_trace_kinds",
@@ -175,6 +181,7 @@ class ConformanceValidators:
     event: Any
     run_snapshot: Any
     run_trace: Any
+    runtime_context: Any
     resume_input: Any
     message: Any
     model_error: Any
@@ -385,11 +392,36 @@ class WaitTool:
         self, invocation: ToolInvocation, context: ToolExecutionContext
     ) -> ToolObservation:
         _ = context
+        raw_background_task = invocation.arguments.get("background_task")
+        background_task = (
+            None
+            if raw_background_task is None
+            else BackgroundTask.from_dict(
+                expect_case_mapping(raw_background_task, "wait background_task")
+            )
+        )
         return ToolObservation.waiting(
             str(invocation.arguments.get("text", "external wait started")),
             wait_id=str(invocation.arguments["wait_id"]),
             reason=str(invocation.arguments.get("reason", "external_wait")),
+            background_task=background_task,
         )
+
+
+class ProgressTool:
+    spec = ToolSpec(
+        name="progress",
+        description="Emit live progress records.",
+        input_schema={"type": "object", "properties": {}},
+    )
+
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        raw_steps = invocation.arguments.get("steps", [])
+        for step in expect_case_sequence(raw_steps, "progress steps"):
+            context.emit_progress({"step": step})
+        return ToolObservation.text(str(invocation.arguments.get("text", "progress complete")))
 
 
 class ParallelWaitTool:
@@ -675,6 +707,14 @@ class ConformanceRunner:
                     self.validators.approval_decision,
                     decision,
                 )
+        if "runtime_context" in case:
+            raw_context = expect_case_mapping(case["runtime_context"], f"{name}.runtime_context")
+            self.assert_matches_schema(
+                f"{name}.runtime_context",
+                self.validators.runtime_context,
+                raw_context,
+            )
+            RuntimeContext.from_dict(raw_context)
         if case_type == "resume":
             if "resume_checkpoint_status" not in case:
                 raise KeyError(f"{name} missing required key: resume_checkpoint_status")
@@ -800,6 +840,7 @@ class ConformanceRunner:
             "expected_event_types",
             "expected_trace_kinds",
             "expected_tool_text_contains",
+            "expected_final_part_types",
             "forbidden_event_types",
             "forbidden_journal_event_types",
         ):
@@ -807,17 +848,49 @@ class ConformanceRunner:
                 for item in expect_case_list_of_strings(case[key], f"{name}.{key}"):
                     if not item:
                         raise ValueError(f"{name}.{key} items must not be empty")
+        if "expected_tool_progress" in case:
+            for index, item in enumerate(
+                expect_case_list(case["expected_tool_progress"], f"{name}.expected_tool_progress")
+            ):
+                expect_case_mapping(item, f"{name}.expected_tool_progress[{index}]")
+        if "expected_final_parts" in case:
+            for index, item in enumerate(
+                expect_case_list(case["expected_final_parts"], f"{name}.expected_final_parts")
+            ):
+                part = expect_case_mapping(item, f"{name}.expected_final_parts[{index}]")
+                ContentPart.from_dict(part)
+        if "expected_child_run" in case:
+            raw_child_run = expect_case_mapping(
+                case["expected_child_run"], f"{name}.expected_child_run"
+            )
+            allowed = {"parent_run_id", "parent_tool_call_id", "run_kind"}
+            reject_unknown_keys(set(raw_child_run), allowed, f"{name}.expected_child_run")
+            expect_case_str(
+                raw_child_run["parent_run_id"],
+                f"{name}.expected_child_run.parent_run_id",
+            )
+            if "parent_tool_call_id" in raw_child_run:
+                expect_case_str(
+                    raw_child_run["parent_tool_call_id"],
+                    f"{name}.expected_child_run.parent_tool_call_id",
+                )
+            if "run_kind" in raw_child_run:
+                expect_case_str(raw_child_run["run_kind"], f"{name}.expected_child_run.run_kind")
 
     @staticmethod
     def _unsupported_expectation_keys(case_type: str) -> set[str]:
         run_expectations = {
             "approval_decisions",
             "expected_final_text",
+            "expected_final_part_types",
+            "expected_final_parts",
             "expected_message_roles",
             "expected_tool_texts",
             "expected_tool_text_contains",
             "expected_pending_tool_call_ids",
             "expected_pause",
+            "expected_tool_progress",
+            "expected_child_run",
             "expected_model_deltas",
             "expected_trace_kinds",
         }
@@ -998,6 +1071,7 @@ class ConformanceRunner:
             approval_policy=approval_policy_from_case(case, self.validators),
         ).run(
             [Message.user_text("run conformance case")],
+            context=runtime_context_from_case(case),
             stream=bool(stream_steps),
             controller=controller,
         )
@@ -1136,6 +1210,7 @@ class ConformanceRunner:
                 run_journal=journal,
             ).run_events(
                 [Message.user_text("run conformance case")],
+                context=runtime_context_from_case(case),
                 stream=bool(stream_steps),
                 controller=controller,
             )
@@ -1165,8 +1240,40 @@ class ConformanceRunner:
                 actual_final_text == case["expected_final_text"],
                 f"expected final text {case['expected_final_text']!r}, got {actual_final_text!r}",
             )
+        if "expected_final_part_types" in case:
+            final_events = [event for event in events if event.type == EventTypes.FINAL]
+            check(final_events, "expected final part types but no final event was emitted")
+            parts = cast(list[Mapping[str, Any]], final_events[-1].data["parts"])
+            expected_types = expect_case_list_of_strings(
+                case["expected_final_part_types"], "expected_final_part_types"
+            )
+            actual_types = [
+                expect_case_str(part.get("type"), "final event part type") for part in parts
+            ]
+            check(
+                actual_types == expected_types,
+                f"expected final event part types {expected_types}, got {actual_types}",
+            )
+        if "expected_final_parts" in case:
+            final_events = [event for event in events if event.type == EventTypes.FINAL]
+            check(final_events, "expected final parts but no final event was emitted")
+            expected_parts = [
+                dict(part)
+                for part in expect_case_list(case["expected_final_parts"], "expected_final_parts")
+            ]
+            parts = [
+                dict(part) for part in cast(list[Mapping[str, Any]], final_events[-1].data["parts"])
+            ]
+            check(
+                parts == expected_parts,
+                f"expected final event parts {expected_parts}, got {parts}",
+            )
 
         self._assert_expected_event_types(case, events)
+        if "expected_tool_progress" in case:
+            self._assert_expected_tool_progress(case, events)
+        if "expected_child_run" in case:
+            self._assert_expected_child_run(case, events, expected_status)
         self._assert_forbidden_expectations(case, events)
         self._assert_forbidden_journal_expectations(case, journal.records)
         self._assert_approval_expectations(case, events)
@@ -1389,6 +1496,7 @@ class ConformanceRunner:
                 approval_policy=approval_policy_from_case(case, self.validators),
             ).run_events(
                 [Message.user_text("run conformance case")],
+                context=runtime_context_from_case(case),
                 stream=bool(stream_steps),
                 controller=controller,
             )
@@ -1612,6 +1720,43 @@ class ConformanceRunner:
                 actual_final_text == case["expected_final_text"],
                 f"expected final text {case['expected_final_text']!r}, got {actual_final_text!r}",
             )
+        if "expected_final_part_types" in case:
+            expected_types = expect_case_list_of_strings(
+                case["expected_final_part_types"], "expected_final_part_types"
+            )
+            actual_types = [part.type for part in result.final_parts]
+            check(
+                actual_types == expected_types,
+                f"expected final part types {expected_types}, got {actual_types}",
+            )
+            final_events = [event for event in events if event.type == EventTypes.FINAL]
+            check(final_events, "expected final part types but no final event was emitted")
+            event_parts = cast(list[Mapping[str, Any]], final_events[-1].data["parts"])
+            event_types = [
+                expect_case_str(part.get("type"), "final event part type") for part in event_parts
+            ]
+            check(
+                event_types == expected_types,
+                f"expected final event part types {expected_types}, got {event_types}",
+            )
+        if "expected_final_parts" in case:
+            expected_parts = [
+                dict(part)
+                for part in expect_case_list(case["expected_final_parts"], "expected_final_parts")
+            ]
+            actual_parts = [part.to_dict() for part in result.final_parts]
+            check(
+                actual_parts == expected_parts,
+                f"expected final parts {expected_parts}, got {actual_parts}",
+            )
+            final_events = [event for event in events if event.type == EventTypes.FINAL]
+            check(final_events, "expected final parts but no final event was emitted")
+            raw_event_parts = cast(list[Mapping[str, Any]], final_events[-1].data["parts"])
+            event_parts = [dict(part) for part in raw_event_parts]
+            check(
+                event_parts == expected_parts,
+                f"expected final event parts {expected_parts}, got {event_parts}",
+            )
         if "expected_tool_texts" in case:
             actual_tool_texts = [
                 message.text for message in result.messages if message.role == "tool"
@@ -1643,6 +1788,10 @@ class ConformanceRunner:
             )
         if "expected_pause" in case:
             self._assert_expected_pause(case, result, events)
+        if "expected_tool_progress" in case:
+            self._assert_expected_tool_progress(case, events)
+        if "expected_child_run" in case:
+            self._assert_expected_child_run(case, events, expected_status)
         if "expected_model_deltas" in case:
             actual_deltas = [
                 dict(event.data) for event in events if event.type == EventTypes.MODEL_DELTA
@@ -1653,6 +1802,45 @@ class ConformanceRunner:
             )
         self._assert_approval_expectations(case, events)
         self._assert_forbidden_expectations(case, events)
+
+    def _assert_expected_tool_progress(
+        self, case: dict[str, Any], events: Sequence[AgentEvent]
+    ) -> None:
+        expected = [
+            dict(item)
+            for item in expect_case_list(case["expected_tool_progress"], "expected_tool_progress")
+        ]
+        actual = [
+            dict(cast(Mapping[str, Any], event.data["progress"]))
+            for event in events
+            if event.type == EventTypes.TOOL_PROGRESS
+        ]
+        check(actual == expected, f"expected tool progress {expected}, got {actual}")
+
+    def _assert_expected_child_run(
+        self,
+        case: dict[str, Any],
+        events: Sequence[AgentEvent],
+        expected_status: AgentStatus,
+    ) -> None:
+        expected = dict(expect_case_mapping(case["expected_child_run"], "expected_child_run"))
+        started = [event for event in events if event.type == EventTypes.CHILD_RUN_STARTED]
+        completed = [event for event in events if event.type == EventTypes.CHILD_RUN_COMPLETED]
+        check(len(started) == 1, f"expected one child_run_started, got {len(started)}")
+        check(len(completed) == 1, f"expected one child_run_completed, got {len(completed)}")
+        check(
+            started[0].data == expected,
+            f"expected child_run_started {expected}, got {started[0].data}",
+        )
+        expected_completed = expected | {"status": expected_status.value}
+        check(
+            completed[0].data == expected_completed,
+            f"expected child_run_completed {expected_completed}, got {completed[0].data}",
+        )
+        check(
+            events.index(started[0]) < events.index(completed[0]),
+            "child_run_completed must follow child_run_started",
+        )
 
     def _assert_approval_expectations(
         self, case: dict[str, Any], events: Sequence[AgentEvent]
@@ -2086,6 +2274,9 @@ def build_validators(spec_dir: Path) -> ConformanceValidators:
         event=Draft202012Validator(schemas["events.schema.json"], registry=registry),
         run_snapshot=Draft202012Validator(schemas["run-snapshot.schema.json"], registry=registry),
         run_trace=Draft202012Validator(schemas["run-trace.schema.json"], registry=registry),
+        runtime_context=Draft202012Validator(
+            schemas["runtime-context.schema.json"], registry=registry
+        ),
         resume_input=Draft202012Validator(schemas["resume-input.schema.json"], registry=registry),
         message=Draft202012Validator(schemas["messages.schema.json"], registry=registry),
         model_error=Draft202012Validator(schemas["model-error.schema.json"], registry=registry),
@@ -2135,6 +2326,18 @@ def expect_case_list_of_strings(value: object, label: str) -> list[str]:
         raise TypeError(f"{label} must be an array")
     items = cast(list[object], value)
     return [expect_case_str(item, f"{label} item") for item in items]
+
+
+def expect_case_mapping(value: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must be an object")
+    return cast(Mapping[str, Any], value)
+
+
+def expect_case_sequence(value: object, label: str) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        raise TypeError(f"{label} must be an array")
+    return cast(Sequence[object], value)
 
 
 def expect_case_str(value: object, label: str) -> str:
@@ -2264,6 +2467,13 @@ def controller_from_case(case: dict[str, Any]) -> RunController | None:
     return controller
 
 
+def runtime_context_from_case(case: dict[str, Any]) -> RuntimeContext | None:
+    raw_context = case.get("runtime_context")
+    if raw_context is None:
+        return None
+    return RuntimeContext.from_dict(expect_case_mapping(raw_context, "runtime_context"))
+
+
 def model_from_case(
     case: dict[str, Any],
     steps: Sequence[ModelStep],
@@ -2311,6 +2521,7 @@ def case_tools() -> list[Tool]:
         FailTool(),
         DelayedEchoTool(),
         WaitTool(),
+        ProgressTool(),
         ParallelWaitTool(),
         StrictCountTool(),
     ]

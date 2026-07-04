@@ -32,11 +32,45 @@
     },
     "annotations": {
       "type": "object",
-      "description": "Open scheduling and safety hints. Core schedulers recognize parallel_safe, read_only, and idempotent boolean hints."
+      "description": "Open scheduling and safety hints. Core schedulers recognize parallel_safe, read_only, and idempotent boolean hints. Approval-aware runtimes may normalize a nested risk object."
     },
     "metadata": {
       "type": "object"
     }
   },
+  "$defs": {
+    "risk": {
+      "type": "object",
+      "properties": {
+        "filesystem": { "type": "string", "minLength": 1 },
+        "network": { "type": "string", "minLength": 1 },
+        "subprocess": { "type": "boolean" },
+        "destructive": { "type": "boolean" },
+        "requires_approval": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "annotations": {
+            "required": ["risk"]
+          }
+        },
+        "required": ["annotations"]
+      },
+      "then": {
+        "properties": {
+          "annotations": {
+            "properties": {
+              "risk": { "$ref": "#/$defs/risk" }
+            }
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": false
 }

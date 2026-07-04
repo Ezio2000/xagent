@@ -204,18 +204,79 @@ class ConversationInsert:
         return data
 
 
+@dataclass(slots=True, frozen=True)
+class ToolCancelRequest:
+    """Host request for a running tool call to cancel cooperatively."""
+
+    tool_call_id: str
+    reason: str = "host_cancelled"
+    source: str = "host"
+    metadata: Mapping[str, Any] = field(default_factory=_empty_metadata)
+
+    def __post_init__(self) -> None:
+        tool_call_id = _expect_str(self.tool_call_id, "tool cancel tool_call_id")
+        reason = _expect_str(self.reason, "tool cancel reason")
+        source = _expect_str(self.source, "tool cancel source")
+        if not tool_call_id:
+            raise ValueError("tool cancel tool_call_id must not be empty")
+        if not reason:
+            raise ValueError("tool cancel reason must not be empty")
+        if not source:
+            raise ValueError("tool cancel source must not be empty")
+        object.__setattr__(self, "tool_call_id", tool_call_id)
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(
+            self,
+            "metadata",
+            _copy_mapping(_expect_mapping(self.metadata, "tool cancel metadata")),
+        )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> ToolCancelRequest:
+        known = {"tool_call_id", "reason", "source", "metadata"}
+        _reject_unknown_keys(value, known, "tool cancel request")
+        raw_metadata: object = value.get("metadata", {})
+        return cls(
+            tool_call_id=_expect_str(value["tool_call_id"], "tool cancel tool_call_id"),
+            reason=_expect_str(value["reason"], "tool cancel reason"),
+            source=_expect_str(value["source"], "tool cancel source"),
+            metadata=_expect_mapping(raw_metadata, "tool cancel metadata"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool_call_id": self.tool_call_id,
+            "reason": self.reason,
+            "source": self.source,
+            "metadata": _copy_mapping(self.metadata),
+        }
+
+
 ControlInterrupt: TypeAlias = PauseRequest | ConversationInsert
 
 
 class RunController:
     """Mutable run-control handle shared with host code."""
 
-    __slots__ = ("_insert_ids", "_inserts", "_lock", "_pause_request", "_waiters")
+    __slots__ = (
+        "_cancelled_tool_call_ids",
+        "_insert_ids",
+        "_inserts",
+        "_lock",
+        "_pause_request",
+        "_tool_cancel_requests",
+        "_tool_cancel_waiters",
+        "_waiters",
+    )
 
+    _cancelled_tool_call_ids: set[str]
     _insert_ids: set[str]
     _inserts: list[ConversationInsert]
     _lock: Lock
     _pause_request: PauseRequest | None
+    _tool_cancel_requests: list[ToolCancelRequest]
+    _tool_cancel_waiters: set[asyncio.Future[None]]
     _waiters: set[asyncio.Future[None]]
 
     def __init__(self) -> None:
@@ -223,6 +284,9 @@ class RunController:
         self._pause_request = None
         self._inserts = []
         self._insert_ids = set()
+        self._tool_cancel_requests = []
+        self._cancelled_tool_call_ids = set()
+        self._tool_cancel_waiters = set()
         self._waiters = set()
 
     @property
@@ -301,6 +365,49 @@ class RunController:
             self._pause_request = None
             waiters = tuple(self._waiters)
         self._notify_waiters(waiters)
+
+    def cancel_tool(
+        self,
+        tool_call_id: str,
+        *,
+        reason: str = "host_cancelled",
+        source: str = "host",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> ToolCancelRequest:
+        request = ToolCancelRequest(
+            tool_call_id=tool_call_id,
+            reason=reason,
+            source=source,
+            metadata={} if metadata is None else metadata,
+        )
+        with self._lock:
+            self._cancelled_tool_call_ids.add(request.tool_call_id)
+            self._tool_cancel_requests.append(request)
+            waiters = tuple(self._tool_cancel_waiters)
+        self._notify_waiters(waiters)
+        return ToolCancelRequest.from_dict(request.to_dict())
+
+    def is_tool_cancelled(self, tool_call_id: str) -> bool:
+        with self._lock:
+            return tool_call_id in self._cancelled_tool_call_ids
+
+    def clear_tool_cancel(self, tool_call_id: str) -> None:
+        with self._lock:
+            self._cancelled_tool_call_ids.discard(tool_call_id)
+
+    async def wait_for_tool_cancel(self) -> ToolCancelRequest:
+        while True:
+            with self._lock:
+                if self._tool_cancel_requests:
+                    request = self._tool_cancel_requests.pop(0)
+                    return ToolCancelRequest.from_dict(request.to_dict())
+                waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                self._tool_cancel_waiters.add(waiter)
+            try:
+                await waiter
+            finally:
+                with self._lock:
+                    self._tool_cancel_waiters.discard(waiter)
 
     async def wait_for_interrupt_or_insert(self) -> ControlInterrupt:
         while True:

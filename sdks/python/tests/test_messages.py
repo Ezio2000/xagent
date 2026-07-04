@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from agent_runtime import ContentPart, Message, ToolCall
+from agent_runtime import ArtifactRef, ContentPart, Message, ToolCall
 
 
 def test_message_from_dict_rejects_missing_required_fields() -> None:
@@ -81,3 +81,36 @@ def test_content_part_from_dict_rejects_schema_invalid_optional_fields() -> None
 
     with pytest.raises(TypeError, match="metadata"):
         ContentPart.from_dict({"type": "text", "text": "hello", "metadata": None})
+
+
+def test_artifact_ref_part_round_trips_reference_metadata() -> None:
+    artifact = ArtifactRef(
+        ref="artifact://run-1/report",
+        media_type="text/markdown",
+        name="report.md",
+        size_bytes=42,
+        sha256="abc123",
+        metadata={"tenant": "acme"},
+    )
+
+    part = ContentPart.artifact_ref(artifact, metadata={"visible": True})
+    restored = ContentPart.from_dict(part.to_dict())
+
+    assert restored.type == "artifact"
+    assert restored.ref == "artifact://run-1/report"
+    assert restored.data["artifact"] == artifact.to_dict()
+    assert restored.metadata == {"visible": True}
+
+
+def test_content_part_rejects_mismatched_artifact_ref() -> None:
+    with pytest.raises(ValueError, match="artifact ref"):
+        ContentPart(
+            type="file",
+            ref="artifact://run-1/a",
+            data={"artifact": {"ref": "artifact://run-1/b"}},
+        )
+
+
+def test_artifact_part_requires_artifact_reference_shape() -> None:
+    with pytest.raises(ValueError, match="artifact parts"):
+        ContentPart(type="artifact", ref="artifact://run-1/report")

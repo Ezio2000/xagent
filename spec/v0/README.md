@@ -26,20 +26,20 @@ these shapes, but the JSON form is the cross-language boundary.
 
 | File | Owns | Portable Contract |
 | --- | --- | --- |
-| `messages.schema.json` | Messages, content parts, assistant tool-call shape, and tool-message linkage. | Roles including `external`, part types, tool-call ids/names/modes/arguments, tool-call uniqueness semantics, tool output message linkage, and extension points for future content. |
+| `messages.schema.json` | Messages, content parts, assistant tool-call shape, and tool-message linkage. | Roles including `external`, part types, artifact references, tool-call ids/names/modes/arguments, tool-call uniqueness semantics, tool output message linkage, and extension points for future content. |
 | `model-request.schema.json` | Runtime-to-model adapter request. | Message history, tool specs, model options, tool choice, response format, and request metadata boundary. |
 | `model-response.schema.json` | Model-to-runtime response. | Final content parts, requested tool calls using the shared tool-call shape, finish reason, usage, model id, response id, and response metadata boundary. |
 | `model-error.schema.json` | Structured model/provider failures. | Stable message, provider, error code, status code, retryability, request id, and error metadata boundary. |
-| `tools.schema.json` | Tool specifications exposed to models. | Tool name, description, supported invocation modes, input/output schema, scheduling annotations, and tool metadata boundary. |
-| `tool-result.schema.json` | Tool output. | Execute-mode observations, accept-mode acknowledgements or rejections, extension output kinds, content parts, error/pause boundaries, correlation ids, and output metadata boundary. |
+| `tools.schema.json` | Tool specifications exposed to models. | Tool name, description, supported invocation modes, input/output schema, scheduling annotations, approval risk annotations, and tool metadata boundary. |
+| `tool-result.schema.json` | Tool output. | Execute-mode observations, accept-mode acknowledgements or rejections, extension output kinds, content parts, error/pause boundaries, background task references, correlation ids, and output metadata boundary. |
 | `limits.schema.json` | Runtime limits and scheduling knobs. | Iteration limits, tool-call limits, token limits, timeout, stop-on-tool-error, model retry count, and max parallel tool calls. |
 | `state.schema.json` | Durable agent state. | Status, messages, pending tool calls, counters, cumulative model usage, final parts, error summary, and pause state. |
-| `runtime-context.schema.json` | Runtime invocation context. | Run id, start time, optional deadline, host metadata boundary, and event sequence. |
+| `runtime-context.schema.json` | Runtime invocation context. | Run id, start time, optional deadline, child-run parent correlation, host metadata boundary, and event sequence. |
 | `run-snapshot.schema.json` | Durable resume checkpoint. | State plus context at a checkpoint boundary. |
 | `resume-input.schema.json` | Host-to-runtime resume boundary. | Snapshot, append-only messages, optional expected-pause selector, and resume metadata. |
 | `events.schema.json` | Ordered runtime event stream. | Event envelope, event names, sequence ordering, and compact payload summaries. |
 | `run-trace.schema.json` | Compact semantic trace. | Trace envelope, ordered trace steps, status summaries, stable references, and replayable payloads. |
-| `runtime-extensions.schema.json` | Core extension value objects. | Approval requests and decisions, stored checkpoint records, checkpoint summaries, and journal records. |
+| `runtime-extensions.schema.json` | Core extension value objects. | Approval requests and decisions, stored checkpoint records, checkpoint summaries, journal records, and extension references. |
 
 The Markdown files own semantic rules that schemas only partially express:
 

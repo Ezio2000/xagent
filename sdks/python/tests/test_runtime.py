@@ -35,6 +35,29 @@ def test_runtime_context_from_dict_rejects_invalid_required_types() -> None:
         RuntimeContext(run_id="run-1").sequence = cast(Any, True)
 
 
+def test_runtime_context_round_trips_child_run_relation() -> None:
+    context = RuntimeContext(
+        run_id="child-run",
+        parent_run_id="parent-run",
+        parent_tool_call_id="call-1",
+        run_kind="subagent",
+    )
+
+    restored = RuntimeContext.from_dict(context.to_dict())
+
+    assert restored.parent_run_id == "parent-run"
+    assert restored.parent_tool_call_id == "call-1"
+    assert restored.run_kind == "subagent"
+
+
+def test_runtime_context_rejects_orphan_child_run_fields() -> None:
+    with pytest.raises(ValueError, match="parent_run_id"):
+        RuntimeContext(run_id="child-run", parent_tool_call_id="call-1")
+
+    with pytest.raises(ValueError, match="parent_run_id"):
+        RuntimeContext(run_id="child-run", run_kind="subagent")
+
+
 def test_run_snapshot_from_dict_rejects_unknown_fields() -> None:
     payload = RunSnapshot(
         state=AgentState(status=AgentStatus.PLANNING, messages=[Message.user_text("hello")]),

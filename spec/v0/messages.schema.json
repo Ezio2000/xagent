@@ -94,9 +94,41 @@
           "then": { "required": ["text"] }
         },
         {
+          "if": {
+            "properties": { "type": { "const": "artifact" } },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["ref", "data"],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": ["artifact"],
+                "properties": {
+                  "artifact": { "$ref": "#/$defs/artifact_ref" }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        {
           "not": { "required": ["uri", "ref"] }
         }
       ],
+      "additionalProperties": false
+    },
+    "artifact_ref": {
+      "type": "object",
+      "required": ["ref"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
       "additionalProperties": false
     },
     "tool_call": {

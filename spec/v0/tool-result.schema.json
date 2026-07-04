@@ -31,6 +31,9 @@
             { "type": "null" },
             { "$ref": "#/$defs/pause_request" }
           ]
+        },
+        "background_task": {
+          "$ref": "#/$defs/background_task"
         }
       },
       "additionalProperties": false
@@ -52,6 +55,9 @@
         },
         "metadata": {
           "type": "object"
+        },
+        "background_task": {
+          "$ref": "#/$defs/background_task"
         }
       },
       "additionalProperties": false
@@ -76,6 +82,9 @@
         "correlation_id": {
           "type": "string",
           "minLength": 1
+        },
+        "background_task": {
+          "$ref": "#/$defs/background_task"
         }
       },
       "additionalProperties": false
@@ -110,7 +119,23 @@
         "correlation_id": {
           "type": "string",
           "minLength": 1
+        },
+        "background_task": {
+          "$ref": "#/$defs/background_task"
         }
+      },
+      "additionalProperties": false
+    },
+    "background_task": {
+      "type": "object",
+      "required": ["id", "status", "kind", "lifecycle", "metadata"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "lifecycle": { "type": "string", "enum": ["started", "updated", "completed"] },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
       },
       "additionalProperties": false
     },

@@ -1,0 +1,55 @@
+{
+  "name": "background_task_started_event",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "wait",
+          "mode": "execute",
+          "arguments": {
+            "text": "research started",
+            "wait_id": "research-1",
+            "reason": "research_callback",
+            "background_task": {
+              "id": "research-1",
+              "status": "accepted",
+              "kind": "research",
+              "lifecycle": "started",
+              "correlation_id": "call-1",
+              "metadata": {
+                "topic": "runtime"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "expected_status": "paused",
+  "expected_tool_calls": 1,
+  "expected_message_roles": ["user", "assistant", "tool"],
+  "expected_tool_texts": ["research started"],
+  "expected_pause": {
+    "reason": "research_callback",
+    "resume_status": "planning",
+    "source": "tool",
+    "wait_id": "research-1",
+    "metadata": {
+      "background_task": {
+        "id": "research-1",
+        "status": "accepted",
+        "kind": "research",
+        "lifecycle": "started",
+        "correlation_id": "call-1",
+        "metadata": {
+          "topic": "runtime"
+        }
+      }
+    }
+  },
+  "expected_event_types": ["background_task_started"],
+  "expected_trace_kinds": ["background_task_started"],
+  "forbidden_unpaused_checkpoint_tool_counts": [1]
+}

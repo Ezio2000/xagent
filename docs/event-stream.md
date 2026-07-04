@@ -12,9 +12,16 @@ Known v0.1 event types:
 - `model_error`
 - `model_completed`
 - `tool_started`
+- `tool_progress`
+- `tool_cancel_requested`
 - `tool_completed`
 - `approval_requested`
 - `approval_completed`
+- `background_task_started`
+- `background_task_updated`
+- `background_task_completed`
+- `child_run_started`
+- `child_run_completed`
 - `conversation_inserted`
 - `pause_requested`
 - `checkpoint`
@@ -52,12 +59,38 @@ iteration with the same `data.iteration` value; otherwise the run transitions to
 checkpoint.
 
 `tool_started` and `tool_completed` include the normalized tool invocation
-`mode`. For core-known modes, `tool_completed.data.result.result_kind` is
-`observation` for execute-mode output and either `acceptance` or `rejection` for
-accept-mode output; extension modes use non-empty custom result kinds. When a
-tool result is produced by runtime policy or runtime validation rather than the
-tool implementation, such as approval denial or input-schema rejection,
+`mode`. A tool may emit `tool_progress` through its tool execution context while
+it runs. Progress events are live UI/audit events only; they are not durable
+message history and are not required for resume. Hosts may request cooperative
+tool cancellation through `RunController.cancel_tool(...)`, which emits
+`tool_cancel_requested` and makes `context.cancel_requested` visible to the
+tool when the requested tool call is active. Requests for unknown, stale, or
+already completed tool-call ids are no-ops. Runtime cancellation is
+cooperative: core does not forcefully terminate subprocesses, threads, network
+requests, or host-owned workers. For core-known
+modes, `tool_completed.data.result.result_kind` is `observation` for
+execute-mode output and either `acceptance` or `rejection` for accept-mode
+output; extension modes use non-empty custom result kinds. When a tool result is
+produced by runtime policy or runtime validation rather than the tool
+implementation, such as approval denial or input-schema rejection,
 `implementation_invoked` is `false`.
+
+`background_task_started`, `background_task_updated`, and
+`background_task_completed` are emitted when a tool result carries a
+`BackgroundTask` reference. These events standardize task identity, lifecycle,
+and tool-call correlation. `BackgroundTask.status` is host-owned and open; the
+small `lifecycle` field chooses which core event is emitted. The host still owns
+the queue, worker, retry policy, callback transport, and task storage. Later
+worker updates are host events or normal resume/conversation-insert inputs, not
+runtime-managed background execution. A waiting tool result should still use the
+normal pause/resume protocol for durable continuation.
+
+`child_run_started` and `child_run_completed` are emitted only for runs whose
+`RuntimeContext` declares a `parent_run_id`. `parent_tool_call_id` and
+`run_kind` are child-run fields and require `parent_run_id`. These events
+standardize parent-child run correlation for subagents or delegated work
+without adding a scheduler, workspace manager, or permission-inheritance policy
+to core.
 
 `approval_requested` and `approval_completed` are emitted when an
 `ApprovalPolicy` is configured. They record the host decision point before the

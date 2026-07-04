@@ -96,7 +96,14 @@ class TraceStepKinds:
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_COMPLETED = "approval_completed"
     TOOL_CALL = "tool_call"
+    TOOL_PROGRESS = "tool_progress"
+    TOOL_CANCEL_REQUESTED = "tool_cancel_requested"
     TOOL_RESULT = "tool_result"
+    BACKGROUND_TASK_STARTED = "background_task_started"
+    BACKGROUND_TASK_UPDATED = "background_task_updated"
+    BACKGROUND_TASK_COMPLETED = "background_task_completed"
+    CHILD_RUN_STARTED = "child_run_started"
+    CHILD_RUN_COMPLETED = "child_run_completed"
     CONVERSATION_INSERT = "conversation_insert"
     PAUSE_REQUESTED = "pause_requested"
     STATE_CHANGED = "state_changed"
@@ -117,7 +124,14 @@ VALID_TRACE_STEP_KINDS = {
     TraceStepKinds.APPROVAL_REQUESTED,
     TraceStepKinds.APPROVAL_COMPLETED,
     TraceStepKinds.TOOL_CALL,
+    TraceStepKinds.TOOL_PROGRESS,
+    TraceStepKinds.TOOL_CANCEL_REQUESTED,
     TraceStepKinds.TOOL_RESULT,
+    TraceStepKinds.BACKGROUND_TASK_STARTED,
+    TraceStepKinds.BACKGROUND_TASK_UPDATED,
+    TraceStepKinds.BACKGROUND_TASK_COMPLETED,
+    TraceStepKinds.CHILD_RUN_STARTED,
+    TraceStepKinds.CHILD_RUN_COMPLETED,
     TraceStepKinds.CONVERSATION_INSERT,
     TraceStepKinds.PAUSE_REQUESTED,
     TraceStepKinds.STATE_CHANGED,
@@ -157,7 +171,14 @@ EVENT_TRACE_KIND: Mapping[str, str] = {
     EventTypes.APPROVAL_REQUESTED: TraceStepKinds.APPROVAL_REQUESTED,
     EventTypes.APPROVAL_COMPLETED: TraceStepKinds.APPROVAL_COMPLETED,
     EventTypes.TOOL_STARTED: TraceStepKinds.TOOL_CALL,
+    EventTypes.TOOL_PROGRESS: TraceStepKinds.TOOL_PROGRESS,
+    EventTypes.TOOL_CANCEL_REQUESTED: TraceStepKinds.TOOL_CANCEL_REQUESTED,
     EventTypes.TOOL_COMPLETED: TraceStepKinds.TOOL_RESULT,
+    EventTypes.BACKGROUND_TASK_STARTED: TraceStepKinds.BACKGROUND_TASK_STARTED,
+    EventTypes.BACKGROUND_TASK_UPDATED: TraceStepKinds.BACKGROUND_TASK_UPDATED,
+    EventTypes.BACKGROUND_TASK_COMPLETED: TraceStepKinds.BACKGROUND_TASK_COMPLETED,
+    EventTypes.CHILD_RUN_STARTED: TraceStepKinds.CHILD_RUN_STARTED,
+    EventTypes.CHILD_RUN_COMPLETED: TraceStepKinds.CHILD_RUN_COMPLETED,
     EventTypes.CONVERSATION_INSERTED: TraceStepKinds.CONVERSATION_INSERT,
     EventTypes.PAUSE_REQUESTED: TraceStepKinds.PAUSE_REQUESTED,
     EventTypes.STATE_CHANGED: TraceStepKinds.STATE_CHANGED,
@@ -444,6 +465,10 @@ def _validate_trace_payload(kind: str, payload: Mapping[str, Any]) -> None:
             _expect_non_empty_str(data["response_id"], "model_result response_id")
     elif kind == TraceStepKinds.TOOL_CALL:
         _validate_tool_call_payload(payload, "tool_call payload")
+    elif kind == TraceStepKinds.TOOL_PROGRESS:
+        _validate_tool_progress_payload(payload)
+    elif kind == TraceStepKinds.TOOL_CANCEL_REQUESTED:
+        _validate_tool_cancel_requested_payload(payload)
     elif kind == TraceStepKinds.APPROVAL_REQUESTED:
         _validate_approval_requested_payload(payload)
     elif kind == TraceStepKinds.APPROVAL_COMPLETED:
@@ -457,6 +482,16 @@ def _validate_trace_payload(kind: str, payload: Mapping[str, Any]) -> None:
         result_kind = _expect_str(result["result_kind"], "tool_result result_kind")
         if not _tool_result_kind_matches_mode(mode, result_kind):
             raise ValueError("tool_result result_kind must match tool invocation mode")
+    elif kind in {
+        TraceStepKinds.BACKGROUND_TASK_STARTED,
+        TraceStepKinds.BACKGROUND_TASK_UPDATED,
+        TraceStepKinds.BACKGROUND_TASK_COMPLETED,
+    }:
+        _validate_background_task_payload(payload, kind)
+    elif kind == TraceStepKinds.CHILD_RUN_STARTED:
+        _validate_child_run_payload(payload, completed=False)
+    elif kind == TraceStepKinds.CHILD_RUN_COMPLETED:
+        _validate_child_run_payload(payload, completed=True)
     elif kind == TraceStepKinds.CONVERSATION_INSERT:
         _validate_conversation_insert_payload(payload, "conversation_insert payload")
     elif kind == TraceStepKinds.PAUSE_REQUESTED:
@@ -745,7 +780,7 @@ def _validate_tool_result_summary(value: object, label: str) -> Mapping[str, Any
             "metadata_keys",
             "pause",
         },
-        {"correlation_id"},
+        {"correlation_id", "background_task"},
         label,
     )
     _expect_nonnegative_int(data["part_count"], f"{label} part_count")
@@ -771,7 +806,94 @@ def _validate_tool_result_summary(value: object, label: str) -> Mapping[str, Any
             raise ValueError(f"{label} rejection pause must be null")
     _expect_str_list(data["metadata_keys"], f"{label} metadata_keys")
     _validate_compact_pause_request_or_null(data["pause"], f"{label} pause", tool_only=True)
+    if "background_task" in data:
+        _validate_compact_background_task_summary(
+            data["background_task"], f"{label} background_task"
+        )
     return data
+
+
+def _validate_compact_background_task_summary(value: object, label: str) -> Mapping[str, Any]:
+    data = _expect_mapping(value, label)
+    data = _validate_object_shape(
+        data,
+        {"id", "status", "kind", "lifecycle", "metadata_keys"},
+        {"correlation_id"},
+        label,
+    )
+    _expect_non_empty_str(data["id"], f"{label} id")
+    _expect_non_empty_str(data["status"], f"{label} status")
+    _expect_non_empty_str(data["kind"], f"{label} kind")
+    lifecycle = _expect_str(data["lifecycle"], f"{label} lifecycle")
+    if lifecycle not in {"started", "updated", "completed"}:
+        raise ValueError(f"{label} lifecycle is invalid")
+    if "correlation_id" in data:
+        _expect_non_empty_str(data["correlation_id"], f"{label} correlation_id")
+    _expect_str_list(data["metadata_keys"], f"{label} metadata_keys")
+    return data
+
+
+def _validate_tool_progress_payload(value: Mapping[str, Any]) -> None:
+    data = _validate_tool_call_payload(
+        value,
+        "tool_progress payload",
+        extra_required={"progress_keys"},
+    )
+    _expect_str_list(data["progress_keys"], "tool_progress progress_keys")
+
+
+def _validate_tool_cancel_requested_payload(value: Mapping[str, Any]) -> None:
+    data = _validate_object_shape(
+        value,
+        {"id", "reason", "source", "metadata_keys"},
+        set(),
+        "tool_cancel_requested payload",
+    )
+    _expect_non_empty_str(data["id"], "tool_cancel_requested id")
+    _expect_non_empty_str(data["reason"], "tool_cancel_requested reason")
+    _expect_non_empty_str(data["source"], "tool_cancel_requested source")
+    _expect_str_list(data["metadata_keys"], "tool_cancel_requested metadata_keys")
+
+
+def _validate_background_task_payload(value: Mapping[str, Any], kind: str) -> None:
+    data = _validate_object_shape(
+        value,
+        {"id", "status", "kind", "lifecycle", "metadata_keys", "tool_call"},
+        {"correlation_id"},
+        "background_task payload",
+    )
+    _expect_non_empty_str(data["id"], "background_task id")
+    _expect_non_empty_str(data["status"], "background_task status")
+    lifecycle = _expect_str(data["lifecycle"], "background_task lifecycle")
+    if lifecycle not in {"started", "updated", "completed"}:
+        raise ValueError("background_task lifecycle is invalid")
+    if kind == TraceStepKinds.BACKGROUND_TASK_STARTED and lifecycle != "started":
+        raise ValueError("background_task_started requires started lifecycle")
+    if kind == TraceStepKinds.BACKGROUND_TASK_UPDATED and lifecycle != "updated":
+        raise ValueError("background_task_updated requires updated lifecycle")
+    if kind == TraceStepKinds.BACKGROUND_TASK_COMPLETED and lifecycle != "completed":
+        raise ValueError("background_task_completed requires completed lifecycle")
+    _expect_non_empty_str(data["kind"], "background_task kind")
+    if "correlation_id" in data:
+        _expect_non_empty_str(data["correlation_id"], "background_task correlation_id")
+    _expect_str_list(data["metadata_keys"], "background_task metadata_keys")
+    _validate_tool_call_payload(
+        _expect_mapping(data["tool_call"], "background_task tool_call"),
+        "background_task tool_call",
+    )
+
+
+def _validate_child_run_payload(value: Mapping[str, Any], *, completed: bool) -> None:
+    required = {"parent_run_id", "status"} if completed else {"parent_run_id"}
+    optional = {"parent_tool_call_id", "run_kind"}
+    data = _validate_object_shape(value, required, optional, "child_run payload")
+    _expect_non_empty_str(data["parent_run_id"], "child_run parent_run_id")
+    if "parent_tool_call_id" in data:
+        _expect_non_empty_str(data["parent_tool_call_id"], "child_run parent_tool_call_id")
+    if "run_kind" in data:
+        _expect_non_empty_str(data["run_kind"], "child_run run_kind")
+    if completed:
+        _expect_status_value(data["status"], "child_run status")
 
 
 def _tool_result_kind_matches_mode(mode: str, result_kind: str) -> bool:
@@ -974,6 +1096,8 @@ class _ReplayValidator:
         self.model_result_tool_call_count = 0
         self.open_tool_calls: dict[str, Mapping[str, Any]] = {}
         self.completed_tool_call_ids: set[str] = set()
+        self.completed_tool_calls: dict[str, Mapping[str, Any]] = {}
+        self.background_task_event_call_ids: set[str] = set()
         self.tool_call_ids_since_checkpoint: list[str] = []
         self.tool_result_count = 0
         self.tool_result_ready = False
@@ -992,6 +1116,9 @@ class _ReplayValidator:
         self.pending_conversation_insert_baseline = 0
         self.pending_conversation_insert_count = 0
         self.run_completed_seen = False
+        self.child_run_start_allowed = False
+        self.child_run_started_payload: Mapping[str, Any] | None = None
+        self.child_run_completed_seen = False
         self.last_checkpoint_status: AgentStatus | None = None
         self.last_checkpoint_payload: Mapping[str, Any] | None = None
         self.last_checkpoint_index = -1
@@ -1055,6 +1182,8 @@ class _ReplayValidator:
             return
         if self.current_status is None:
             raise ReplayError(f"{step.kind} appeared before run_started")
+        if step.kind == TraceStepKinds.CHILD_RUN_STARTED and not self.child_run_start_allowed:
+            raise ReplayError("child_run_started must immediately follow run_started")
         if self.pending_conversation_insert_count and step.kind not in {
             TraceStepKinds.CONVERSATION_INSERT,
             TraceStepKinds.CHECKPOINT,
@@ -1080,6 +1209,10 @@ class _ReplayValidator:
             self._validate_model_result(step)
         elif step.kind == TraceStepKinds.TOOL_CALL:
             self._validate_tool_call(step)
+        elif step.kind == TraceStepKinds.TOOL_PROGRESS:
+            self._validate_tool_progress(step)
+        elif step.kind == TraceStepKinds.TOOL_CANCEL_REQUESTED:
+            self._validate_tool_cancel_requested(step)
         elif step.kind in {
             TraceStepKinds.APPROVAL_REQUESTED,
             TraceStepKinds.APPROVAL_COMPLETED,
@@ -1087,6 +1220,14 @@ class _ReplayValidator:
             self._validate_approval(index, step)
         elif step.kind == TraceStepKinds.TOOL_RESULT:
             self._validate_tool_result(step)
+        elif step.kind in {
+            TraceStepKinds.BACKGROUND_TASK_STARTED,
+            TraceStepKinds.BACKGROUND_TASK_UPDATED,
+            TraceStepKinds.BACKGROUND_TASK_COMPLETED,
+        }:
+            self._validate_background_task(step)
+        elif step.kind in {TraceStepKinds.CHILD_RUN_STARTED, TraceStepKinds.CHILD_RUN_COMPLETED}:
+            self._validate_child_run(step)
         elif step.kind == TraceStepKinds.CONVERSATION_INSERT:
             self._validate_conversation_insert(step)
         elif step.kind == TraceStepKinds.PAUSE_REQUESTED:
@@ -1101,6 +1242,8 @@ class _ReplayValidator:
             self._validate_run_completed(step)
         else:
             raise ReplayError(f"unknown trace step kind: {step.kind}")
+        if step.kind != TraceStepKinds.CHILD_RUN_STARTED:
+            self.child_run_start_allowed = False
 
     def _validate_run_started(self, step: TraceStep) -> None:
         if self.current_status is not None:
@@ -1111,6 +1254,7 @@ class _ReplayValidator:
         if status != step.after_status:
             raise ReplayError("run_started payload status does not match after_status")
         self.current_status = step.after_status
+        self.child_run_start_allowed = True
         raw_count = step.payload.get("message_count")
         if not isinstance(raw_count, int) or isinstance(raw_count, bool):
             raise ReplayError("run_started must include message_count")
@@ -1165,6 +1309,8 @@ class _ReplayValidator:
                 self.tool_call_ids_since_checkpoint = []
                 self.tool_result_ids_since_checkpoint = []
                 self.completed_tool_call_ids = set()
+                self.completed_tool_calls = {}
+                self.background_task_event_call_ids = set()
                 self.approval_request_ids_since_checkpoint = []
             self.model_result_ready = False
         if before is AgentStatus.EXECUTING_TOOLS and after is AgentStatus.PLANNING:
@@ -1181,6 +1327,8 @@ class _ReplayValidator:
             self.tool_call_ids_since_checkpoint = []
             self.tool_result_ids_since_checkpoint = []
             self.completed_tool_call_ids = set()
+            self.completed_tool_calls = {}
+            self.background_task_event_call_ids = set()
             self.approval_request_ids_since_checkpoint = []
         if (
             before is AgentStatus.EXECUTING_TOOLS
@@ -1248,6 +1396,8 @@ class _ReplayValidator:
             self.tool_call_ids_since_checkpoint = []
             self.tool_result_ids_since_checkpoint = []
             self.completed_tool_call_ids = set()
+            self.completed_tool_calls = {}
+            self.background_task_event_call_ids = set()
             self.approval_request_ids_since_checkpoint = []
         if status is AgentStatus.EXECUTING_TOOLS:
             self.tool_result_ready = False
@@ -1255,6 +1405,8 @@ class _ReplayValidator:
             self.tool_call_ids_since_checkpoint = []
             self.tool_result_ids_since_checkpoint = []
             self.completed_tool_call_ids = set()
+            self.completed_tool_calls = {}
+            self.background_task_event_call_ids = set()
             self.approval_request_ids_since_checkpoint = []
         self.last_checkpoint_status = status
         self.last_checkpoint_payload = step.payload
@@ -1356,6 +1508,40 @@ class _ReplayValidator:
         }
         self.tool_call_ids_since_checkpoint.append(call_id)
 
+    def _validate_tool_progress(self, step: TraceStep) -> None:
+        self._validate_same_status(step)
+        if self.current_status is not AgentStatus.EXECUTING_TOOLS:
+            raise ReplayError("tool_progress is only valid while executing_tools")
+        call_id = _payload_str(step.payload, "id")
+        expected = self.open_tool_calls.get(call_id)
+        if expected is None:
+            raise ReplayError(f"tool_progress requires an open tool_call: {call_id}")
+        actual = {
+            "name": _payload_str(step.payload, "name"),
+            "mode": _payload_str(step.payload, "mode"),
+            "batch_id": _payload_str(step.payload, "batch_id"),
+            "parallel": _expect_bool(step.payload.get("parallel"), "tool_progress parallel"),
+            "index": _expect_nonnegative_int(step.payload.get("index"), "tool_progress index"),
+            "implementation_invoked": _expect_bool(
+                step.payload.get("implementation_invoked"),
+                "tool_progress implementation_invoked",
+            ),
+        }
+        expected_envelope = {
+            key: expected[key]
+            for key in ("name", "mode", "batch_id", "parallel", "index", "implementation_invoked")
+        }
+        if actual != expected_envelope:
+            raise ReplayError("tool_progress envelope does not match matching tool_call")
+
+    def _validate_tool_cancel_requested(self, step: TraceStep) -> None:
+        self._validate_same_status(step)
+        if self.current_status is not AgentStatus.EXECUTING_TOOLS:
+            raise ReplayError("tool_cancel_requested is only valid while executing_tools")
+        call_id = _payload_str(step.payload, "id")
+        if call_id not in self.open_tool_calls:
+            raise ReplayError(f"tool_cancel_requested requires an open tool_call: {call_id}")
+
     def _validate_approval(self, index: int, step: TraceStep) -> None:
         self._validate_same_status(step)
         if self.current_status is not AgentStatus.EXECUTING_TOOLS:
@@ -1453,6 +1639,7 @@ class _ReplayValidator:
             self.approval_decisions.pop(call_id, None)
         del self.open_tool_calls[call_id]
         self.completed_tool_call_ids.add(call_id)
+        self.completed_tool_calls[call_id] = actual | {"result": result}
         self.tool_result_count += 1
         self.tool_result_ready = True
         self.tool_result_ids_since_checkpoint.append(call_id)
@@ -1464,6 +1651,69 @@ class _ReplayValidator:
                     _expect_mapping(pause, "tool result pause"),
                 )
             )
+
+    def _validate_background_task(self, step: TraceStep) -> None:
+        self._validate_same_status(step)
+        if self.current_status is not AgentStatus.EXECUTING_TOOLS:
+            raise ReplayError("background_task event is only valid while executing_tools")
+        tool_call = _expect_mapping(step.payload["tool_call"], "background_task tool_call")
+        call_id = _payload_str(tool_call, "id")
+        expected = self.completed_tool_calls.get(call_id)
+        if expected is None:
+            raise ReplayError(f"background_task event requires a completed tool_call: {call_id}")
+        if call_id in self.background_task_event_call_ids:
+            raise ReplayError("background_task event already recorded for tool_result")
+        actual = {
+            "name": _payload_str(tool_call, "name"),
+            "mode": _payload_str(tool_call, "mode"),
+            "batch_id": _payload_str(tool_call, "batch_id"),
+            "parallel": _expect_bool(tool_call.get("parallel"), "background_task parallel"),
+            "index": _expect_nonnegative_int(tool_call.get("index"), "background_task index"),
+            "implementation_invoked": _expect_bool(
+                tool_call.get("implementation_invoked"),
+                "background_task implementation_invoked",
+            ),
+        }
+        expected_envelope = {
+            key: expected[key]
+            for key in ("name", "mode", "batch_id", "parallel", "index", "implementation_invoked")
+        }
+        if actual != expected_envelope:
+            raise ReplayError("background_task tool_call does not match matching tool_result")
+        result = _expect_mapping(expected["result"], "background_task tool result")
+        expected_task = result.get("background_task")
+        if expected_task is None:
+            raise ReplayError("background_task event requires tool_result background_task")
+        task = {
+            key: step.payload[key] for key in ("id", "status", "kind", "lifecycle", "metadata_keys")
+        }
+        if "correlation_id" in step.payload:
+            task["correlation_id"] = step.payload["correlation_id"]
+        if task != expected_task:
+            raise ReplayError("background_task payload does not match tool_result background_task")
+        self.background_task_event_call_ids.add(call_id)
+
+    def _validate_child_run(self, step: TraceStep) -> None:
+        self._validate_same_status(step)
+        payload = dict(step.payload)
+        _payload_str(payload, "parent_run_id")
+        if step.kind == TraceStepKinds.CHILD_RUN_STARTED:
+            if self.child_run_started_payload is not None:
+                raise ReplayError("child_run_started must appear at most once")
+            self.child_run_started_payload = payload
+            return
+        if self.child_run_started_payload is None:
+            raise ReplayError("child_run_completed requires child_run_started")
+        if self.child_run_completed_seen:
+            raise ReplayError("child_run_completed must appear at most once")
+        completed_status = AgentStatus(_expect_str(payload.get("status"), "child_run status"))
+        if completed_status != self.current_status:
+            raise ReplayError("child_run_completed status must match replay status")
+        started = dict(self.child_run_started_payload)
+        for key in ("parent_run_id", "parent_tool_call_id", "run_kind"):
+            if started.get(key) != payload.get(key):
+                raise ReplayError("child_run_completed does not match child_run_started")
+        self.child_run_completed_seen = True
 
     def _validate_conversation_insert(self, step: TraceStep) -> None:
         self._validate_same_status(step)
@@ -1633,6 +1883,8 @@ class _ReplayValidator:
                 raise ReplayError("trace cannot leave approval request open")
             if self.approval_decisions:
                 raise ReplayError("trace cannot leave approval decision unresolved")
+        if self.child_run_started_payload is not None and not self.child_run_completed_seen:
+            raise ReplayError("trace cannot leave child_run_started without child_run_completed")
         if final_status is AgentStatus.PAUSED:
             if self.open_tool_calls:
                 raise ReplayError("paused trace cannot leave tool_call open")
@@ -1730,6 +1982,25 @@ class _ReplayValidator:
             actual = [step.kind for step in steps[-len(expected) :]]
             if actual == list(expected):
                 return
+            expected_with_child = [
+                *expected[:-1],
+                TraceStepKinds.CHILD_RUN_COMPLETED,
+                expected[-1],
+            ]
+            actual_with_child = [step.kind for step in steps[-len(expected_with_child) :]]
+            if actual_with_child == expected_with_child:
+                return
+            if len(expected) >= 2 and expected[-2] == TraceStepKinds.ERROR:
+                expected_with_child_before_error = [
+                    *expected[:-2],
+                    TraceStepKinds.CHILD_RUN_COMPLETED,
+                    *expected[-2:],
+                ]
+                actual_with_child_before_error = [
+                    step.kind for step in steps[-len(expected_with_child_before_error) :]
+                ]
+                if actual_with_child_before_error == expected_with_child_before_error:
+                    return
         expected_text = " or ".join(str(list(expected)) for expected in expected_options)
         longest = max(len(expected) for expected in expected_options)
         actual = [step.kind for step in steps[-longest:]]
@@ -1813,6 +2084,26 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
             "index": data["index"],
             "implementation_invoked": data["implementation_invoked"],
         }
+    if kind == TraceStepKinds.TOOL_PROGRESS:
+        progress = _expect_mapping(data["progress"], "tool progress")
+        return {
+            "id": data["id"],
+            "name": data["name"],
+            "mode": data["mode"],
+            "batch_id": data["batch_id"],
+            "parallel": data["parallel"],
+            "index": data["index"],
+            "implementation_invoked": True,
+            "progress_keys": sorted(str(key) for key in progress),
+        }
+    if kind == TraceStepKinds.TOOL_CANCEL_REQUESTED:
+        metadata = _expect_mapping(data["metadata"], "tool cancel metadata")
+        return {
+            "id": data["id"],
+            "reason": data["reason"],
+            "source": data["source"],
+            "metadata_keys": sorted(str(key) for key in metadata),
+        }
     if kind == TraceStepKinds.APPROVAL_REQUESTED:
         risk = _expect_mapping(data["risk"], "approval risk")
         metadata = _expect_mapping(data["metadata"], "approval request metadata")
@@ -1846,6 +2137,14 @@ def _payload_from_event(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
                 _expect_mapping(data["result"], "tool result summary")
             ),
         }
+    if kind in {
+        TraceStepKinds.BACKGROUND_TASK_STARTED,
+        TraceStepKinds.BACKGROUND_TASK_UPDATED,
+        TraceStepKinds.BACKGROUND_TASK_COMPLETED,
+    }:
+        return _compact_background_task_event(data)
+    if kind in {TraceStepKinds.CHILD_RUN_STARTED, TraceStepKinds.CHILD_RUN_COMPLETED}:
+        return deepcopy(dict(data))
     if kind == TraceStepKinds.CONVERSATION_INSERT:
         return _compact_conversation_insert(_expect_mapping(data["insert"], "conversation insert"))
     if kind == TraceStepKinds.MODEL_CALL:
@@ -1895,7 +2194,46 @@ def _compact_tool_result_summary(result: Mapping[str, Any]) -> dict[str, Any]:
     }
     if "correlation_id" in result:
         payload["correlation_id"] = result["correlation_id"]
+    if "background_task" in result:
+        payload["background_task"] = _compact_background_task_summary(
+            _expect_mapping(result["background_task"], "tool result background_task")
+        )
     return payload
+
+
+def _compact_background_task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = _expect_mapping(task["metadata"], "background task metadata")
+    payload: dict[str, Any] = {
+        "id": task["id"],
+        "status": task["status"],
+        "kind": task["kind"],
+        "lifecycle": task["lifecycle"],
+        "metadata_keys": sorted(str(key) for key in metadata),
+    }
+    if "correlation_id" in task:
+        payload["correlation_id"] = task["correlation_id"]
+    return payload
+
+
+def _compact_background_task_event(data: Mapping[str, Any]) -> dict[str, Any]:
+    task = _expect_mapping(data["task"], "background task")
+    payload = _compact_background_task_summary(task)
+    payload["tool_call"] = _compact_background_task_tool_call(
+        _expect_mapping(data["tool_call"], "background task tool_call")
+    )
+    return payload
+
+
+def _compact_background_task_tool_call(tool_call: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": tool_call["id"],
+        "name": tool_call["name"],
+        "mode": tool_call["mode"],
+        "batch_id": tool_call["batch_id"],
+        "parallel": tool_call["parallel"],
+        "index": tool_call["index"],
+        "implementation_invoked": tool_call["implementation_invoked"],
+    }
 
 
 def _compact_conversation_insert(insert: Mapping[str, Any]) -> dict[str, Any]:

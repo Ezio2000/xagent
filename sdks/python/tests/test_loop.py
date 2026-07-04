@@ -18,6 +18,7 @@ from agent_runtime import (
     AgentStatus,
     ApprovalDecision,
     ApprovalRequest,
+    BackgroundTask,
     CheckpointSummary,
     ContentPart,
     ConversationInsert,
@@ -3653,6 +3654,7 @@ async def test_raw_timeout_terminal_events_are_ordered() -> None:
     )
 
     assert [event.type for event in events] == [
+        EventTypes.RUN_STARTED,
         EventTypes.STATE_CHANGED,
         EventTypes.CHECKPOINT,
         EventTypes.ERROR,
@@ -3671,6 +3673,7 @@ async def test_generic_exception_terminal_events_are_ordered() -> None:
     )
 
     assert [event.type for event in events] == [
+        EventTypes.RUN_STARTED,
         EventTypes.STATE_CHANGED,
         EventTypes.CHECKPOINT,
         EventTypes.ERROR,
@@ -3740,6 +3743,62 @@ async def test_run_started_event_hook_failure_trace_still_replays() -> None:
     assert result.trace is not None
     assert result.trace.steps[0].kind == TraceStepKinds.RUN_STARTED
     assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_run_started_event_hook_failure_event_stream_still_replays() -> None:
+    events = [
+        event
+        async for event in AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(EventTypes.RUN_STARTED)],
+        ).run_events([Message.user_text("finish")])
+    ]
+
+    assert events[0].type == EventTypes.RUN_STARTED
+    assert events[-1].type == EventTypes.RUN_COMPLETED
+    assert replay_trace(RunTrace.from_events(events[0].run_id, events)).final_status is (
+        AgentStatus.FAILED
+    )
+
+
+@pytest.mark.asyncio
+async def test_child_run_events_emit_when_run_started_hook_fails() -> None:
+    context = RuntimeContext(
+        run_id="child-run",
+        parent_run_id="parent-run",
+        parent_tool_call_id="call-1",
+        run_kind="subagent",
+    )
+
+    events = [
+        event
+        async for event in AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(EventTypes.RUN_STARTED)],
+        ).run_events([Message.user_text("finish")], context=context)
+    ]
+
+    event_types = [event.type for event in events]
+    assert event_types[:2] == [EventTypes.RUN_STARTED, EventTypes.CHILD_RUN_STARTED]
+    assert event_types.count(EventTypes.CHILD_RUN_STARTED) == 1
+    assert event_types.count(EventTypes.CHILD_RUN_COMPLETED) == 1
+    assert event_types.index(EventTypes.CHILD_RUN_COMPLETED) < event_types.index(
+        EventTypes.RUN_COMPLETED
+    )
+    assert replay_trace(RunTrace.from_events(events[0].run_id, events)).final_status is (
+        AgentStatus.FAILED
+    )
+
+    result = await AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RaisingOnEventHook(EventTypes.RUN_STARTED)],
+    ).run([Message.user_text("finish")], context=context)
+    assert result.trace is not None
+    assert replay_trace(result.trace).final_status is AgentStatus.FAILED
+    result_kinds = [step.kind for step in result.trace.steps]
+    assert TraceStepKinds.CHILD_RUN_STARTED in result_kinds
+    assert TraceStepKinds.CHILD_RUN_COMPLETED in result_kinds
 
 
 @pytest.mark.asyncio
@@ -6383,4 +6442,422 @@ async def test_approval_pause_after_prior_parallel_call_has_only_applied_approva
     )
     assert paused.state.total_tool_calls == 1
     assert [call.id for call in paused.state.pending_tool_calls] == ["call-2"]
+
+
+@pytest.mark.asyncio
+async def test_approval_policy_receives_normalized_risk_annotations() -> None:
+    class RiskyTool(RecordingTool):
+        spec = ToolSpec(
+            name="record",
+            description="Record with risk annotations.",
+            input_schema={
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+            annotations={
+                "read_only": False,
+                "risk": {
+                    "filesystem": "write",
+                    "network": "none",
+                    "subprocess": True,
+                    "destructive": False,
+                    "requires_approval": True,
+                },
+            },
+        )
+
+    policy = StaticApprovalPolicy(ApprovalDecision.allow("ok"))
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[ToolCall(id="call-1", name="record", arguments={"id": "a"})]
+                ),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[RiskyTool()],
+        approval_policy=policy,
+    )
+
+    result = await agent.run([Message.user_text("use tool")])
+
+    assert result.status is AgentStatus.COMPLETED
+    assert policy.requests[0].risk == {
+        "filesystem": "write",
+        "network": "none",
+        "subprocess": True,
+        "destructive": False,
+        "requires_approval": True,
+        "read_only": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_progress_and_cancel_request_are_live_events_and_trace_replays() -> None:
+    class ProgressTool:
+        spec = ToolSpec(
+            name="progress",
+            description="Emit progress and cooperatively observe cancellation.",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+        async def execute(
+            self, invocation: ToolInvocation, context: ToolExecutionContext
+        ) -> ToolObservation:
+            _ = invocation
+            context.emit_progress({"phase": "started"})
+            for _ in range(100):
+                if context.cancel_requested:
+                    return ToolObservation.text("cancelled", is_error=True)
+                await asyncio.sleep(0.001)
+            return ToolObservation.text("finished")
+
+    controller = RunController()
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="progress")]),
+                ModelResponse.text("handled"),
+            ]
+        ),
+        tools=[ProgressTool()],
+    )
+
+    events: list[AgentEvent] = []
+    async for event in agent.run_events(
+        [Message.user_text("use progress")],
+        controller=controller,
+    ):
+        events.append(event)
+        if event.type == EventTypes.TOOL_PROGRESS:
+            controller.cancel_tool("call-1", reason="test_cancel", metadata={"test": True})
+
+    event_types = [event.type for event in events]
+    assert EventTypes.TOOL_PROGRESS in event_types
+    assert EventTypes.TOOL_CANCEL_REQUESTED in event_types
+    cancel_event = next(event for event in events if event.type == EventTypes.TOOL_CANCEL_REQUESTED)
+    assert cancel_event.data["reason"] == "test_cancel"
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_tool_progress_drains_queued_events_before_tool_completion() -> None:
+    class BurstProgressTool:
+        spec = ToolSpec(
+            name="burst_progress",
+            description="Emit several progress records before returning.",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+        async def execute(
+            self, invocation: ToolInvocation, context: ToolExecutionContext
+        ) -> ToolObservation:
+            _ = invocation
+            context.emit_progress({"step": 1})
+            context.emit_progress({"step": 2})
+            context.emit_progress({"step": 3})
+            return ToolObservation.text("finished")
+
+    events = [
+        event
+        async for event in AgentLoop(
+            model=ScriptedModel(
+                [
+                    ModelResponse(tool_calls=[ToolCall(id="call-1", name="burst_progress")]),
+                    ModelResponse.text("done"),
+                ]
+            ),
+            tools=[BurstProgressTool()],
+        ).run_events([Message.user_text("use burst progress")])
+    ]
+
+    progress_events = [
+        event
+        for event in events
+        if event.type == EventTypes.TOOL_PROGRESS and event.data["id"] == "call-1"
+    ]
+    assert [event.data["progress"]["step"] for event in progress_events] == [1, 2, 3]
+    completed_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.type == EventTypes.TOOL_COMPLETED and event.data["id"] == "call-1"
+    )
+    assert all(events.index(event) < completed_index for event in progress_events)
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_tool_cancel_request_is_cleared_after_tool_completion() -> None:
+    class CancelRecordingTool:
+        spec = ToolSpec(
+            name="cancel_record",
+            description="Record cancel state.",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancel_seen: list[bool] = []
+
+        async def execute(
+            self, invocation: ToolInvocation, context: ToolExecutionContext
+        ) -> ToolObservation:
+            _ = invocation
+            self.started.set()
+            for _ in range(100):
+                if context.cancel_requested:
+                    self.cancel_seen.append(True)
+                    return ToolObservation.text("cancelled", is_error=True)
+                await asyncio.sleep(0.001)
+            self.cancel_seen.append(False)
+            return ToolObservation.text("not cancelled")
+
+    tool = CancelRecordingTool()
+    controller = RunController()
+    agent = AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="cancel_record")]),
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="cancel_record")]),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[tool],
+    )
+
+    async def cancel_first_call() -> None:
+        await tool.started.wait()
+        controller.cancel_tool("call-1", reason="first_call_only")
+
+    cancel_task = asyncio.create_task(cancel_first_call())
+    result = await agent.run([Message.user_text("use tool twice")], controller=controller)
+    await cancel_task
+
+    assert result.status is AgentStatus.COMPLETED
+    assert tool.cancel_seen == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_late_tool_cancel_does_not_affect_later_reused_call_id() -> None:
+    class CancelRecordingTool:
+        spec = ToolSpec(
+            name="cancel_record",
+            description="Record cancel state.",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+        def __init__(self) -> None:
+            self.cancel_seen: list[bool] = []
+
+        async def execute(
+            self, invocation: ToolInvocation, context: ToolExecutionContext
+        ) -> ToolObservation:
+            _ = invocation
+            self.cancel_seen.append(context.cancel_requested)
+            return ToolObservation.text("done")
+
+    tool = CancelRecordingTool()
+    controller = RunController()
+    events: list[AgentEvent] = []
+    async for event in AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="cancel_record")]),
+                ModelResponse(tool_calls=[ToolCall(id="call-1", name="cancel_record")]),
+                ModelResponse.text("done"),
+            ]
+        ),
+        tools=[tool],
+    ).run_events([Message.user_text("use tool twice")], controller=controller):
+        events.append(event)
+        if (
+            event.type == EventTypes.TOOL_COMPLETED
+            and event.data["id"] == "call-1"
+            and len(tool.cancel_seen) == 1
+        ):
+            controller.cancel_tool("call-1", reason="too_late")
+
+    assert tool.cancel_seen == [False, False]
+    assert EventTypes.TOOL_CANCEL_REQUESTED not in [event.type for event in events]
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_background_task_tool_result_emits_lifecycle_event_and_trace_replays() -> None:
+    class BackgroundResearchTool:
+        spec = ToolSpec(
+            name="research",
+            description="Start host-owned background research.",
+            input_schema={"type": "object", "properties": {}},
+        )
+
+        async def execute(
+            self, invocation: ToolInvocation, context: ToolExecutionContext
+        ) -> ToolObservation:
+            _ = invocation, context
+            task = BackgroundTask(
+                id="research-1",
+                status="accepted",
+                kind="research",
+                correlation_id="call-1",
+                metadata={"topic": "runtime"},
+            )
+            return ToolObservation.waiting(
+                "research started",
+                wait_id=task.id,
+                reason="research_callback",
+                background_task=task,
+            )
+
+    events = [
+        event
+        async for event in AgentLoop(
+            model=ScriptedModel(
+                [ModelResponse(tool_calls=[ToolCall(id="call-1", name="research")])]
+            ),
+            tools=[BackgroundResearchTool()],
+        ).run_events([Message.user_text("research")])
+    ]
+
+    event_types = [event.type for event in events]
+    assert event_types.index(EventTypes.TOOL_COMPLETED) < event_types.index(
+        EventTypes.BACKGROUND_TASK_STARTED
+    )
+    task_event = next(event for event in events if event.type == EventTypes.BACKGROUND_TASK_STARTED)
+    assert task_event.data["task"]["id"] == "research-1"
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_child_run_context_emits_relation_events_and_trace_replays() -> None:
+    context = RuntimeContext(
+        run_id="child-run",
+        parent_run_id="parent-run",
+        parent_tool_call_id="call-1",
+        run_kind="subagent",
+    )
+
+    events = [
+        event
+        async for event in AgentLoop(model=ScriptedModel([ModelResponse.text("done")])).run_events(
+            [Message.user_text("child")],
+            context=context,
+        )
+    ]
+
+    event_types = [event.type for event in events]
+    assert EventTypes.CHILD_RUN_STARTED in event_types
+    assert EventTypes.CHILD_RUN_COMPLETED in event_types
+    started = next(event for event in events if event.type == EventTypes.CHILD_RUN_STARTED)
+    completed = next(event for event in events if event.type == EventTypes.CHILD_RUN_COMPLETED)
+    assert started.data == {
+        "parent_run_id": "parent-run",
+        "parent_tool_call_id": "call-1",
+        "run_kind": "subagent",
+    }
+    assert completed.data == dict(started.data) | {"status": AgentStatus.COMPLETED.value}
+    trace = RunTrace.from_events("child-run", events)
+    assert replay_trace(trace).valid
+    assert replay_trace(RunTrace.from_events(events[0].run_id, events)).valid
+
+
+@pytest.mark.asyncio
+async def test_child_run_completed_emits_on_terminal_error_tail() -> None:
+    context = RuntimeContext(
+        run_id="child-run",
+        parent_run_id="parent-run",
+        parent_tool_call_id="call-1",
+        run_kind="subagent",
+    )
+
+    events = [
+        event
+        async for event in AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(EventTypes.FINAL)],
+        ).run_events(
+            [Message.user_text("child")],
+            context=context,
+        )
+    ]
+
+    event_types = [event.type for event in events]
+    assert event_types.count(EventTypes.CHILD_RUN_STARTED) == 1
+    assert event_types.count(EventTypes.CHILD_RUN_COMPLETED) == 1
+    assert event_types.index(EventTypes.ERROR) < event_types.index(EventTypes.CHILD_RUN_COMPLETED)
+    assert event_types.index(EventTypes.CHILD_RUN_COMPLETED) < event_types.index(
+        EventTypes.RUN_COMPLETED
+    )
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_child_run_completed_not_duplicated_when_run_completed_hook_fails() -> None:
+    context = RuntimeContext(
+        run_id="child-run",
+        parent_run_id="parent-run",
+        parent_tool_call_id="call-1",
+        run_kind="subagent",
+    )
+
+    events = [
+        event
+        async for event in AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(EventTypes.RUN_COMPLETED)],
+        ).run_events(
+            [Message.user_text("child")],
+            context=context,
+        )
+    ]
+
+    event_types = [event.type for event in events]
+    assert event_types.count(EventTypes.CHILD_RUN_STARTED) == 1
+    assert event_types.count(EventTypes.CHILD_RUN_COMPLETED) == 1
+    assert event_types[-2:] == [EventTypes.ERROR, EventTypes.RUN_COMPLETED]
+    trace = RunTrace.from_events(events[0].run_id, events)
+    assert replay_trace(trace).valid
+
+
+@pytest.mark.asyncio
+async def test_child_run_completed_does_not_orphan_result_trace_after_rollback() -> None:
+    context = RuntimeContext(
+        run_id="child-run",
+        parent_run_id="parent-run",
+        parent_tool_call_id="call-1",
+        run_kind="subagent",
+    )
+    agent = AgentLoop(
+        model=ScriptedModel([ModelResponse.text("done")]),
+        hooks=[RaisingOnEventHook(EventTypes.STATE_CHANGED)],
+    )
+
+    result = await agent.run([Message.user_text("child")], context=context)
+
+    assert result.status is AgentStatus.FAILED
+    assert result.trace is not None
+    assert replay_trace(result.trace).valid
+    result_kinds = [step.kind for step in result.trace.steps]
+    assert TraceStepKinds.CHILD_RUN_STARTED not in result_kinds
+    assert TraceStepKinds.CHILD_RUN_COMPLETED not in result_kinds
+
+    events = [
+        event
+        async for event in AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            hooks=[RaisingOnEventHook(EventTypes.STATE_CHANGED)],
+        ).run_events(
+            [Message.user_text("child")],
+            context=context,
+        )
+    ]
+    assert EventTypes.CHILD_RUN_STARTED in [event.type for event in events]
+    assert EventTypes.CHILD_RUN_COMPLETED in [event.type for event in events]
     assert replay_trace(RunTrace.from_events(events[0].run_id, events)).valid

@@ -14,7 +14,8 @@ The core SDK owns:
 - core run-control boundaries for pause, interrupt, external wait, and
   conversation insertion;
 - optional extension protocols for checkpoint stores, tool approval decisions,
-  and durable event journals;
+  durable event journals, cooperative tool cancellation, background task
+  references, artifact references, and child-run correlation;
 - strict resume input validation, compact run traces, and deterministic replay
   validation.
 
@@ -27,16 +28,17 @@ Host applications own:
 - concrete tools.
 
 The v0.1 runtime intentionally excludes concrete checkpoint stores, approval
-UIs, memory implementations, sandboxing, MCP, subagents, and concrete provider
-adapters. Those are extension concerns. The core exposes neutral hooks, context,
-model protocols, pause metadata, state serialization, and small extension
-protocols so host applications can add those behaviors without changing the
-loop. Durable progress is represented as `RunSnapshot`; callback transport,
-user-message policy, concrete storage backends, concrete journal backends, and
-retention policy stay outside the core SDK. `RunTrace` records semantic runtime
-steps for replay and conformance, but it is not a log store, queue, callback
-transport, or monitoring system. It carries compact metadata key summaries, not
-raw host or provider metadata values.
+UIs, memory implementations, sandboxing, MCP, subagent schedulers, artifact
+stores, job queues, and concrete provider adapters. Those are extension
+concerns. The core exposes neutral hooks, context, model protocols, pause
+metadata, state serialization, and small extension protocols so host
+applications can add those behaviors without changing the loop. Durable
+progress is represented as `RunSnapshot`; callback transport, user-message
+policy, concrete storage backends, concrete journal backends, worker queues,
+artifact retention, and retention policy stay outside the core SDK. `RunTrace`
+records semantic runtime steps for replay and conformance, but it is not a log
+store, queue, callback transport, or monitoring system. It carries compact
+metadata key summaries, not raw host or provider metadata values.
 Raw durable metadata is limited to explicit host-owned fields such as
 `RuntimeContext.metadata`, pause metadata, and resume metadata. Model and tool
 provider metadata is not copied into durable message history or trace payloads.

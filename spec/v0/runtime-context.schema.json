@@ -20,10 +20,36 @@
     "metadata": {
       "type": "object"
     },
+    "parent_run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional run id of the parent run that created this child run."
+    },
+    "parent_tool_call_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional tool-call id in the parent run that created this child run."
+    },
+    "run_kind": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional host-defined run kind, such as subagent."
+    },
     "sequence": {
       "type": "integer",
       "minimum": 0
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          { "required": ["parent_tool_call_id"] },
+          { "required": ["run_kind"] }
+        ]
+      },
+      "then": { "required": ["parent_run_id"] }
+    }
+  ],
   "additionalProperties": false
 }

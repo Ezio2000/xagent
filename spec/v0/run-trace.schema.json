@@ -437,6 +437,47 @@
       },
       "additionalProperties": false
     },
+    "tool_progress_payload": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mode",
+        "batch_id",
+        "parallel",
+        "index",
+        "implementation_invoked",
+        "progress_keys"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "batch_id": { "type": "string", "minLength": 1 },
+        "parallel": { "type": "boolean" },
+        "index": { "type": "integer", "minimum": 0 },
+        "implementation_invoked": { "type": "boolean" },
+        "progress_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "tool_cancel_requested_payload": {
+      "type": "object",
+      "required": ["id", "reason", "source", "metadata_keys"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
     "approval_requested_payload": {
       "type": "object",
       "required": ["id", "name", "mode", "risk_keys", "metadata_keys"],
@@ -572,6 +613,7 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "background_task": { "$ref": "#/$defs/compact_background_task" },
         "pause": { "$ref": "#/$defs/compact_tool_pause_request_or_null" }
       },
       "allOf": [
@@ -601,6 +643,78 @@
           }
         }
       ],
+      "additionalProperties": false
+    },
+    "compact_background_task": {
+      "type": "object",
+      "required": ["id", "status", "kind", "lifecycle", "metadata_keys"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "lifecycle": { "type": "string", "enum": ["started", "updated", "completed"] },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "background_task_payload": {
+      "type": "object",
+      "required": ["id", "status", "kind", "lifecycle", "metadata_keys", "tool_call"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "lifecycle": { "type": "string", "enum": ["started", "updated", "completed"] },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "metadata_keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "tool_call": { "$ref": "#/$defs/tool_call_payload" }
+      },
+      "additionalProperties": false
+    },
+    "background_task_started_payload": {
+      "allOf": [
+        { "$ref": "#/$defs/background_task_payload" },
+        { "properties": { "lifecycle": { "const": "started" } } }
+      ]
+    },
+    "background_task_updated_payload": {
+      "allOf": [
+        { "$ref": "#/$defs/background_task_payload" },
+        { "properties": { "lifecycle": { "const": "updated" } } }
+      ]
+    },
+    "background_task_completed_payload": {
+      "allOf": [
+        { "$ref": "#/$defs/background_task_payload" },
+        { "properties": { "lifecycle": { "const": "completed" } } }
+      ]
+    },
+    "child_run_started_payload": {
+      "type": "object",
+      "required": ["parent_run_id"],
+      "properties": {
+        "parent_run_id": { "type": "string", "minLength": 1 },
+        "parent_tool_call_id": { "type": "string", "minLength": 1 },
+        "run_kind": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "child_run_completed_payload": {
+      "type": "object",
+      "required": ["parent_run_id", "status"],
+      "properties": {
+        "parent_run_id": { "type": "string", "minLength": 1 },
+        "parent_tool_call_id": { "type": "string", "minLength": 1 },
+        "run_kind": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/status" }
+      },
       "additionalProperties": false
     },
     "conversation_insert_payload": {
@@ -768,7 +882,14 @@
             "approval_requested",
             "approval_completed",
             "tool_call",
+            "tool_progress",
+            "tool_cancel_requested",
             "tool_result",
+            "background_task_started",
+            "background_task_updated",
+            "background_task_completed",
+            "child_run_started",
+            "child_run_completed",
             "conversation_insert",
             "pause_requested",
             "state_changed",
@@ -844,8 +965,68 @@
           "then": { "properties": { "payload": { "$ref": "#/$defs/tool_call_payload" } } }
         },
         {
+          "if": { "properties": { "kind": { "const": "tool_progress" } }, "required": ["kind"] },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/tool_progress_payload" } } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "tool_cancel_requested" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "payload": { "$ref": "#/$defs/tool_cancel_requested_payload" }
+            }
+          }
+        },
+        {
           "if": { "properties": { "kind": { "const": "tool_result" } }, "required": ["kind"] },
           "then": { "properties": { "payload": { "$ref": "#/$defs/tool_result_payload" } } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "background_task_started" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/background_task_started_payload" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "background_task_updated" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/background_task_updated_payload" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "background_task_completed" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/background_task_completed_payload" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "child_run_started" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/child_run_started_payload" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "child_run_completed" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": { "payload": { "$ref": "#/$defs/child_run_completed_payload" } }
+          }
         },
         {
           "if": {

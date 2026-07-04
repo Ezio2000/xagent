@@ -1,7 +1,7 @@
 """Lightweight model-neutral agent loop runtime."""
 
 from agent_runtime.approval import ApprovalAction, ApprovalDecision, ApprovalPolicy, ApprovalRequest
-from agent_runtime.control import ConversationInsert, PauseRequest, RunController
+from agent_runtime.control import ConversationInsert, PauseRequest, RunController, ToolCancelRequest
 from agent_runtime.errors import (
     AgentError,
     DuplicateToolError,
@@ -17,7 +17,7 @@ from agent_runtime.hooks import ModelErrorDecision, RuntimeHook
 from agent_runtime.journal import JournalRecord, RunJournal
 from agent_runtime.limits import LimitReasons, LoopLimits
 from agent_runtime.loop import AgentLoop, AgentResult, ToolSchedulerFactory
-from agent_runtime.messages import ContentPart, Message, ToolCall
+from agent_runtime.messages import ArtifactRef, ContentPart, Message, ToolCall
 from agent_runtime.models import (
     ModelCapabilities,
     ModelClient,
@@ -53,6 +53,7 @@ from agent_runtime.state import AgentState, AgentStatus, PauseState
 from agent_runtime.store import CheckpointSummary, RunStore, StoredCheckpoint
 from agent_runtime.tools import (
     AcceptableTool,
+    BackgroundTask,
     ExecutableTool,
     InvocableTool,
     Tool,
@@ -64,6 +65,7 @@ from agent_runtime.tools import (
     ToolRegistry,
     ToolRejection,
     ToolSpec,
+    normalized_tool_risk,
 )
 from agent_runtime.trace import (
     ReplayError,
@@ -86,6 +88,8 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalPolicy",
     "ApprovalRequest",
+    "ArtifactRef",
+    "BackgroundTask",
     "CheckpointSummary",
     "ContentPart",
     "ConversationInsert",
@@ -140,6 +144,7 @@ __all__ = [
     "ToolAcceptance",
     "ToolBatch",
     "ToolCall",
+    "ToolCancelRequest",
     "ToolCatalog",
     "ToolChoice",
     "ToolCompleted",
@@ -158,5 +163,6 @@ __all__ = [
     "TraceStep",
     "TraceStepKinds",
     "model_capabilities",
+    "normalized_tool_risk",
     "replay_trace",
 ]

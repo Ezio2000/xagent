@@ -68,7 +68,10 @@ and contract validation. Most application code should import only
   response format, usage, capabilities, structured provider errors, and
   streaming deltas.
 - Event stream: `run_started`, `model_started`, `model_delta`, `model_error`,
-  `model_completed`, `tool_started`, `tool_completed`, `state_changed`,
+  `model_completed`, `tool_started`, `tool_progress`,
+  `tool_cancel_requested`, `tool_completed`, `background_task_started`,
+  `background_task_updated`, `background_task_completed`,
+  `child_run_started`, `child_run_completed`, `state_changed`,
   `approval_requested`, `approval_completed`, `conversation_inserted`,
   `pause_requested`, `checkpoint`, `final`, `error`, `run_paused`, and
   `run_completed`.
@@ -81,14 +84,17 @@ and contract validation. Most application code should import only
 - Tool scheduling, including conservative parallel execution for explicitly
   safe, read-only, idempotent tools.
 - Optional core extension protocols for checkpoint stores, tool approval
-  decisions, and durable event journals.
+  decisions, durable event journals, cooperative tool cancellation, background
+  task references, artifact references, and child-run correlation.
 - Hooks for observing or rewriting model/tool boundaries.
-- Open multimodal message parts for text, image, file, and future content types.
+- Open multimodal message parts for text, image, file, artifact references, and
+  future content types.
 
 The core deliberately does not include provider adapters, concrete persistence
 stores, concrete approval policies, approval UIs, UI rendering, tool packs,
-plugin systems, or deployment runtime. Those should layer on top of the SDK
-through stable protocols.
+artifact stores, job queues, subagent orchestrators, plugin systems, or
+deployment runtime. Those should layer on top of the SDK through stable
+protocols.
 
 ## Runtime Model
 

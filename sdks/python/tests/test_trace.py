@@ -305,6 +305,21 @@ def approval_completed_trace_steps() -> list[TraceStep]:
     ]
 
 
+def renumber_trace_steps(steps: Sequence[TraceStep]) -> list[TraceStep]:
+    return [
+        TraceStep(
+            step_id=index,
+            kind=step.kind,
+            before_status=step.before_status,
+            after_status=step.after_status,
+            payload=step.payload,
+            references=step.references,
+            schema_version=step.schema_version,
+        )
+        for index, step in enumerate(steps, start=1)
+    ]
+
+
 def test_trace_step_data_is_immutable_and_deepcopyable() -> None:
     step = TraceStep(
         step_id=1,
@@ -599,6 +614,154 @@ def test_replay_rejects_non_invoked_tool_result_pause() -> None:
 
     with pytest.raises(ReplayError, match="must not request pause"):
         replay_trace(RunTrace(run_id="run-1", steps=steps))
+
+
+def test_replay_rejects_tool_progress_envelope_drift() -> None:
+    steps = approval_completed_trace_steps()
+    steps.insert(
+        8,
+        TraceStep(
+            step_id=9,
+            kind=TraceStepKinds.TOOL_PROGRESS,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload={
+                "id": "call-1",
+                "name": "other",
+                "mode": "execute",
+                "batch_id": "tool-batch-1",
+                "parallel": False,
+                "index": 0,
+                "implementation_invoked": True,
+                "progress_keys": ["step"],
+            },
+        ),
+    )
+
+    with pytest.raises(ReplayError, match="tool_progress envelope"):
+        replay_trace(RunTrace(run_id="run-1", steps=renumber_trace_steps(steps)))
+
+
+def test_replay_rejects_background_task_without_tool_result_task() -> None:
+    steps = approval_completed_trace_steps()
+    steps.insert(
+        9,
+        TraceStep(
+            step_id=10,
+            kind=TraceStepKinds.BACKGROUND_TASK_STARTED,
+            before_status=AgentStatus.EXECUTING_TOOLS,
+            after_status=AgentStatus.EXECUTING_TOOLS,
+            payload={
+                "id": "task-1",
+                "status": "queued",
+                "kind": "research",
+                "lifecycle": "started",
+                "metadata_keys": [],
+                "tool_call": {
+                    "id": "call-1",
+                    "name": "echo",
+                    "mode": "execute",
+                    "batch_id": "tool-batch-1",
+                    "parallel": False,
+                    "index": 0,
+                    "implementation_invoked": True,
+                },
+            },
+        ),
+    )
+
+    with pytest.raises(ReplayError, match="tool_result background_task"):
+        replay_trace(RunTrace(run_id="run-1", steps=renumber_trace_steps(steps)))
+
+
+def test_replay_rejects_duplicate_background_task_event_for_tool_result() -> None:
+    steps = approval_completed_trace_steps()
+    result_payload = dict(steps[8].payload)
+    result_payload["result"] = dict(cast(Mapping[str, Any], result_payload["result"])) | {
+        "background_task": {
+            "id": "task-1",
+            "status": "queued",
+            "kind": "research",
+            "lifecycle": "started",
+            "metadata_keys": [],
+        }
+    }
+    steps[8] = TraceStep(
+        step_id=9,
+        kind=TraceStepKinds.TOOL_RESULT,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload=result_payload,
+    )
+    background_step = TraceStep(
+        step_id=10,
+        kind=TraceStepKinds.BACKGROUND_TASK_STARTED,
+        before_status=AgentStatus.EXECUTING_TOOLS,
+        after_status=AgentStatus.EXECUTING_TOOLS,
+        payload={
+            "id": "task-1",
+            "status": "queued",
+            "kind": "research",
+            "lifecycle": "started",
+            "metadata_keys": [],
+            "tool_call": {
+                "id": "call-1",
+                "name": "echo",
+                "mode": "execute",
+                "batch_id": "tool-batch-1",
+                "parallel": False,
+                "index": 0,
+                "implementation_invoked": True,
+            },
+        },
+    )
+    steps.insert(9, background_step)
+    steps.insert(10, background_step)
+
+    with pytest.raises(ReplayError, match="already recorded"):
+        replay_trace(RunTrace(run_id="run-1", steps=renumber_trace_steps(steps)))
+
+
+def test_replay_rejects_misplaced_child_run_started() -> None:
+    steps = approval_completed_trace_steps()
+    steps.insert(
+        3,
+        TraceStep(
+            step_id=4,
+            kind=TraceStepKinds.CHILD_RUN_STARTED,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload={
+                "parent_run_id": "parent-run",
+                "parent_tool_call_id": "call-1",
+                "run_kind": "subagent",
+            },
+        ),
+    )
+
+    with pytest.raises(ReplayError, match="immediately follow run_started"):
+        replay_trace(RunTrace(run_id="run-1", steps=renumber_trace_steps(steps)))
+
+
+def test_replay_rejects_unpaired_child_run_started() -> None:
+    steps = approval_completed_trace_steps()
+    steps.insert(
+        1,
+        TraceStep(
+            step_id=2,
+            kind=TraceStepKinds.CHILD_RUN_STARTED,
+            before_status=AgentStatus.PLANNING,
+            after_status=AgentStatus.PLANNING,
+            payload={
+                "parent_run_id": "parent-run",
+                "parent_tool_call_id": "call-1",
+                "run_kind": "subagent",
+            },
+        ),
+    )
+
+    with pytest.raises(ReplayError, match="child_run_started"):
+        replay_trace(RunTrace(run_id="run-1", steps=renumber_trace_steps(steps)))
 
 
 def test_replay_rejects_allowed_approval_name_drift() -> None:

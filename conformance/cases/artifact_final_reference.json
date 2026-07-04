@@ -1,0 +1,54 @@
+{
+  "name": "artifact_final_reference",
+  "model_steps": [
+    {
+      "parts": [
+        { "type": "text", "text": "artifact ready" },
+        {
+          "type": "artifact",
+          "ref": "artifact://report-1",
+          "media_type": "application/pdf",
+          "name": "report.pdf",
+          "data": {
+            "artifact": {
+              "ref": "artifact://report-1",
+              "media_type": "application/pdf",
+              "name": "report.pdf",
+              "size_bytes": 1234,
+              "sha256": "abc123",
+              "metadata": {
+                "store": "host"
+              }
+            }
+          }
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "artifact ready",
+  "expected_final_part_types": ["text", "artifact"],
+  "expected_final_parts": [
+    { "type": "text", "text": "artifact ready" },
+    {
+      "type": "artifact",
+      "ref": "artifact://report-1",
+      "media_type": "application/pdf",
+      "name": "report.pdf",
+      "data": {
+        "artifact": {
+          "ref": "artifact://report-1",
+          "media_type": "application/pdf",
+          "name": "report.pdf",
+          "size_bytes": 1234,
+          "sha256": "abc123",
+          "metadata": {
+            "store": "host"
+          }
+        }
+      }
+    }
+  ],
+  "expected_tool_calls": 0
+}

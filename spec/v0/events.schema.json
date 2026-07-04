@@ -123,6 +123,32 @@
     {
       "if": {
         "properties": {
+          "type": { "const": "tool_progress" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/tool_progress_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "tool_cancel_requested" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/tool_cancel_requested_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
           "type": { "const": "tool_completed" }
         },
         "required": ["type"]
@@ -130,6 +156,71 @@
       "then": {
         "properties": {
           "data": { "$ref": "#/$defs/tool_completed_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "background_task_started" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/background_task_started_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "background_task_updated" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/background_task_updated_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "background_task_completed" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/background_task_completed_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "child_run_started" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/child_run_started_data" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "child_run_completed" }
+        },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": {
+          "data": { "$ref": "#/$defs/child_run_completed_data" }
         }
       }
     },
@@ -552,6 +643,7 @@
         "is_error": { "type": "boolean" },
         "correlation_id": { "type": "string", "minLength": 1 },
         "metadata": { "type": "object" },
+        "background_task": { "$ref": "#/$defs/background_task" },
         "pause": {
           "oneOf": [
             { "type": "null" },
@@ -586,6 +678,135 @@
           }
         }
       ],
+      "additionalProperties": false
+    },
+    "tool_progress_data": {
+      "type": "object",
+      "required": ["id", "name", "mode", "batch_id", "parallel", "index", "progress"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "batch_id": { "type": "string", "minLength": 1 },
+        "parallel": { "type": "boolean" },
+        "index": { "type": "integer", "minimum": 0 },
+        "progress": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "tool_cancel_requested_data": {
+      "type": "object",
+      "required": ["id", "reason", "source", "metadata"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "background_task": {
+      "type": "object",
+      "required": ["id", "status", "kind", "lifecycle", "metadata"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "lifecycle": { "type": "string", "enum": ["started", "updated", "completed"] },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "background_task_tool_call": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mode",
+        "batch_id",
+        "parallel",
+        "index",
+        "implementation_invoked"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "mode": { "type": "string", "minLength": 1 },
+        "batch_id": { "type": "string", "minLength": 1 },
+        "parallel": { "type": "boolean" },
+        "index": { "type": "integer", "minimum": 0 },
+        "implementation_invoked": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "background_task_event_data": {
+      "type": "object",
+      "required": ["task", "tool_call"],
+      "properties": {
+        "task": { "$ref": "#/$defs/background_task" },
+        "tool_call": { "$ref": "#/$defs/background_task_tool_call" }
+      },
+      "additionalProperties": false
+    },
+    "background_task_started_data": {
+      "allOf": [
+        { "$ref": "#/$defs/background_task_event_data" },
+        {
+          "properties": {
+            "task": {
+              "properties": { "lifecycle": { "const": "started" } },
+              "required": ["lifecycle"]
+            }
+          }
+        }
+      ]
+    },
+    "background_task_updated_data": {
+      "allOf": [
+        { "$ref": "#/$defs/background_task_event_data" },
+        {
+          "properties": {
+            "task": {
+              "properties": { "lifecycle": { "const": "updated" } },
+              "required": ["lifecycle"]
+            }
+          }
+        }
+      ]
+    },
+    "background_task_completed_data": {
+      "allOf": [
+        { "$ref": "#/$defs/background_task_event_data" },
+        {
+          "properties": {
+            "task": {
+              "properties": { "lifecycle": { "const": "completed" } },
+              "required": ["lifecycle"]
+            }
+          }
+        }
+      ]
+    },
+    "child_run_started_data": {
+      "type": "object",
+      "required": ["parent_run_id"],
+      "properties": {
+        "parent_run_id": { "type": "string", "minLength": 1 },
+        "parent_tool_call_id": { "type": "string", "minLength": 1 },
+        "run_kind": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "child_run_completed_data": {
+      "type": "object",
+      "required": ["parent_run_id", "status"],
+      "properties": {
+        "parent_run_id": { "type": "string", "minLength": 1 },
+        "parent_tool_call_id": { "type": "string", "minLength": 1 },
+        "run_kind": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/status" }
+      },
       "additionalProperties": false
     },
     "tool_completed_data": {

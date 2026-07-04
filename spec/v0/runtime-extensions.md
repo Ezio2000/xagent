@@ -1,8 +1,9 @@
 # Agent Runtime v0 Core Extension Protocols
 
 This document defines model-neutral extension protocols that affect runtime
-durability, tool authorization, or auditability. SDKs may expose native protocol
-classes, but concrete databases, approval UIs, sandboxes, dashboards, and
+durability, tool authorization, auditability, live tool control, or runtime
+correlation. SDKs may expose native protocol classes, but concrete databases,
+approval UIs, sandboxes, dashboards, artifact stores, worker queues, and
 enterprise policy engines remain host-owned.
 
 The portable JSON shapes for `ApprovalRequest`, `ApprovalDecision`,
@@ -70,6 +71,21 @@ sequence.
 Approval is not a sandbox. Core approval semantics do not enforce OS-level file
 access, network access, subprocess isolation, tenant policy, or UI workflow.
 
+Tool specs may carry a nested `annotations.risk` object. Core validates known
+fields when present:
+
+- `filesystem`: non-empty string. Recommended values are `none`, `read`,
+  `write`, and `delete`.
+- `network`: non-empty string. Recommended values are `none`, `read`, and
+  `write`.
+- `subprocess`: boolean.
+- `destructive`: boolean.
+- `requires_approval`: boolean.
+
+Additional risk keys remain open for host policy. If `annotations.risk` is
+absent, runtimes may pass the legacy annotations object as the approval risk
+summary for compatibility.
+
 ## Run Journal
 
 A run journal is an optional append-only record of emitted runtime events. It is
@@ -97,3 +113,55 @@ delivered or journaled in the current event stream.
 
 Concrete log stores, blob stores, dashboards, OpenTelemetry exporters,
 redaction engines, and search indexes are outside core.
+
+## Live Tool Control
+
+Tool implementations may emit live progress events through their execution
+context. `tool_progress` is observable progress only and must not be required to
+resume a run. A host may request cooperative cancellation of a tool call through
+the run controller. Runtimes emit `tool_cancel_requested` and expose a
+tool-facing cancellation flag only while that tool call is active. Requests for
+unknown, stale, or already completed tool-call ids are no-ops. Runtimes must not
+claim to forcefully terminate host subprocesses, network requests, or worker
+jobs. A tool that observes cancellation should return a normal mode-appropriate
+tool result, usually an error observation or rejection that the model can see.
+
+## Background Tasks
+
+Tool outputs may carry a `BackgroundTask` reference with `id`, host-owned
+`status`, `kind`, core `lifecycle`, optional `correlation_id`, and metadata.
+`status` is an open non-empty string so hosts can use states such as `queued`,
+`retrying`, `expired`, or domain-specific values without changing core.
+`lifecycle` is the small runtime-owned event classification:
+
+- `started` -> `background_task_started`
+- `updated` -> `background_task_updated`
+- `completed` -> `background_task_completed`
+
+SDKs may default `lifecycle` from common statuses for convenience, but portable
+wire payloads include the explicit lifecycle value.
+
+Core emits background task events when a tool result carries the task
+reference. The host owns task queues, workers, retries, leases, callback
+transport, result storage, later worker updates, and any later `ResumeInput` or
+`ConversationInsert`. A waiting tool result remains the durable pause/resume
+mechanism.
+
+## Artifacts
+
+Content parts may reference host-owned artifacts by ref. The portable convention
+is `ContentPart(type="artifact", ref=..., data={"artifact": ArtifactRef...})`.
+Artifact refs carry optional media type, name, byte size, SHA-256, and metadata.
+Core runtimes must preserve the reference fields but must not dereference,
+persist payload bytes, garbage-collect, or enforce artifact access control.
+Those concerns belong to host artifact stores.
+
+## Child Runs
+
+`RuntimeContext` may include `parent_run_id`, `parent_tool_call_id`, and
+`run_kind`. `parent_tool_call_id` and `run_kind` require `parent_run_id`; they
+must not appear as orphan child-run fields. Runtimes emit `child_run_started`
+and `child_run_completed` for such runs. These events provide trace and journal
+correlation for subagents or other delegated work. Core does not schedule
+subagents, allocate workspaces, inherit permissions, or merge child state into
+parent state.

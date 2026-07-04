@@ -1,0 +1,35 @@
+{
+  "name": "tool_progress_events",
+  "model_steps": [
+    {
+      "parts": [],
+      "tool_calls": [
+        {
+          "id": "call-1",
+          "name": "progress",
+          "mode": "execute",
+          "arguments": {
+            "steps": [1, 2, 3],
+            "text": "progress complete"
+          }
+        }
+      ]
+    },
+    {
+      "parts": [
+        {
+          "type": "text",
+          "text": "done"
+        }
+      ],
+      "tool_calls": []
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "done",
+  "expected_tool_calls": 1,
+  "expected_tool_texts": ["progress complete"],
+  "expected_tool_progress": [{ "step": 1 }, { "step": 2 }, { "step": 3 }],
+  "expected_event_types": ["tool_progress"],
+  "expected_trace_kinds": ["tool_progress"]
+}
