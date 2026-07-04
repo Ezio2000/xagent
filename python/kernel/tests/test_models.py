@@ -11,6 +11,7 @@ from kernel import (
     ModelReasoningDelta,
     ModelRequest,
     ModelResponse,
+    ModelStreamAccumulator,
     ModelStreamCompleted,
     ModelStreamEvent,
     ModelStreamStarted,
@@ -20,9 +21,10 @@ from kernel import (
     ResponseFormat,
     ToolCall,
     ToolChoice,
+    model_capabilities,
 )
-from kernel.models import KernelModelStreamAccumulator, runtime_model_capabilities
-from modelkit import ModelStreamAccumulator, model_capabilities
+from modelkit import ModelStreamAccumulator as ModelkitModelStreamAccumulator
+from modelkit import model_capabilities as modelkit_model_capabilities
 from prompting import user_text
 
 
@@ -177,9 +179,12 @@ def test_model_stream_accumulator_preserves_open_content_part_types() -> None:
     assert response.parts[0].text == "xy"
 
 
-def test_model_stream_accumulator_matches_kernel_runtime_accumulator() -> None:
-    public_accumulator = ModelStreamAccumulator()
-    runtime_accumulator = KernelModelStreamAccumulator()
+def test_modelkit_stream_accumulator_reexports_kernel_accumulator() -> None:
+    assert ModelkitModelStreamAccumulator is ModelStreamAccumulator
+
+
+def test_model_stream_accumulator_accumulates_complete_response() -> None:
+    accumulator = ModelStreamAccumulator()
     events: list[ModelStreamEvent] = [
         ModelStreamStarted(metadata={"provider": "test"}),
         ModelContentDelta(index=1, part_type="custom", text_delta="B"),
@@ -199,14 +204,30 @@ def test_model_stream_accumulator_matches_kernel_runtime_accumulator() -> None:
         ),
     ]
 
+    result: ModelResponse | None = None
     for event in events:
-        public_result = public_accumulator.apply(event)
-        runtime_result = runtime_accumulator.apply(event)
-        assert (None if public_result is None else public_result.to_dict()) == (
-            None if runtime_result is None else runtime_result.to_dict()
-        )
+        result = accumulator.apply(event)
 
-    assert public_accumulator.response().to_dict() == runtime_accumulator.response().to_dict()
+    assert result is not None
+    assert result.finish_reason == "end_turn"
+    assert accumulator.response().to_dict() == {
+        "parts": [
+            {"type": "text", "text": "A"},
+            {"type": "custom", "text": "B"},
+        ],
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "name": "search",
+                "mode": "execute",
+                "arguments": {"q": "x"},
+            }
+        ],
+        "finish_reason": "end_turn",
+        "usage": {"total_tokens": 5},
+        "model": "test-model",
+        "response_id": "resp-1",
+    }
 
 
 def test_model_request_response_constructors_reject_invalid_nested_items() -> None:
@@ -280,7 +301,7 @@ def test_model_capabilities_helper_accepts_default_mapping_and_callable() -> Non
     assert model_capabilities(CallableCapabilitiesModel()).structured_output is True
 
 
-def test_model_capabilities_helper_matches_kernel_runtime_helper() -> None:
+def test_modelkit_capabilities_helper_reexports_kernel_helper_behavior() -> None:
     class MappingCapabilitiesModel:
         capabilities = {"streaming": True, "tools": True, "metadata": {"source": "test"}}
 
@@ -289,7 +310,7 @@ def test_model_capabilities_helper_matches_kernel_runtime_helper() -> None:
             return {"structured_output": True, "usage": True}
 
     for client in (object(), MappingCapabilitiesModel(), CallableCapabilitiesModel()):
-        assert model_capabilities(client).to_dict() == runtime_model_capabilities(client).to_dict()
+        assert modelkit_model_capabilities(client).to_dict() == model_capabilities(client).to_dict()
 
 
 def test_model_capabilities_from_dict_rejects_invalid_boolean_fields() -> None:

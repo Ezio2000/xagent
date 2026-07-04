@@ -199,6 +199,22 @@ def test_conformance_cli_reports_invalid_json_schema_path(
     assert "invalid JSON schema" in output
 
 
+@pytest.mark.parametrize("missing_schema", ["model-request.schema.json", "state.schema.json"])
+def test_conformance_cli_reports_missing_required_schema(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], missing_schema: str
+) -> None:
+    for schema_path in SPEC_DIR.glob("*.schema.json"):
+        if schema_path.name == missing_schema:
+            continue
+        (tmp_path / schema_path.name).write_text(schema_path.read_text())
+
+    status = conformance_main([str(CASES_DIR), "--spec-dir", str(tmp_path), "--quiet"])
+    output = capsys.readouterr().out
+
+    assert status == 1
+    assert f"missing schema file(s): {missing_schema}" in output
+
+
 def test_conformance_case_validation_rejects_unknown_keys() -> None:
     with pytest.raises(AssertionError, match="unknown key"):
         SHARED_CONFORMANCE_RUNNER.validate_case_keys(

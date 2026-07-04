@@ -24,10 +24,10 @@ Sibling Python packages own the parts that should be independently importable:
 
 | Package | Owns | May Depend On |
 | --- | --- | --- |
-| `kernel` | Core execution loop, public protocol/value types, scheduler, events, state, snapshots, resume, limits, hooks, and ports. | No internal runtime package. |
+| `kernel` | Core execution loop, public protocol/value types, scheduler, events, state, snapshots, resume, limits, hooks, ports, stream accumulation, and capability normalization. | No internal runtime package. |
 | `toolkit` | Default `ToolRegistry`, JSON Schema validation, and concrete tool invocation glue. | `kernel` |
 | `prompting` | Prompt/message construction conveniences such as `user_text(...)`. | `kernel` |
-| `modelkit` | Model adapter test/helper utilities such as stream accumulation and capability discovery. | `kernel` |
+| `modelkit` | Model adapter helper facade that re-exports kernel stream accumulation and capability discovery helpers for adapter packages. | `kernel` |
 | `diagnostics` | Public `RunTrace`, trace construction from events, and deterministic replay validation. | `kernel` |
 | `harness` | Reusable test harness helpers such as scripted models and event collection. | `kernel` |
 | `conformance` | Cross-SDK fixture runner and schema validation CLI. | `kernel`, `toolkit`, `prompting`, `diagnostics` |

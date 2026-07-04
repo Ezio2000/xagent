@@ -74,15 +74,15 @@ from kernel.messages import (
     content_parts_summary,
 )
 from kernel.models import (
-    KernelModelStreamAccumulator,
     ModelClient,
     ModelOptions,
     ModelRequest,
     ModelResponse,
+    ModelStreamAccumulator,
     ModelUsage,
     ResponseFormat,
     ToolChoice,
-    runtime_model_capabilities,
+    model_capabilities,
     stream_event_to_delta_payload,
 )
 from kernel.resume import ResumeInput
@@ -208,7 +208,7 @@ class AgentLoop:
 
     @staticmethod
     def _is_tool_registry(value: object) -> bool:
-        return all(
+        return isinstance(value, ToolRegistryProtocol) and all(
             callable(getattr(value, name, None))
             for name in ("specs", "spec_for", "validate_call", "invoke")
         )
@@ -434,187 +434,31 @@ class AgentLoop:
                 yield event
             clear_pause_request(control)
         except RuntimeTimeoutError:
-            for event in await self._raw_run_started_events_if_needed(
-                state, control, run_started_yielded=run_started_yielded
-            ):
-                yield event
-            raw_child_started_events = await self._raw_child_run_started_events_if_needed(
-                context, control, child_run_started=child_run_started
-            )
-            for event in raw_child_started_events:
-                yield event
-            if raw_child_started_events:
-                child_run_started = True
-            if terminal_checkpoint_committed:
-                clear_pause_request(control)
-                yield await self._raw_event(
-                    control,
-                    EventTypes.ERROR,
-                    {"status": state.status.value, "message": LimitReasons.TIMEOUT_SECONDS},
-                )
-                for event in await self._raw_child_run_completed_events(
-                    context,
-                    control,
-                    state,
-                    child_run_started=child_run_started,
-                    child_run_completed=child_run_completed,
-                ):
-                    yield event
-                yield await self._raw_event(
-                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
-                )
-                return
-            durable = control.last_checkpoint or control.initial_snapshot
-            restore_state_from_snapshot(state, durable)
-            rollback_trace_to_durable(control)
-            self._record_child_run_started_trace_if_needed(control, raw_child_started_events)
-            if state.is_terminal:
-                clear_pause_request(control)
-                yield await self._raw_event(
-                    control,
-                    EventTypes.ERROR,
-                    {"status": state.status.value, "message": LimitReasons.TIMEOUT_SECONDS},
-                )
-                for event in await self._raw_child_run_completed_events(
-                    context,
-                    control,
-                    state,
-                    child_run_started=child_run_started,
-                    child_run_completed=child_run_completed,
-                ):
-                    yield event
-                yield await self._raw_event(
-                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
-                )
-                return
-            previous = state.status
-            state.status = AgentStatus.LIMIT_EXCEEDED
-            state.error = LimitReasons.TIMEOUT_SECONDS
-            state.pause = None
-            clear_pause_request(control)
-            yield await self._raw_event(
-                control,
-                EventTypes.STATE_CHANGED,
-                {
-                    "from": previous.value,
-                    "to": state.status.value,
-                    "iterations": state.iterations,
-                    "total_tool_calls": state.total_tool_calls,
-                    "total_usage": None
-                    if state.total_usage is None
-                    else state.total_usage.to_dict(),
-                    "error": state.error,
-                    "pause": None,
-                },
-            )
-            yield await self._raw_checkpoint_event(state, context, control)
-            yield await self._raw_event(
-                control,
-                EventTypes.ERROR,
-                {"status": state.status.value, "message": state.error},
-            )
-            for event in await self._raw_child_run_completed_events(
+            async for event in self._terminal_failure_events(
+                state,
                 context,
                 control,
-                state,
+                terminal_status=AgentStatus.LIMIT_EXCEEDED,
+                message=LimitReasons.TIMEOUT_SECONDS,
+                run_started_yielded=run_started_yielded,
                 child_run_started=child_run_started,
                 child_run_completed=child_run_completed,
+                terminal_checkpoint_committed=terminal_checkpoint_committed,
             ):
                 yield event
-            yield await self._raw_event(
-                control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
-            )
         except Exception as exc:  # pragma: no cover - defensive boundary
-            for event in await self._raw_run_started_events_if_needed(
-                state, control, run_started_yielded=run_started_yielded
-            ):
-                yield event
-            raw_child_started_events = await self._raw_child_run_started_events_if_needed(
-                context, control, child_run_started=child_run_started
-            )
-            for event in raw_child_started_events:
-                yield event
-            if raw_child_started_events:
-                child_run_started = True
-            if terminal_checkpoint_committed:
-                clear_pause_request(control)
-                yield await self._raw_event(
-                    control,
-                    EventTypes.ERROR,
-                    {"status": state.status.value, "message": str(exc) or exc.__class__.__name__},
-                )
-                for event in await self._raw_child_run_completed_events(
-                    context,
-                    control,
-                    state,
-                    child_run_started=child_run_started,
-                    child_run_completed=child_run_completed,
-                ):
-                    yield event
-                yield await self._raw_event(
-                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
-                )
-                return
-            durable = control.last_checkpoint or control.initial_snapshot
-            restore_state_from_snapshot(state, durable)
-            rollback_trace_to_durable(control)
-            self._record_child_run_started_trace_if_needed(control, raw_child_started_events)
-            if state.is_terminal:
-                clear_pause_request(control)
-                yield await self._raw_event(
-                    control,
-                    EventTypes.ERROR,
-                    {"status": state.status.value, "message": str(exc) or exc.__class__.__name__},
-                )
-                for event in await self._raw_child_run_completed_events(
-                    context,
-                    control,
-                    state,
-                    child_run_started=child_run_started,
-                    child_run_completed=child_run_completed,
-                ):
-                    yield event
-                yield await self._raw_event(
-                    control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
-                )
-                return
-            previous = state.status
-            state.status = AgentStatus.FAILED
-            state.error = str(exc) or exc.__class__.__name__
-            state.pause = None
-            clear_pause_request(control)
-            yield await self._raw_event(
-                control,
-                EventTypes.STATE_CHANGED,
-                {
-                    "from": previous.value,
-                    "to": state.status.value,
-                    "iterations": state.iterations,
-                    "total_tool_calls": state.total_tool_calls,
-                    "total_usage": None
-                    if state.total_usage is None
-                    else state.total_usage.to_dict(),
-                    "error": state.error,
-                    "pause": None,
-                },
-            )
-            yield await self._raw_checkpoint_event(state, context, control)
-            yield await self._raw_event(
-                control,
-                EventTypes.ERROR,
-                {"status": state.status.value, "message": state.error},
-            )
-            for event in await self._raw_child_run_completed_events(
+            async for event in self._terminal_failure_events(
+                state,
                 context,
                 control,
-                state,
+                terminal_status=AgentStatus.FAILED,
+                message=str(exc) or exc.__class__.__name__,
+                run_started_yielded=run_started_yielded,
                 child_run_started=child_run_started,
                 child_run_completed=child_run_completed,
+                terminal_checkpoint_committed=terminal_checkpoint_committed,
             ):
                 yield event
-            yield await self._raw_event(
-                control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
-            )
 
     async def _drive(
         self,
@@ -836,47 +680,11 @@ class AgentLoop:
             return
         if transition_data is None:
             raise RuntimeError("model response did not produce a state transition")
-        transition_event: AgentEvent | None = None
-        transition_to_notify: AppliedTransition | None = transition
-        if self._defer_events_until_checkpoint_saved(control):
-            transition_event = self._runtime_event(
-                control, EventTypes.STATE_CHANGED, transition_data
-            )
-            transition_events: tuple[AgentEvent, ...] = ()
-        else:
-            if transition_to_notify is not None:
-                await self._notify_transition(transition_to_notify, context, control)
-                transition_to_notify = None
-            transition_events = await self._events(
-                context, control, EventTypes.STATE_CHANGED, transition_data
-            )
-        limit_reason = self._active_limit_reason(state, control)
-        if limit_reason is not None:
-            limit_events = await self._limit(state, context, control, limit_reason)
-            if transition_event is not None:
-                transition_events = await self._dispatch_deferred_transition_event(
-                    transition_to_notify, transition_event, context, control
-                )
-            for event in self._merge_deferred_events(transition_events, limit_events):
-                yield event
-            return
-        pause_events = await self._pause_if_requested(state, context, control)
-        if pause_events:
-            if transition_event is not None:
-                transition_events = await self._dispatch_deferred_transition_event(
-                    transition_to_notify, transition_event, context, control
-                )
-            for event in self._merge_deferred_events(transition_events, pause_events):
-                yield event
-            return
-        if transition_event is not None:
-            events = await self._checkpoint_events_after_deferred_events(
-                transition_event, state, context, control, transition=transition_to_notify
-            )
-        else:
-            checkpoint_events = await self._checkpoint_events(state, context, control)
-            events = (*transition_events, *checkpoint_events)
-        for event in events:
+        if transition is None:
+            raise RuntimeError("model response transition metadata is missing")
+        for event in await self._transition_boundary_events(
+            state, context, control, transition=transition, transition_data=transition_data
+        ):
             yield event
 
     async def _stream_model(
@@ -888,7 +696,7 @@ class AgentLoop:
     ) -> AsyncIterator[AgentEvent]:
         stream_method = cast(Any, self._model).stream
         iterator = stream_method(request, context).__aiter__()
-        accumulator = KernelModelStreamAccumulator()
+        accumulator = ModelStreamAccumulator()
         completed_response: ModelResponse | None = None
 
         try:
@@ -1361,51 +1169,13 @@ class AgentLoop:
                     context,
                     control,
                 )
-                transition_data = transition.data
-                transition_event: AgentEvent | None = None
-                transition_to_notify: AppliedTransition | None = transition
-                if self._defer_events_until_checkpoint_saved(control):
-                    transition_event = self._runtime_event(
-                        control, EventTypes.STATE_CHANGED, transition_data
-                    )
-                    transition_events: tuple[AgentEvent, ...] = ()
-                else:
-                    await self._notify_transition(transition_to_notify, context, control)
-                    transition_to_notify = None
-                    transition_events = await self._events(
-                        context, control, EventTypes.STATE_CHANGED, transition_data
-                    )
-                limit_reason = self._active_limit_reason(state, control)
-                if limit_reason is not None:
-                    limit_events = await self._limit(state, context, control, limit_reason)
-                    if transition_event is not None:
-                        transition_events = await self._dispatch_deferred_transition_event(
-                            transition_to_notify, transition_event, context, control
-                        )
-                    for event in self._merge_deferred_events(transition_events, limit_events):
-                        yield event
-                    return
-                pause_events = await self._pause_if_requested(state, context, control)
-                if pause_events:
-                    if transition_event is not None:
-                        transition_events = await self._dispatch_deferred_transition_event(
-                            transition_to_notify, transition_event, context, control
-                        )
-                    for event in self._merge_deferred_events(transition_events, pause_events):
-                        yield event
-                    return
-                if transition_event is not None:
-                    events = await self._checkpoint_events_after_deferred_events(
-                        transition_event,
-                        state,
-                        context,
-                        control,
-                        transition=transition_to_notify,
-                    )
-                else:
-                    checkpoint_events = await self._checkpoint_events(state, context, control)
-                    events = (*transition_events, *checkpoint_events)
-                for event in events:
+                for event in await self._transition_boundary_events(
+                    state,
+                    context,
+                    control,
+                    transition=transition,
+                    transition_data=transition.data,
+                ):
                     yield event
                 return
 
@@ -1613,6 +1383,92 @@ class AgentLoop:
         if self._trace_has_kind(control, TraceStepKinds.CHILD_RUN_STARTED):
             return
         control.trace.record_event(events[0])
+
+    async def _terminal_failure_events(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        terminal_status: AgentStatus,
+        message: str,
+        run_started_yielded: bool,
+        child_run_started: bool,
+        child_run_completed: bool,
+        terminal_checkpoint_committed: bool,
+    ) -> AsyncIterator[AgentEvent]:
+        for event in await self._raw_run_started_events_if_needed(
+            state, control, run_started_yielded=run_started_yielded
+        ):
+            yield event
+        raw_child_started_events = await self._raw_child_run_started_events_if_needed(
+            context, control, child_run_started=child_run_started
+        )
+        for event in raw_child_started_events:
+            yield event
+        child_run_started = child_run_started or bool(raw_child_started_events)
+
+        if not terminal_checkpoint_committed:
+            durable = control.last_checkpoint or control.initial_snapshot
+            if durable is None:
+                raise RuntimeError("terminal failure recovery requires an initial snapshot")
+            restore_state_from_snapshot(state, durable)
+            rollback_trace_to_durable(control)
+            self._record_child_run_started_trace_if_needed(control, raw_child_started_events)
+
+        if terminal_checkpoint_committed or state.is_terminal:
+            clear_pause_request(control)
+            yield await self._raw_event(
+                control,
+                EventTypes.ERROR,
+                {"status": state.status.value, "message": message},
+            )
+            for event in await self._raw_child_run_completed_events(
+                context,
+                control,
+                state,
+                child_run_started=child_run_started,
+                child_run_completed=child_run_completed,
+            ):
+                yield event
+            yield await self._raw_event(
+                control, EventTypes.RUN_COMPLETED, {"state": state.summary()}
+            )
+            return
+
+        previous = state.status
+        state.status = terminal_status
+        state.error = message
+        state.pause = None
+        clear_pause_request(control)
+        yield await self._raw_event(
+            control,
+            EventTypes.STATE_CHANGED,
+            {
+                "from": previous.value,
+                "to": state.status.value,
+                "iterations": state.iterations,
+                "total_tool_calls": state.total_tool_calls,
+                "total_usage": None if state.total_usage is None else state.total_usage.to_dict(),
+                "error": state.error,
+                "pause": None,
+            },
+        )
+        yield await self._raw_checkpoint_event(state, context, control)
+        yield await self._raw_event(
+            control,
+            EventTypes.ERROR,
+            {"status": state.status.value, "message": state.error},
+        )
+        for event in await self._raw_child_run_completed_events(
+            context,
+            control,
+            state,
+            child_run_started=child_run_started,
+            child_run_completed=child_run_completed,
+        ):
+            yield event
+        yield await self._raw_event(control, EventTypes.RUN_COMPLETED, {"state": state.summary()})
 
     async def _approval_request(
         self, call: ToolCall, context: RuntimeContext, control: RunControlState
@@ -1969,7 +1825,7 @@ class AgentLoop:
         control.last_checkpoint_id = self._checkpoint_id(snapshot.context.sequence)
 
     def _model_supports_streaming(self) -> bool:
-        return runtime_model_capabilities(self._model).streaming
+        return model_capabilities(self._model).streaming
 
     def _timeout_reason(self, control: RunControlState) -> str | None:
         remaining = control.remaining_seconds()
@@ -2107,6 +1963,57 @@ class AgentLoop:
             resume_status=resume_status,
             origin="control",
         )
+
+    async def _transition_boundary_events(
+        self,
+        state: AgentState,
+        context: RuntimeContext,
+        control: RunControlState,
+        *,
+        transition: AppliedTransition,
+        transition_data: Mapping[str, Any],
+    ) -> tuple[AgentEvent, ...]:
+        transition_event: AgentEvent | None = None
+        transition_to_notify: AppliedTransition | None = transition
+        if self._defer_events_until_checkpoint_saved(control):
+            transition_event = self._runtime_event(
+                control, EventTypes.STATE_CHANGED, transition_data
+            )
+            transition_events: tuple[AgentEvent, ...] = ()
+        else:
+            await self._notify_transition(transition_to_notify, context, control)
+            transition_to_notify = None
+            transition_events = await self._events(
+                context, control, EventTypes.STATE_CHANGED, transition_data
+            )
+
+        limit_reason = self._active_limit_reason(state, control)
+        if limit_reason is not None:
+            limit_events = await self._limit(state, context, control, limit_reason)
+            if transition_event is not None:
+                transition_events = await self._dispatch_deferred_transition_event(
+                    transition_to_notify, transition_event, context, control
+                )
+            return self._merge_deferred_events(transition_events, limit_events)
+
+        pause_events = await self._pause_if_requested(state, context, control)
+        if pause_events:
+            if transition_event is not None:
+                transition_events = await self._dispatch_deferred_transition_event(
+                    transition_to_notify, transition_event, context, control
+                )
+            return self._merge_deferred_events(transition_events, pause_events)
+
+        if transition_event is not None:
+            return await self._checkpoint_events_after_deferred_events(
+                transition_event,
+                state,
+                context,
+                control,
+                transition=transition_to_notify,
+            )
+        checkpoint_events = await self._checkpoint_events(state, context, control)
+        return (*transition_events, *checkpoint_events)
 
     async def _pause(
         self,

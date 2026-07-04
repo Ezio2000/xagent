@@ -892,7 +892,7 @@ class _ToolCallBuffer:
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
 
-class KernelModelStreamAccumulator:
+class ModelStreamAccumulator:
     """Accumulate provider-neutral stream deltas into a complete ModelResponse."""
 
     __slots__ = ("_content", "_finish_reason", "_model", "_response_id", "_tool_calls", "_usage")
@@ -1045,7 +1045,7 @@ def stream_event_to_delta_payload(event: ModelStreamEvent) -> dict[str, Any] | N
     return data
 
 
-def runtime_model_capabilities(client: object) -> ModelCapabilities:
+def model_capabilities(client: object) -> ModelCapabilities:
     """Return capabilities advertised by a model client, or the empty default."""
 
     value = getattr(client, "capabilities", None)

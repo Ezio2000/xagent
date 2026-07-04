@@ -36,7 +36,16 @@ RETIRED_PACKAGE_IMPORTS = {
     "run_state",
     "tracing",
 }
-RETIRED_PACKAGE_DIRS = {"engine", "extensions", "protocol", "run-state", "tracing"}
+RETIRED_PACKAGE_DIRS = {
+    "agent_runtime",
+    "agent_runtime_conformance",
+    "engine",
+    "extensions",
+    "protocol",
+    "run_state",
+    "run-state",
+    "tracing",
+}
 RETIRED_SOURCE_PATHS = (REPO_ROOT / "sdks",)
 FORBIDDEN_PROJECT_NAME_FRAGMENTS = ("xagent", "agent_", "agent-", "runtime_", "runtime-")
 
@@ -193,13 +202,19 @@ def test_kernel_does_not_define_diagnostics_replay_api() -> None:
 
 def test_retired_runtime_imports_do_not_remain() -> None:
     violations: list[str] = []
-    for path in sorted((REPO_ROOT / "python" / "packages").rglob("*.py")):
-        retired_imports = imported_packages(path, RETIRED_PACKAGE_IMPORTS)
-        if retired_imports:
-            violations.append(
-                f"{path.relative_to(REPO_ROOT)} imports retired package(s): "
-                f"{', '.join(sorted(retired_imports))}"
-            )
+    source_roots = [
+        package_dir / "src"
+        for package_dir in sorted(PACKAGE_ROOT.iterdir())
+        if package_dir.is_dir() and (package_dir / "src").is_dir()
+    ]
+    for source_root in source_roots:
+        for path in sorted(source_root.rglob("*.py")):
+            retired_imports = imported_packages(path, RETIRED_PACKAGE_IMPORTS)
+            if retired_imports:
+                violations.append(
+                    f"{path.relative_to(REPO_ROOT)} imports retired package(s): "
+                    f"{', '.join(sorted(retired_imports))}"
+                )
     assert not violations, "\n".join(violations)
 
 
@@ -215,6 +230,13 @@ def test_project_names_do_not_use_retired_prefixes() -> None:
                 f"{', '.join(forbidden)}"
             )
     assert not violations, "\n".join(violations)
+
+
+def test_kernel_and_diagnostics_frozen_helpers_stay_identical() -> None:
+    kernel_helper = PACKAGE_ROOT / "kernel" / "src" / "kernel" / "_frozen.py"
+    diagnostics_helper = PACKAGE_ROOT / "diagnostics" / "src" / "diagnostics" / "_frozen.py"
+
+    assert kernel_helper.read_bytes() == diagnostics_helper.read_bytes()
 
 
 def dependency_name(dependency: str) -> str:

@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, NoReturn, Protocol, cast
+from typing import Any, NoReturn, Protocol, cast, runtime_checkable
 
 from kernel.control import PauseRequest
 from kernel.messages import (
@@ -52,7 +52,7 @@ def _expect_mapping(value: object, label: str) -> Mapping[str, Any]:
 
 
 def _expect_sequence(value: object, label: str) -> Sequence[object]:
-    if not isinstance(value, Sequence) or isinstance(value, str):
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         raise TypeError(f"{label} must be a sequence")
     return cast(Sequence[object], value)
 
@@ -279,14 +279,14 @@ class ToolExecutionContext:
     def emit_progress(self, data: Mapping[str, Any]) -> None:
         """Emit live, non-durable tool progress for hosts that subscribed to events."""
 
-        emitter = getattr(self, "_progress_emitter", None)
+        emitter = self._progress_emitter
         if emitter is None:
             return
         emitter(_copy_mapping(_expect_mapping(data, "tool progress data")))
 
     @property
     def cancel_requested(self) -> bool:
-        checker = getattr(self, "_cancel_checker", None)
+        checker = self._cancel_checker
         return False if checker is None else checker()
 
 
@@ -870,6 +870,7 @@ class InvocableTool(Tool, Protocol):
         ...
 
 
+@runtime_checkable
 class ToolRegistryProtocol(Protocol):
     """Structural tool registry port consumed by the kernel."""
 

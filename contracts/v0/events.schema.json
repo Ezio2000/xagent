@@ -38,7 +38,7 @@
       },
       "then": {
         "properties": {
-          "data": { "$ref": "#/$defs/run_state_summary_data" }
+          "data": { "$ref": "#/$defs/state_summary_data" }
         }
       }
     },
@@ -337,7 +337,7 @@
       },
       "then": {
         "properties": {
-          "data": { "$ref": "#/$defs/run_state_summary_data" }
+          "data": { "$ref": "#/$defs/state_summary_data" }
         }
       }
     }
@@ -505,7 +505,7 @@
       ],
       "additionalProperties": false
     },
-    "run_state_summary_data": {
+    "state_summary_data": {
       "type": "object",
       "required": ["state"],
       "properties": {

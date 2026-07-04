@@ -157,6 +157,7 @@ APPROVAL_DECISION_KEYS = {"action", "reason", "metadata"}
 APPROVAL_REQUEST_EXPECTATION_KEYS = {"risk", "metadata"}
 REQUIRED_SCHEMA_FILES = {
     "events.schema.json",
+    "model-request.schema.json",
     "run-snapshot.schema.json",
     "run-trace.schema.json",
     "runtime-context.schema.json",
@@ -167,6 +168,7 @@ REQUIRED_SCHEMA_FILES = {
     "model-error.schema.json",
     "tools.schema.json",
     "tool-result.schema.json",
+    "state.schema.json",
     "limits.schema.json",
 }
 STREAM_EVENT_REQUIRED_KEYS: dict[str, set[str]] = {
@@ -197,7 +199,9 @@ class ConformanceValidators:
     resume_input: Any
     message: Any
     model_error: Any
+    model_request: Any
     model_response: Any
+    state: Any
     limits: Any
     approval_request: Any
     approval_decision: Any
@@ -2384,9 +2388,11 @@ def build_validators(spec_dir: Path) -> ConformanceValidators:
         resume_input=Draft202012Validator(schemas["resume-input.schema.json"], registry=registry),
         message=Draft202012Validator(schemas["messages.schema.json"], registry=registry),
         model_error=Draft202012Validator(schemas["model-error.schema.json"], registry=registry),
+        model_request=Draft202012Validator(schemas["model-request.schema.json"], registry=registry),
         model_response=Draft202012Validator(
             schemas["model-response.schema.json"], registry=registry
         ),
+        state=Draft202012Validator(schemas["state.schema.json"], registry=registry),
         limits=Draft202012Validator(schemas["limits.schema.json"], registry=registry),
         approval_request=runtime_extension_validator("approval_request"),
         approval_decision=runtime_extension_validator("approval_decision"),

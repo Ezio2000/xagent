@@ -11,10 +11,10 @@ namespace. Do not treat it as two kernels.
 
 | Package | Import Surface | Responsibility | Must Not Own |
 | --- | --- | --- | --- |
-| `kernel` | `import kernel` | Execution loop, scheduler, protocol/value types, state, snapshots, resume, limits, events, hooks, store/journal/approval ports, tool/model protocols, and immutable trace payload emission. | Prompt engineering helpers, default registries, concrete providers, replay tooling, public trace object helpers, test harnesses, UI, queues, deployment, or concrete stores. |
+| `kernel` | `import kernel` | Execution loop, scheduler, protocol/value types, state, snapshots, resume, limits, events, hooks, store/journal/approval ports, tool/model protocols, canonical stream accumulation, capability normalization, and immutable trace payload emission. | Prompt engineering helpers, default registries, concrete providers, replay tooling, public trace object helpers, test harnesses, UI, queues, deployment, or concrete stores. |
 | `toolkit` | `import toolkit` | Default tool registry, tool schema validation, concrete invocation adapter from `Tool` protocols to `ToolOutput`. | Agent loop, state machine, model adapter code, conformance runner. |
 | `prompting` | `import prompting` | Message and prompt construction conveniences built on kernel message types. | Runtime state, scheduling, model/provider clients. |
-| `modelkit` | `import modelkit` | Model adapter helpers, streaming accumulation, and capability helper functions. | Runtime loop, tool execution, prompt helpers. |
+| `modelkit` | `import modelkit` | Model adapter helper facade re-exporting kernel stream accumulation and capability helper functions. | Runtime loop, tool execution, prompt helpers, independent copies of kernel model helper logic. |
 | `diagnostics` | `import diagnostics` | Public trace objects, trace-from-events helpers, deterministic replay validation, and diagnostics-only error types. | Running agents, invoking tools, provider adapters, persistence backends. |
 | `harness` | `import harness` | Reusable tests and examples support such as scripted models and event collection. | Production runtime semantics, conformance contracts, public kernel ports. |
 | `conformance` | `uv run conformance ...` | Cross-SDK fixture runner and JSON Schema validation around `contracts/v0`. | Kernel internals or package-private APIs. |
@@ -42,7 +42,8 @@ and public-root-only cross-package imports.
 | Does it change status transitions, checkpoint placement, resume semantics, tool scheduling, model call orchestration, event ordering, or host extension ports? | `kernel` |
 | Does it validate or invoke a concrete collection of host tools through `ToolRegistryProtocol`? | `toolkit` |
 | Does it make messages easier to construct or shape prompt text without changing runtime semantics? | `prompting` |
-| Does it help provider adapters assemble streamed deltas or inspect optional model capabilities? | `modelkit` |
+| Does it define canonical stream accumulation or inspect optional model capabilities used by the runtime? | `kernel` |
+| Does it expose adapter-friendly imports for kernel model helpers without adding behavior? | `modelkit` |
 | Does it inspect, replay, summarize, or validate traces after a run? | `diagnostics` |
 | Is it a reusable fake, scripted model, collector, or test-only convenience? | `harness` |
 | Is it portable behavior that every SDK should satisfy? | `contracts/v0` and `conformance/cases` |

@@ -10,7 +10,7 @@ from typing import Any, cast
 from kernel.messages import Message
 from kernel.snapshot import RunSnapshot
 from kernel.state import AgentState, PauseState
-from kernel.status import RESUMABLE_STATUSES, AgentStatus
+from kernel.status import CHECKPOINT_RESUME_STATUSES, AgentStatus
 
 
 def _empty_messages() -> tuple[Message, ...]:
@@ -197,7 +197,7 @@ class ResumeInput:
             raise ValueError("resume snapshot must not be terminal")
         if (
             snapshot_state.status is not AgentStatus.PAUSED
-            and snapshot_state.status not in RESUMABLE_STATUSES
+            and snapshot_state.status not in CHECKPOINT_RESUME_STATUSES
         ):
             raise ValueError("resume snapshot status must be paused, planning, or executing_tools")
         if snapshot_state.status is AgentStatus.PLANNING and snapshot_state.pending_tool_calls:

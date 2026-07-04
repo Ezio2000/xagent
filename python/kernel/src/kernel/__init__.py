@@ -14,7 +14,17 @@ from kernel.errors import (
     ToolError,
 )
 from kernel.events import AgentEvent, EventEmitter, EventType, EventTypes, QueuedEvent
-from kernel.hooks import ModelErrorDecision, RuntimeHook
+from kernel.hooks import (
+    AfterModelHook,
+    AfterToolHook,
+    BeforeModelHook,
+    BeforeToolHook,
+    EventHook,
+    ModelErrorDecision,
+    ModelErrorHook,
+    RuntimeHook,
+    TransitionHook,
+)
 from kernel.journal import JournalRecord, RunJournal
 from kernel.limits import LimitReasons, LoopLimits
 from kernel.loop import AgentLoop, AgentResult, ToolSchedulerFactory
@@ -27,6 +37,7 @@ from kernel.models import (
     ModelReasoningDelta,
     ModelRequest,
     ModelResponse,
+    ModelStreamAccumulator,
     ModelStreamCompleted,
     ModelStreamEvent,
     ModelStreamStarted,
@@ -36,6 +47,7 @@ from kernel.models import (
     ResponseFormat,
     StreamingModelClient,
     ToolChoice,
+    model_capabilities,
 )
 from kernel.resume import PauseSelector, ResumeInput
 from kernel.scheduler import (
@@ -48,7 +60,7 @@ from kernel.scheduler import (
 )
 from kernel.snapshot import RunSnapshot
 from kernel.state import AgentState, PauseState
-from kernel.status import RESUMABLE_STATUSES, TERMINAL_STATUSES, AgentStatus
+from kernel.status import CHECKPOINT_RESUME_STATUSES, TERMINAL_STATUSES, AgentStatus
 from kernel.store import CheckpointSummary, RunStore, StoredCheckpoint
 from kernel.tools import (
     AcceptableTool,
@@ -72,6 +84,8 @@ from kernel.tools import (
 
 __all__ = [
     "AcceptableTool",
+    "AfterModelHook",
+    "AfterToolHook",
     "AgentError",
     "AgentEvent",
     "AgentLoop",
@@ -84,11 +98,15 @@ __all__ = [
     "ApprovalRequest",
     "ArtifactRef",
     "BackgroundTask",
+    "BeforeModelHook",
+    "BeforeToolHook",
+    "CHECKPOINT_RESUME_STATUSES",
     "CheckpointSummary",
     "ContentPart",
     "ConversationInsert",
     "DuplicateToolError",
     "EventEmitter",
+    "EventHook",
     "EventType",
     "EventTypes",
     "ExecutableTool",
@@ -104,12 +122,14 @@ __all__ = [
     "ModelContentDelta",
     "ModelError",
     "ModelErrorDecision",
+    "ModelErrorHook",
     "ModelErrorInfo",
     "ModelOptions",
     "ModelProviderError",
     "ModelReasoningDelta",
     "ModelRequest",
     "ModelResponse",
+    "ModelStreamAccumulator",
     "ModelStreamCompleted",
     "ModelStreamEvent",
     "ModelStreamStarted",
@@ -120,7 +140,6 @@ __all__ = [
     "PauseSelector",
     "PauseState",
     "QueuedEvent",
-    "RESUMABLE_STATUSES",
     "ResponseFormat",
     "ResumeInput",
     "RunController",
@@ -155,5 +174,7 @@ __all__ = [
     "ToolSchedulerProtocol",
     "ToolSpec",
     "ToolStarted",
+    "TransitionHook",
+    "model_capabilities",
     "normalized_tool_risk",
 ]

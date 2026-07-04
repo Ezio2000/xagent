@@ -16,7 +16,8 @@ class AgentStatus(StrEnum):
     LIMIT_EXCEEDED = "limit_exceeded"
 
 
-RESUMABLE_STATUSES = frozenset(
+# Legal working statuses restored from a resumable checkpoint or pause payload.
+CHECKPOINT_RESUME_STATUSES = frozenset(
     {
         AgentStatus.PLANNING,
         AgentStatus.EXECUTING_TOOLS,

@@ -9,7 +9,7 @@ from typing import Any, NoReturn, cast
 
 from kernel.messages import ContentPart, Message, ToolCall
 from kernel.models import ModelUsage
-from kernel.status import RESUMABLE_STATUSES, TERMINAL_STATUSES, AgentStatus
+from kernel.status import CHECKPOINT_RESUME_STATUSES, TERMINAL_STATUSES, AgentStatus
 
 
 def _empty_pending_tool_calls() -> list[ToolCall]:
@@ -101,7 +101,7 @@ class PauseState:
             raise ValueError("pause reason must not be empty")
         if not self.source:
             raise ValueError("pause source must not be empty")
-        if self.resume_status not in RESUMABLE_STATUSES:
+        if self.resume_status not in CHECKPOINT_RESUME_STATUSES:
             raise ValueError("pause resume_status must be planning or executing_tools")
         self.metadata = _copy_mapping(_expect_mapping(self.metadata, "pause metadata"))
 

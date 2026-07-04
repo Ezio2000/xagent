@@ -602,6 +602,13 @@ class StructuralToolRegistry:
         )
 
 
+class NonCallableToolRegistry:
+    specs = ()
+    spec_for = None
+    validate_call = None
+    invoke = None
+
+
 class StrictCountTool:
     def __init__(self) -> None:
         self.calls = 0
@@ -1607,6 +1614,14 @@ async def test_agent_loop_accepts_structural_tool_registry() -> None:
     assert [message.text for message in result.messages if message.role == "tool"] == [
         "structural registry"
     ]
+
+
+def test_agent_loop_rejects_non_callable_tool_registry_members() -> None:
+    with pytest.raises(TypeError, match="ToolRegistryProtocol"):
+        AgentLoop(
+            model=ScriptedModel([ModelResponse.text("done")]),
+            tools=cast(Any, NonCallableToolRegistry()),
+        )
 
 
 @pytest.mark.asyncio

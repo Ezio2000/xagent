@@ -20,11 +20,18 @@ def test_p0_extension_protocol_exports_are_present() -> None:
         "ApprovalDecision",
         "ApprovalPolicy",
         "ApprovalRequest",
+        "AfterModelHook",
+        "AfterToolHook",
+        "BeforeModelHook",
+        "BeforeToolHook",
         "CheckpointSummary",
+        "EventHook",
         "JournalRecord",
+        "ModelErrorHook",
         "RunJournal",
         "RunStore",
         "StoredCheckpoint",
+        "TransitionHook",
         "ToolRegistryProtocol",
     } <= set(kernel.__all__)
 
@@ -36,12 +43,10 @@ def test_sibling_package_root_exports_are_sorted_and_resolve() -> None:
             assert hasattr(package, name), name
 
 
-def test_extracted_helpers_are_not_kernel_root_exports() -> None:
+def test_sibling_owned_helpers_are_not_kernel_root_exports() -> None:
     assert {
-        "ModelStreamAccumulator",
         "RunTrace",
         "ToolRegistry",
-        "model_capabilities",
         "replay_trace",
         "user_text",
     }.isdisjoint(kernel.__all__)

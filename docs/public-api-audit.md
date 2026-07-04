@@ -4,15 +4,19 @@ Date: 2026-07-04
 
 This audit covers the Python import surfaces exported from each package root.
 The current decision is to keep `kernel.__all__` focused on core runtime
-protocols and move optional helper APIs to sibling packages. Anything not
-exported from a package root is internal unless a later audit promotes it.
+protocols and helper APIs whose canonical behavior is required by the runtime.
+Optional helpers that do not need kernel-owned behavior live in sibling
+packages. Anything not exported from a package root is internal unless a later
+audit promotes it.
 
 ## Boundary Decisions
 
 - Keep runtime orchestration names: `AgentLoop`, `AgentResult`, `AgentState`,
   `AgentStatus`, `LoopLimits`, `RuntimeContext`, `RuntimeHook`,
-  `LimitReasons`, `ModelErrorDecision`, `ToolSchedulerFactory`, and
-  `RunSnapshot`.
+  `EventHook`, `BeforeModelHook`, `AfterModelHook`, `ModelErrorHook`,
+  `BeforeToolHook`, `AfterToolHook`, `TransitionHook`, `LimitReasons`,
+  `ModelErrorDecision`, `CHECKPOINT_RESUME_STATUSES`, `TERMINAL_STATUSES`,
+  `ToolSchedulerFactory`, and `RunSnapshot`.
 - Keep resume/control names: `ResumeInput`, `PauseSelector`, `PauseRequest`,
   `RunController`, `ConversationInsert`, `ToolCancelRequest`, and
   `PauseState`.
@@ -24,14 +28,16 @@ exported from a package root is internal unless a later audit promotes it.
 - Keep message names: `Message`, `ContentPart`, `ArtifactRef`, and `ToolCall`.
 - Keep model and tool protocol names: `ModelRequest`, `ModelResponse`,
   `ModelClient`, `StreamingModelClient`, `ModelOptions`, `ToolChoice`,
-  `ResponseFormat`, `ModelCapabilities`, `ModelUsage`,
-  `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`, `ToolObservation`,
-  `ToolAcceptance`, `ToolRejection`, `ToolOutput`, `BackgroundTask`,
-  `ExecutableTool`, `AcceptableTool`, `InvocableTool`, `Tool`,
-  `ToolRegistryProtocol`, and `normalized_tool_risk`.
+  `ResponseFormat`, `ModelCapabilities`, `ModelUsage`, `model_capabilities`,
+  `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`,
+  `RuntimeContextSnapshot`, `ToolCancelChecker`, `ToolProgressEmitter`,
+  `ToolObservation`, `ToolAcceptance`, `ToolRejection`, `ToolOutput`,
+  `BackgroundTask`, `ExecutableTool`, `AcceptableTool`, `InvocableTool`,
+  `Tool`, `ToolRegistryProtocol`, and `normalized_tool_risk`.
 - Keep model streaming names: `ModelStreamEvent`, `ModelContentDelta`,
   `ModelToolCallDelta`, `ModelReasoningDelta`, `ModelUsageDelta`,
-  `ModelStreamStarted`, and `ModelStreamCompleted`.
+  `ModelStreamStarted`, `ModelStreamCompleted`, and
+  `ModelStreamAccumulator`.
 - Keep scheduler detail names: `ToolCatalog`, `ToolScheduler`,
   `ToolSchedulerProtocol`, `ToolBatch`, `ToolStarted`, and `ToolCompleted`.
   They are useful for tests, advanced hosts, and future SDK alignment even
@@ -103,16 +109,16 @@ streaming protocol is separate because streaming is optional and remains live
 progress until a complete `ModelResponse` is available.
 
 `ModelStreamEvent` and the delta/completed/started names describe provider-
-neutral streamed model progress. `ModelStreamAccumulator` moved to `modelkit`
-because it is useful for adapter tests and for adapters that need to assemble
-streamed deltas into a final `ModelResponse`, but it is not required to run the
-kernel loop.
+neutral streamed model progress. `ModelStreamAccumulator` is a public kernel
+helper because the runtime itself needs the canonical accumulation behavior and
+adapter packages need the same behavior without a second implementation.
+`modelkit.ModelStreamAccumulator` is a facade over the kernel export.
 
 `ModelCapabilities`, `ModelOptions`, `ToolChoice`, `ResponseFormat`, and
 `ModelUsage` keep provider-neutral model configuration, capability discovery,
 and accounting separate from the model client implementation. The helper
-`model_capabilities` moved to `modelkit`; it stays lower-case there because it
-is a helper function, not a value type.
+`model_capabilities` is a public kernel helper and is re-exported by `modelkit`;
+it stays lower-case because it is a helper function, not a value type.
 
 `ToolRegistry` moved to `toolkit`. `kernel` keeps `ToolRegistryProtocol` and
 tool protocol/value types so hosts can inject a custom registry without making
@@ -142,8 +148,6 @@ The following implementation names are intentionally not part of the public API:
 - `RuntimePauseInterrupt`
 - `RuntimeConversationInsert`
 - `TraceRecorder`
-- `KernelModelStreamAccumulator`
-- `runtime_model_capabilities`
 - private validation and compaction helpers
 
 These names may change without a compatibility path. If a future SDK needs one

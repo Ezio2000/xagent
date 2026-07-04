@@ -1,4 +1,4 @@
-# xagent
+# Model-Neutral Agent Runtime
 
 Model-neutral agent runtime monorepo.
 
@@ -32,7 +32,7 @@ kernel and are injected through its public ports.
 | `python/kernel` | `kernel` | Runtime kernel: loop, scheduler, model/tool protocols, events, state, snapshots, resume, limits, approval/store/journal/hook ports, trace payload emission, and public SDK exports. |
 | `python/toolkit` | `toolkit` | Default tool registry, JSON Schema validation, and concrete invocation glue. |
 | `python/prompting` | `prompting` | Prompt and message construction helpers built on kernel message types. |
-| `python/modelkit` | `modelkit` | Model adapter helpers such as stream accumulation and capability normalization. |
+| `python/modelkit` | `modelkit` | Model adapter helper facade re-exporting kernel stream accumulation and capability normalization. |
 | `python/diagnostics` | `diagnostics` | Public trace objects, trace construction, and deterministic replay validation. |
 | `python/harness` | `harness` | Reusable test harness helpers. |
 | `python/conformance` | `conformance` | Python conformance CLI, case loader, scripted harness, validators, and assertions. |
@@ -137,8 +137,10 @@ The kernel provides only reusable runtime infrastructure:
   ordering;
 - durable state, snapshots, limits, run control, and resume inputs;
 - approval, hook, store, and journal ports for host-owned implementations;
-- immutable trace payload emission for portable diagnostics;
-- portable conformance fixtures and a Python conformance runner.
+- immutable trace payload emission for portable diagnostics.
+
+Portable conformance fixtures live under `conformance/cases`; the Python
+conformance runner lives in the `conformance` package.
 
 The repository deliberately does not include provider adapters, concrete
 storage backends, approval UIs, tool packs, artifact stores, memory systems, MCP
