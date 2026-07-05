@@ -42,6 +42,32 @@ Host applications own:
 - concrete checkpoint stores, approval UIs, queues, sandboxes, provider
   adapters, artifact storage, dashboards, and deployment runtime.
 
+## Extension Design
+
+The runtime uses a small set of deliberate design patterns rather than a broad
+framework hierarchy:
+
+- Ports and adapters: `ModelClient`, `ToolRegistryProtocol`, `ApprovalPolicy`,
+  `RunStore`, `RunJournal`, and `RuntimeHook` are host-implemented ports. The
+  kernel depends on those protocols and value objects, not on provider SDKs,
+  concrete stores, UI layers, or tool packs.
+- Strategy: tool scheduling is selected through `ToolSchedulerFactory` and
+  `ToolSchedulerProtocol`; retry behavior is selected through
+  `RuntimeHook.on_model_error`.
+- Observer: runtime events and hooks expose lifecycle observation without
+  granting hooks ownership of core event envelopes, sequence numbers, or
+  checkpoint placement.
+- Snapshot/Memento: `RunSnapshot` and `ResumeInput` are the durable state
+  boundary. Hosts persist and reload snapshots, but the kernel owns validation
+  of resumable state.
+- Null Object: runs without host tools use an internal empty registry so the
+  loop follows the same validation and error path as a configured registry.
+
+These patterns support the open/closed boundary: hosts add model providers,
+tools, stores, approval policy, journals, schedulers, and observers by injecting
+implementations. They should not require kernel changes unless the portable v0
+contract itself needs new state, events, or runtime semantics.
+
 The v0 runtime intentionally excludes concrete checkpoint stores, approval
 UIs, memory implementations, sandboxing, MCP, subagent schedulers, artifact
 stores, job queues, and concrete provider adapters. Those are extension

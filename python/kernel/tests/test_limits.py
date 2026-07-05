@@ -49,3 +49,24 @@ def test_limit_reason_constants_match_runtime_reason_strings() -> None:
     assert LoopLimits().iteration_reason(state) == LimitReasons.MAX_ITERATIONS
     assert LoopLimits().tool_call_reason(state) == LimitReasons.MAX_TOTAL_TOOL_CALLS
     assert LimitReasons.TIMEOUT_SECONDS == "timeout_seconds"
+
+
+def test_loop_limits_round_trips_wire_shape() -> None:
+    limits = LoopLimits(
+        max_iterations=3,
+        max_total_tool_calls=5,
+        timeout_seconds=1.5,
+        stop_on_tool_error=True,
+        max_parallel_tool_calls=2,
+        max_total_tokens=100,
+        max_model_retries=1,
+    )
+
+    restored = LoopLimits.from_dict(limits.to_dict())
+
+    assert restored == limits
+
+
+def test_loop_limits_from_dict_rejects_unknown_fields() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        LoopLimits.from_dict({"legacy_budget": 1})

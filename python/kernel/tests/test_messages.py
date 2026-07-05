@@ -78,6 +78,9 @@ def test_content_part_from_dict_rejects_schema_invalid_optional_fields() -> None
     with pytest.raises(TypeError, match="type"):
         ContentPart.from_dict({"type": 1})
 
+    with pytest.raises(TypeError, match="content part text"):
+        ContentPart.from_dict({"type": "text", "text": None})
+
     with pytest.raises(TypeError, match="metadata"):
         ContentPart.from_dict({"type": "text", "text": "hello", "metadata": None})
 

@@ -17,7 +17,7 @@ from kernel._validation import (
     expect_optional_str as _expect_optional_str,
 )
 from kernel._validation import (
-    expect_present_str as _expect_present_optional_str,
+    expect_present_str as _expect_present_str,
 )
 from kernel._validation import (
     expect_sequence as _expect_sequence,
@@ -277,11 +277,11 @@ class ContentPart:
         raw_metadata: object = value.get("metadata", {})
         return cls(
             type=_expect_str(value["type"], "content part type"),
-            text=_expect_present_optional_str(value, "text", "content part text"),
-            uri=_expect_present_optional_str(value, "uri", "content part uri"),
-            ref=_expect_present_optional_str(value, "ref", "content part ref"),
-            media_type=_expect_present_optional_str(value, "media_type", "content part media_type"),
-            name=_expect_present_optional_str(value, "name", "content part name"),
+            text=_expect_present_str(value, "text", "content part text"),
+            uri=_expect_present_str(value, "uri", "content part uri"),
+            ref=_expect_present_str(value, "ref", "content part ref"),
+            media_type=_expect_present_str(value, "media_type", "content part media_type"),
+            name=_expect_present_str(value, "name", "content part name"),
             data=_expect_mapping(raw_data, "content part data"),
             metadata=_expect_mapping(raw_metadata, "content part metadata"),
         )

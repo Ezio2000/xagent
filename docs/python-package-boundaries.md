@@ -54,6 +54,13 @@ tests should prefer only that package's declared runtime dependencies.
 | Is it reusable test harness equipment for running runtime packages in controlled scenarios, such as model drivers, tool fixtures, message fixtures, stubs/fakes, synthetic runtime ports, test data or scenario helpers, event/timeline/trace observation, or behavior assertions? | `harness` |
 | Is it portable behavior that every SDK should satisfy? | `contracts/v0` and `conformance/cases` |
 
+`modelkit` is intentionally a stable facade over selected kernel-owned model
+helpers. It should not grow independent copies of stream accumulation,
+capability normalization, model request/response semantics, or runtime loop
+behavior. New helper behavior belongs in `kernel` when the runtime needs the
+canonical implementation; `modelkit` may then re-export that helper for adapter
+packages.
+
 ## Public API Rule
 
 Each package should be consumed through one package root. Cross-package imports

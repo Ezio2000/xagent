@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from kernel._validation import (
     expect_bool as _expect_bool,
@@ -15,6 +17,9 @@ from kernel._validation import (
 )
 from kernel._validation import (
     expect_optional_number as _expect_optional_number,
+)
+from kernel._validation import (
+    reject_unknown_keys as _reject_unknown_keys,
 )
 from kernel.models import ModelUsage
 from kernel.state import AgentState
@@ -66,6 +71,52 @@ class LoopLimits:
             raise ValueError("max_total_tokens must be >= 0")
         if max_model_retries < 0:
             raise ValueError("max_model_retries must be >= 0")
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> LoopLimits:
+        known = {
+            "max_iterations",
+            "max_total_tool_calls",
+            "timeout_seconds",
+            "stop_on_tool_error",
+            "max_parallel_tool_calls",
+            "max_total_tokens",
+            "max_model_retries",
+        }
+        _reject_unknown_keys(value, known, "loop limits")
+        return cls(
+            max_iterations=_expect_int(value.get("max_iterations", 8), "max_iterations"),
+            max_total_tool_calls=_expect_int(
+                value.get("max_total_tool_calls", 20), "max_total_tool_calls"
+            ),
+            timeout_seconds=_expect_optional_number(
+                value.get("timeout_seconds"), "timeout_seconds"
+            ),
+            stop_on_tool_error=_expect_bool(
+                value.get("stop_on_tool_error", False), "stop_on_tool_error"
+            ),
+            max_parallel_tool_calls=_expect_int(
+                value.get("max_parallel_tool_calls", 1), "max_parallel_tool_calls"
+            ),
+            max_total_tokens=_expect_optional_int(
+                value.get("max_total_tokens"), "max_total_tokens"
+            ),
+            max_model_retries=_expect_int(value.get("max_model_retries", 0), "max_model_retries"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "max_iterations": self.max_iterations,
+            "max_total_tool_calls": self.max_total_tool_calls,
+            "stop_on_tool_error": self.stop_on_tool_error,
+            "max_parallel_tool_calls": self.max_parallel_tool_calls,
+            "max_model_retries": self.max_model_retries,
+        }
+        if self.timeout_seconds is not None:
+            data["timeout_seconds"] = self.timeout_seconds
+        if self.max_total_tokens is not None:
+            data["max_total_tokens"] = self.max_total_tokens
+        return data
 
     def iteration_reason(self, state: AgentState) -> str | None:
         if state.iterations >= self.max_iterations:

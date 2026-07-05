@@ -73,6 +73,10 @@ Hard boundary rules:
   `conformance`.
 - Do not add compatibility shims, deprecated aliases, or re-export packages for
   old names.
+- For any change that affects portable runtime behavior, public SDK semantics,
+  wire shapes, event/state ordering, resume behavior, scheduling behavior, or
+  extension-port contracts, update `contracts/v0` and `conformance/cases`
+  before modifying concrete Python runtime code.
 - Portable behavior changes require updates to `contracts/v0`,
   `conformance/cases`, and relevant docs in the same change.
 
@@ -94,6 +98,7 @@ Run examples from the repository root:
 ```bash
 uv run python examples/python/basic_tool_loop.py
 uv run python examples/python/pause_resume_trace.py
+uv run python examples/python/extension_ports.py
 ```
 
 Validate changed contracts:
@@ -158,3 +163,11 @@ There is no historical compatibility burden. Prefer clean breaking refactors
 over compatibility shims, deprecated aliases, or duplicate transitional APIs.
 Portable behavior belongs in `contracts/v0` and `conformance/cases`, not only in
 Python code.
+
+Contract-first rule: when a concrete code change would alter portable behavior
+or public SDK contract semantics, edit the relevant schema or normative
+contract document in `contracts/v0` and add or update the matching conformance
+case first. Only after the contract and conformance expectation are explicit
+should implementation code be changed to satisfy them. Purely internal
+refactors that preserve the existing contract should not change contracts, but
+must keep existing conformance passing.

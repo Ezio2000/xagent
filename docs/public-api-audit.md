@@ -146,6 +146,19 @@ policy. It receives a read-only `ToolCatalog`, not executable tool
 implementations. Custom schedulers implement `ToolSchedulerProtocol`;
 `ToolScheduler` remains the default implementation.
 
+## Value Object Mutability
+
+Most Python DTOs are normal dataclasses rather than fully immutable runtime
+objects. This keeps host construction and adapter code direct, but callers
+should treat instances passed into the runtime as boundary values. Public
+constructors, `from_dict(...)`, and `to_dict()` perform defensive normalization
+and copying at runtime boundaries; `RunSnapshot`, `ApprovalRequest`,
+`AgentEvent`, checkpoint records, journal records, and trace payloads add
+stronger copying or frozen views where host mutation would corrupt durable
+state or event history. Adding a new public DTO should preserve that rule:
+mutable convenience inside the SDK is acceptable only when every runtime,
+storage, event, and trace boundary re-canonicalizes the value.
+
 ## Public Versus Internal
 
 The following implementation names are intentionally not part of the public API:

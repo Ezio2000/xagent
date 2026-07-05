@@ -6,8 +6,10 @@ express clearly, such as event order, resumability, replay invariants, and
 runtime boundary priority.
 
 Schema `$id` values are stable public identifiers. Some still contain
-`/spec/v0/` from the original publication path; that URI is not a repository
-layout promise and must not be used to infer the on-disk directory.
+`agent-runtime.local` and `/spec/v0/` from the original publication path; that
+URI is a contract namespace, not a Python package name, compatibility shim, or
+repository layout promise. Do not use it to infer on-disk directories or to
+justify reintroducing retired runtime package names.
 
 ## Normative Documents
 
