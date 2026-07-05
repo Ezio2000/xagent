@@ -14,7 +14,9 @@ Tools expose:
 - `spec.modes`: supported non-empty invocation modes. Core runtimes recognize
   `execute` and `accept`; other modes are extension points handled by tool
   `invoke`.
-- `spec.output_schema`
+- `spec.output_schema`: optional JSON Schema metadata for adapters, hosts, and
+  tool descriptions. It describes the tool's intended output payload, but the
+  default runtime path does not validate returned `ToolOutput` values against it.
 - `spec.annotations`
 - `spec.metadata`
 - `execute(invocation, context)` when the tool supports `execute`.
@@ -31,12 +33,18 @@ concrete tool implementations.
 Before a tool implementation is called, `AgentLoop` asks the configured
 `ToolRegistryProtocol` to validate the call. The default `toolkit.ToolRegistry`
 validates `ToolCall.arguments` against `spec.input_schema` with JSON Schema,
-then adapts the validated call to `toolkit.ToolInvocation`. Validation failure
-is an invalid tool call: execute-mode calls commit an error `ToolObservation`,
-accept-mode calls commit a `ToolRejection`, and extension modes commit an error
-`ToolOutput` with a custom `tool_error` result kind. The model can observe that
-tool error on the next planning turn and recover. The corresponding tool
-lifecycle event and trace payloads use `implementation_invoked: false`.
+then adapts the validated call to `toolkit.ToolInvocation`. It validates
+`spec.output_schema` as a well-formed JSON Schema at registration time when the
+field is present, but it does not apply that schema to runtime tool results.
+Runtime result validation is limited to the portable `ToolOutput` shape and
+mode/result-kind coupling. Hosts that require output payload validation should
+enforce it in the tool implementation, a custom registry, or a runtime hook.
+Input validation failure is an invalid tool call: execute-mode calls commit an
+error `ToolObservation`, accept-mode calls commit a `ToolRejection`, and
+extension modes commit an error `ToolOutput` with a custom `tool_error` result
+kind. The model can observe that tool error on the next planning turn and
+recover. The corresponding tool lifecycle event and trace payloads use
+`implementation_invoked: false`.
 
 If an approval policy is configured, valid tool calls are sent to it for an
 `allow`, `deny`, or `pause` decision before calling the tool implementation.

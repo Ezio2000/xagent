@@ -117,6 +117,26 @@ class StrictCountTool:
         return ToolObservation.text(str(invocation.arguments["count"]))
 
 
+class OutputSchemaMismatchTool:
+    spec = ToolSpec(
+        name="output_schema_mismatch",
+        description="Return a valid observation whose payload does not match output_schema.",
+        input_schema={"type": "object", "properties": {}},
+        output_schema={
+            "type": "object",
+            "required": ["required_field"],
+            "properties": {"required_field": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    )
+
+    async def execute(
+        self, invocation: ToolInvocation, context: ToolExecutionContext
+    ) -> ToolObservation:
+        _ = invocation, context
+        return ToolObservation.text("not schema validated")
+
+
 class RejectingAcceptTool:
     spec = ToolSpec(
         name="accepting",
@@ -220,6 +240,25 @@ def test_tool_registry_rejects_invalid_json_schema() -> None:
         ToolRegistry([InvalidSchemaTool()])
 
 
+def test_tool_registry_rejects_invalid_output_json_schema() -> None:
+    class InvalidOutputSchemaTool:
+        spec = ToolSpec(
+            name="tool",
+            description="tool",
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": 1},
+        )
+
+        async def execute(
+            self, invocation: ToolInvocation, context: ToolExecutionContext
+        ) -> ToolObservation:
+            _ = invocation, context
+            return ToolObservation.text("unreachable")
+
+    with pytest.raises(ValueError, match="tool output_schema"):
+        ToolRegistry([InvalidOutputSchemaTool()])
+
+
 @pytest.mark.asyncio
 async def test_tool_arguments_are_defensive_copies() -> None:
     call = ToolCall(id="call-1", name="mutate", arguments={"value": 1})
@@ -246,6 +285,15 @@ async def test_tool_registry_validates_arguments_against_input_schema() -> None:
         await ToolRegistry([tool]).invoke(call, RuntimeContext())
 
     assert tool.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_registry_does_not_validate_output_against_output_schema() -> None:
+    call = ToolCall(id="call-1", name="output_schema_mismatch", arguments={})
+
+    result = await ToolRegistry([OutputSchemaMismatchTool()]).invoke(call, RuntimeContext())
+
+    assert result.text_content == "not schema validated"
 
 
 @pytest.mark.asyncio
