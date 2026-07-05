@@ -87,8 +87,8 @@ uv run conformance conformance/cases --spec-dir contracts/v0
 Run examples from the repository root:
 
 ```bash
-uv run python python/kernel/examples/basic_tool_loop.py
-uv run python python/kernel/examples/pause_resume_trace.py
+uv run python examples/python/basic_tool_loop.py
+uv run python examples/python/pause_resume_trace.py
 ```
 
 Validate changed contracts:

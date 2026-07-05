@@ -75,8 +75,8 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run conformance conformance/cases --spec-dir contracts/v0
-uv run python python/kernel/examples/basic_tool_loop.py
-uv run python python/kernel/examples/pause_resume_trace.py
+uv run python examples/python/basic_tool_loop.py
+uv run python examples/python/pause_resume_trace.py
 ```
 
 When editing JSON contracts or conformance cases, validate changed contracts:
