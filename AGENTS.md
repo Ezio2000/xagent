@@ -20,11 +20,11 @@ Python packages:
   accumulation and capability helper functions.
 - `diagnostics`: public trace objects, trace construction, and deterministic
   replay validation.
-- `harness`: the controlled kernel assembly and scenario support package around
-  `kernel`. It provides thin scenario builders, model drivers, runtime port
-  implementations and fakes, tool registries and fixtures, message fixtures,
-  event/timeline/trace observation, and behavior assertions without owning
-  kernel runtime semantics or conformance contracts.
+- `harness`: thin controlled kernel scenario assembly and event/timeline
+  observation helpers around `kernel`.
+- `support`: controlled runtime support components: model drivers, runtime port
+  fakes, tool fixtures and registry doubles, message fixtures, and behavior
+  assertions without owning kernel runtime semantics or conformance contracts.
 - `conformance`: CLI and fixture runner for validating implementations against
   contracts and portable behavior fixtures.
 
@@ -33,7 +33,9 @@ Documentation index:
 - `contracts/v0/README.md`: cross-language contract map and schema `$id`
   policy.
 - `docs/architecture.md`: kernel architecture and package boundary.
-- `docs/harness.md`: controlled kernel assembly and scenario support boundary.
+- `docs/harness.md`: controlled kernel scenario assembly and observation
+  boundary.
+- `docs/support.md`: controlled runtime support components boundary.
 - `docs/python-package-boundaries.md`: Python package split, dependency rules,
   and placement checklist.
 - `docs/model-protocol.md`: model adapter protocol.
@@ -59,16 +61,17 @@ kernel ports such as `ModelClient`, `ToolRegistryProtocol`, `ApprovalPolicy`,
 `RunStore`, `RunJournal`, and `RuntimeHook`.
 
 Sibling helper packages may depend on `kernel`, but `kernel` must never import
-them. `harness` provides controlled kernel assembly and scenario support and
-may compose `kernel`, `toolkit`, `prompting`, and `diagnostics` public APIs.
-`conformance` may depend on
-`kernel`, `toolkit`, `prompting`, `diagnostics`, and `harness`, but none of
-those packages may import `conformance`.
+them. `harness` provides controlled kernel scenario assembly and observation.
+`support` provides controlled fakes, fixtures, drivers, and assertions and may
+compose `kernel`, `toolkit`, `prompting`, `diagnostics`, and `harness` public
+APIs. `conformance` may depend on `kernel`, `toolkit`, `prompting`,
+`diagnostics`, and `support`, but none of those packages may import
+`conformance`.
 
 Project and package names must not use retired fragments: `xagent`, `agent_`,
 `agent-`, `runtime_`, or `runtime-`. The current Python package names are
-`kernel`, `toolkit`, `prompting`, `modelkit`, `diagnostics`, `harness`, and
-`conformance`.
+`kernel`, `toolkit`, `prompting`, `modelkit`, `diagnostics`, `harness`,
+`support`, and `conformance`.
 
 ## Build, Test, And Development Commands
 

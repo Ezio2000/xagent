@@ -3,12 +3,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from harness import (
-    EchoFixtureTool,
-    HarnessToolRegistry,
-    RecordingToolRegistry,
-    ScriptedToolRegistry,
-)
 from kernel import (
     ContentPart,
     InvalidToolCall,
@@ -17,6 +11,12 @@ from kernel import (
     ToolObservation,
     ToolOutput,
     ToolSpec,
+)
+from support import (
+    EchoFixtureTool,
+    FixtureToolRegistry,
+    RecordingToolRegistry,
+    ScriptedToolRegistry,
 )
 from toolkit import ToolRegistry
 
@@ -85,8 +85,8 @@ def test_scripted_tool_registry_rejects_duplicate_specs_and_unknown_handlers() -
 
 
 @pytest.mark.asyncio
-async def test_harness_tool_registry_echo_fail_wait_and_metadata_tools() -> None:
-    registry = HarnessToolRegistry("echo", "fail", "wait", "metadata_tool")
+async def test_fixture_tool_registry_echo_fail_wait_and_metadata_tools() -> None:
+    registry = FixtureToolRegistry("echo", "fail", "wait", "metadata_tool")
     context = RuntimeContext(run_id="run-1", started_at=1.0)
 
     echo = await registry.invoke(
@@ -115,8 +115,8 @@ async def test_harness_tool_registry_echo_fail_wait_and_metadata_tools() -> None
 
 
 @pytest.mark.asyncio
-async def test_harness_tool_registry_parallel_wait_and_slow_tools() -> None:
-    registry = HarnessToolRegistry("parallel_wait", "slow")
+async def test_fixture_tool_registry_parallel_wait_and_slow_tools() -> None:
+    registry = FixtureToolRegistry("parallel_wait", "slow")
     context = RuntimeContext(run_id="run-1", started_at=1.0)
 
     waiting = await registry.invoke(
@@ -137,9 +137,9 @@ async def test_harness_tool_registry_parallel_wait_and_slow_tools() -> None:
         )
 
 
-def test_harness_tool_registry_rejects_unknown_builtin_tool_name() -> None:
-    with pytest.raises(ValueError, match="unknown harness tool"):
-        HarnessToolRegistry("missing")
+def test_fixture_tool_registry_rejects_unknown_builtin_tool_name() -> None:
+    with pytest.raises(ValueError, match="unknown fixture tool"):
+        FixtureToolRegistry("missing")
 
 
 @pytest.mark.asyncio

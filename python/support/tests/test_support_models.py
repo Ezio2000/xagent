@@ -2,15 +2,6 @@ from __future__ import annotations
 
 import pytest
 from harness import (
-    ContextInspectingModel,
-    ControlledStreamingModelDriver,
-    FlakyProviderErrorModel,
-    ModelStreamPause,
-    ModelStreamSleep,
-    ProviderErrorModel,
-    RequestCapturingModel,
-    ScriptedModel,
-    StreamingTextModel,
     collect_events,
 )
 from kernel import (
@@ -28,6 +19,17 @@ from kernel import (
     PauseRequest,
     RunController,
     RuntimeContext,
+)
+from support import (
+    ContextInspectingModel,
+    ControlledStreamingModelDriver,
+    FlakyProviderErrorModel,
+    ModelStreamPause,
+    ModelStreamSleep,
+    ProviderErrorModel,
+    RequestCapturingModel,
+    ScriptedModel,
+    StreamingTextModel,
 )
 
 

@@ -11,46 +11,6 @@ from typing import Any, cast
 import pytest
 from diagnostics import RunTrace, TraceStepKinds, replay_trace
 from harness import (
-    AcceptingWebSearchTool,
-    AdapterTimeoutModel,
-    ApprovalPolicyByCall,
-    CancellationConvertingModel,
-    CancellationSwallowingModel,
-    CancellationSwallowingThenFailingModel,
-    CloseTrackingStreamingModel,
-    ContextInspectingModel,
-    CustomHandoffTool,
-    ExternallyCancelledModel,
-    FailingAcceptTool,
-    FailingApprovalPolicy,
-    FailingCheckpointJournal,
-    FailingCustomHandoffTool,
-    FailingFixtureTool,
-    FailingRunStore,
-    FailingSecondCheckpointStore,
-    FastStreamingModel,
-    FlakyProviderErrorModel,
-    HarnessToolRegistry,
-    MemoryRunJournal,
-    MemoryRunStore,
-    ProviderErrorModel,
-    RecordingToolRegistry,
-    RejectingWebSearchTool,
-    RequestCapturingModel,
-    ScriptedModel,
-    SequencedApprovalPolicy,
-    SlowModel,
-    SlowRunJournal,
-    SlowRunStore,
-    SlowStreamingModel,
-    StaticApprovalPolicy,
-    StreamingProviderErrorModel,
-    StreamingTextModel,
-    StreamingToolModel,
-    StreamingToolThenSlowModel,
-    StrictCountFixtureTool,
-    StrictCustomHandoffTool,
-    TimelineRunJournal,
     collect_events,
     timeline_event_label,
 )
@@ -101,6 +61,48 @@ from kernel import (
     ToolStarted,
 )
 from prompting import tool_text, user_text
+from support import (
+    AcceptingWebSearchTool,
+    AdapterTimeoutModel,
+    ApprovalPolicyByCall,
+    CancellationConvertingModel,
+    CancellationSwallowingModel,
+    CancellationSwallowingThenFailingModel,
+    CloseTrackingStreamingModel,
+    ContextInspectingModel,
+    CustomHandoffTool,
+    ExternallyCancelledModel,
+    FailingAcceptTool,
+    FailingApprovalPolicy,
+    FailingCheckpointJournal,
+    FailingCustomHandoffTool,
+    FailingFixtureTool,
+    FailingRunStore,
+    FailingSecondCheckpointStore,
+    FastStreamingModel,
+    FixtureToolRegistry,
+    FlakyProviderErrorModel,
+    MemoryRunJournal,
+    MemoryRunStore,
+    ProviderErrorModel,
+    RecordingToolRegistry,
+    RejectingWebSearchTool,
+    RequestCapturingModel,
+    ScriptedModel,
+    SequencedApprovalPolicy,
+    SlowModel,
+    SlowRunJournal,
+    SlowRunStore,
+    SlowStreamingModel,
+    StaticApprovalPolicy,
+    StreamingProviderErrorModel,
+    StreamingTextModel,
+    StreamingToolModel,
+    StreamingToolThenSlowModel,
+    StrictCountFixtureTool,
+    StrictCustomHandoffTool,
+    TimelineRunJournal,
+)
 from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
 
 
@@ -242,7 +244,7 @@ class StaggeredGappedTimeoutTool:
 
 class StructuralToolRegistry:
     def __init__(self, *tool_names: str) -> None:
-        self._registry = HarnessToolRegistry(*tool_names)
+        self._registry = FixtureToolRegistry(*tool_names)
         self.invocations = 0
 
     def specs(self) -> tuple[ToolSpec, ...]:
@@ -888,7 +890,7 @@ async def test_streaming_text_deltas_are_observable_but_commit_atomically() -> N
 @pytest.mark.asyncio
 async def test_streaming_tool_call_executes_only_after_model_completed() -> None:
     events = await collect_events(
-        AgentLoop(model=StreamingToolModel(), tools=HarnessToolRegistry("echo")),
+        AgentLoop(model=StreamingToolModel(), tools=FixtureToolRegistry("echo")),
         [user_text("stream tool")],
         stream=True,
     )
@@ -1057,7 +1059,7 @@ async def test_stream_interrupt_wins_over_immediately_ready_next_delta() -> None
 async def test_later_stream_timeout_trace_uses_last_checkpoint_as_partial_baseline() -> None:
     result = await AgentLoop(
         model=StreamingToolThenSlowModel(),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         limits=LoopLimits(timeout_seconds=0.02),
     ).run(
         [user_text("stream after tool")],
@@ -1277,7 +1279,7 @@ async def test_custom_tool_scheduler_factory_is_used_per_run() -> None:
                 ModelResponse.text("done"),
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         limits=limits,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
@@ -1304,7 +1306,7 @@ async def test_custom_tool_scheduler_receives_defensive_tool_catalog() -> None:
                 ModelResponse.text("done"),
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -1340,7 +1342,7 @@ async def test_custom_tool_scheduler_factory_accepts_protocol_implementations() 
                 ModelResponse.text("done"),
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -1366,7 +1368,7 @@ async def test_custom_tool_scheduler_must_return_non_empty_prefix_batch() -> Non
                 )
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -1427,7 +1429,7 @@ async def test_custom_tool_scheduler_progress_is_validated(
         model=ScriptedModel(
             [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})])]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -1634,7 +1636,7 @@ async def test_model_usage_is_aggregated_into_result_and_snapshot() -> None:
                 ),
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
     ).run([user_text("tool")])
 
     assert result.status is AgentStatus.COMPLETED
@@ -1663,7 +1665,7 @@ async def test_model_usage_missing_fields_preserve_known_cumulative_values() -> 
                 ),
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         limits=LoopLimits(max_total_tokens=10),
     ).run([user_text("tool")])
 
@@ -1689,7 +1691,7 @@ async def test_model_usage_none_preserves_known_cumulative_values() -> None:
                 ModelResponse(parts=[ContentPart.text_part("done")]),
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         limits=LoopLimits(max_total_tokens=10),
     ).run([user_text("tool")])
 
@@ -1745,7 +1747,7 @@ async def test_tool_result_metadata_is_not_persisted_in_checkpoint_message() -> 
             ModelResponse.text("done"),
         ]
     )
-    result = await AgentLoop(model=model, tools=HarnessToolRegistry("metadata_tool")).run(
+    result = await AgentLoop(model=model, tools=FixtureToolRegistry("metadata_tool")).run(
         [user_text("tool")]
     )
 
@@ -2175,7 +2177,7 @@ async def test_one_tool_then_final() -> None:
             ModelResponse.text("hello"),
         ]
     )
-    result = await AgentLoop(model=model, tools=HarnessToolRegistry("echo")).run(
+    result = await AgentLoop(model=model, tools=FixtureToolRegistry("echo")).run(
         [user_text("echo")]
     )
 
@@ -2235,7 +2237,7 @@ async def test_pause_request_is_captured_once_before_applying_pause() -> None:
 async def test_pause_during_tool_call_model_response_has_no_executing_checkpoint() -> None:
     controller = RunController()
     events = await collect_events(
-        AgentLoop(model=SelfPausingToolCallModel(controller), tools=HarnessToolRegistry("echo")),
+        AgentLoop(model=SelfPausingToolCallModel(controller), tools=FixtureToolRegistry("echo")),
         [user_text("call tool")],
         controller=controller,
     )
@@ -2254,7 +2256,7 @@ async def test_pause_during_tool_call_model_response_has_no_executing_checkpoint
 
     resumed = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("done")]),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
     ).run_snapshot(ResumeInput(snapshot=paused))
 
     assert resumed.status is AgentStatus.COMPLETED
@@ -2425,7 +2427,7 @@ async def test_multi_step_tools() -> None:
             ModelResponse.text("a b"),
         ]
     )
-    result = await AgentLoop(model=model, tools=HarnessToolRegistry("echo")).run(
+    result = await AgentLoop(model=model, tools=FixtureToolRegistry("echo")).run(
         [user_text("echo twice")]
     )
 
@@ -2446,7 +2448,7 @@ async def test_max_iterations() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         limits=LoopLimits(max_iterations=2),
     ).run([user_text("loop")])
 
@@ -2474,7 +2476,7 @@ async def test_tool_call_limit_takes_precedence_over_pause_after_model_response(
     events = await collect_events(
         AgentLoop(
             model=SelfPausingToolCallModel(controller),
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             limits=LoopLimits(max_total_tool_calls=0),
         ),
         [user_text("echo")],
@@ -2520,7 +2522,7 @@ async def test_waiting_tool_result_pauses_after_tool_commit_and_resumes() -> Non
         ]
     )
 
-    result = await AgentLoop(model=model, tools=HarnessToolRegistry("wait")).run(
+    result = await AgentLoop(model=model, tools=FixtureToolRegistry("wait")).run(
         [user_text("start external work")]
     )
 
@@ -2539,7 +2541,7 @@ async def test_waiting_tool_result_pauses_after_tool_commit_and_resumes() -> Non
     resumed_model = ScriptedModel([ModelResponse.text("external job complete")])
     resumed = await AgentLoop(
         model=resumed_model,
-        tools=HarnessToolRegistry("wait"),
+        tools=FixtureToolRegistry("wait"),
     ).run_snapshot(ResumeInput(snapshot=result.snapshot or raise_assertion()))
 
     assert resumed.status is AgentStatus.COMPLETED
@@ -2558,7 +2560,7 @@ async def test_external_wait_has_no_resumable_checkpoint_before_paused_decision(
     )
 
     events = await collect_events(
-        AgentLoop(model=model, tools=HarnessToolRegistry("wait")),
+        AgentLoop(model=model, tools=FixtureToolRegistry("wait")),
         [user_text("start external work")],
     )
     snapshots = [
@@ -2595,7 +2597,7 @@ async def test_host_pause_during_tool_completion_replaces_unpaused_commit_checkp
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             hooks=[RequestPauseOnEventHook(EventTypes.TOOL_COMPLETED, controller)],
         ),
         [user_text("run tool")],
@@ -2638,7 +2640,7 @@ async def test_parallel_waiting_tool_results_commit_batch_and_first_pause_wins()
 
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("parallel_wait"),
+        tools=FixtureToolRegistry("parallel_wait"),
         limits=LoopLimits(max_parallel_tool_calls=2),
     ).run([user_text("start external work")])
 
@@ -3301,7 +3303,7 @@ async def test_tool_timeout_is_hard_limit() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("slow"),
+        tools=FixtureToolRegistry("slow"),
         limits=LoopLimits(timeout_seconds=0.01),
     ).run([user_text("slow")])
 
@@ -3317,7 +3319,7 @@ async def test_approval_allow_tool_timeout_trace_replays() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("slow"),
+        tools=FixtureToolRegistry("slow"),
         limits=LoopLimits(timeout_seconds=0.01),
         approval_policy=StaticApprovalPolicy(ApprovalDecision.allow("safe")),
     ).run([user_text("slow")])
@@ -3345,7 +3347,7 @@ async def test_tool_call_limit_leaves_only_unexecuted_pending_calls() -> None:
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             limits=LoopLimits(max_total_tool_calls=1),
         ),
         [user_text("echo twice")],
@@ -3370,7 +3372,7 @@ async def test_tool_call_limit_wins_over_tool_result_pause() -> None:
 
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("wait", "echo"),
+        tools=FixtureToolRegistry("wait", "echo"),
         limits=LoopLimits(max_total_tool_calls=1),
     ).run([user_text("wait then echo")])
 
@@ -3401,7 +3403,7 @@ async def test_tool_call_limit_wins_over_pause_requested_after_tool_completed() 
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             hooks=[RequestPauseOnEventHook(EventTypes.TOOL_COMPLETED, controller)],
             limits=LoopLimits(max_total_tool_calls=1),
         ),
@@ -3426,7 +3428,7 @@ async def test_tool_result_pause_loses_to_iteration_limit_after_final_tool() -> 
 
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("wait"),
+        tools=FixtureToolRegistry("wait"),
         limits=LoopLimits(max_iterations=1),
     ).run([user_text("wait")])
 
@@ -3453,7 +3455,7 @@ async def test_tool_final_planning_boundary_applies_pause_before_checkpoint() ->
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             hooks=[
                 RequestPauseOnStateChangeHook(
                     AgentStatus.EXECUTING_TOOLS,
@@ -3491,7 +3493,7 @@ async def test_iteration_limit_wins_over_pause_requested_after_final_tool() -> N
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             hooks=[
                 RequestPauseOnStateChangeHook(
                     AgentStatus.EXECUTING_TOOLS,
@@ -3607,7 +3609,7 @@ async def test_tool_batch_ids_reset_for_each_run_on_reused_loop() -> None:
             ModelResponse.text("second"),
         ]
     )
-    agent = AgentLoop(model=model, tools=HarnessToolRegistry("echo"))
+    agent = AgentLoop(model=model, tools=FixtureToolRegistry("echo"))
 
     first_events = await collect_events(agent, [user_text("first")])
     second_events = await collect_events(agent, [user_text("second")])
@@ -3949,7 +3951,7 @@ async def test_checkpoint_event_after_each_tool_commit_is_resumable() -> None:
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             limits=LoopLimits(max_total_tool_calls=1),
         ),
         [user_text("echo twice")],
@@ -4226,7 +4228,7 @@ async def test_resume_input_rejects_append_messages_when_resuming_pending_tools(
                 )
             ]
         ),
-        tools=HarnessToolRegistry("wait", "echo"),
+        tools=FixtureToolRegistry("wait", "echo"),
     ).run([user_text("start")])
 
     assert paused.snapshot is not None
@@ -4578,7 +4580,7 @@ async def test_after_tool_hook_invalid_result_is_rejected() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         hooks=[BadAfterToolHook()],
     ).run([user_text("hello")])
 
@@ -4594,7 +4596,7 @@ async def test_tool_completed_event_is_not_emitted_if_after_tool_result_is_inval
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=HarnessToolRegistry("echo"),
+            tools=FixtureToolRegistry("echo"),
             hooks=[BadToolObservationShapeHook()],
         ),
         [user_text("hello")],
@@ -4616,7 +4618,7 @@ async def test_before_tool_argument_rewrite_updates_assistant_history() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         hooks=[ToolArgumentHook()],
     ).run([user_text("echo")])
 
@@ -4635,7 +4637,7 @@ async def test_before_tool_cannot_mutate_tool_call_identity_in_place() -> None:
                 )
             ]
         ),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         hooks=[MutatingToolIdentityHook()],
     ).run([user_text("echo")])
 
@@ -4719,7 +4721,7 @@ async def test_event_order_is_stable() -> None:
         ]
     )
     events = await collect_events(
-        AgentLoop(model=model, tools=HarnessToolRegistry("echo")),
+        AgentLoop(model=model, tools=FixtureToolRegistry("echo")),
         [user_text("echo")],
     )
 
@@ -5380,7 +5382,7 @@ async def test_run_store_journal_pause_after_deferred_transition_order_is_consis
     events: list[AgentEvent] = []
     async for event in AgentLoop(
         model=SelfPausingToolCallModel(controller),
-        tools=HarnessToolRegistry("echo"),
+        tools=FixtureToolRegistry("echo"),
         hooks=[TimelineVisibilityHook(timeline)],
         run_store=MemoryRunStore(),
         run_journal=journal,
@@ -5588,7 +5590,7 @@ async def test_resume_checkpoint_store_records_parent_checkpoint_id() -> None:
                 )
             ]
         ),
-        tools=HarnessToolRegistry("wait"),
+        tools=FixtureToolRegistry("wait"),
     ).run([user_text("start job")])
     assert first.snapshot is not None
     parent_id = f"checkpoint-{first.snapshot.context.sequence}"
@@ -5596,7 +5598,7 @@ async def test_resume_checkpoint_store_records_parent_checkpoint_id() -> None:
     store = MemoryRunStore()
     resumed = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("resumed")]),
-        tools=HarnessToolRegistry("wait"),
+        tools=FixtureToolRegistry("wait"),
         run_store=store,
     ).run_snapshot(
         ResumeInput(

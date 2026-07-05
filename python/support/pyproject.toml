@@ -1,32 +1,27 @@
 [project]
-name = "conformance"
+name = "support"
 version = "0.1.0"
-description = "Conformance runner for model-neutral runtime implementations"
+description = "Controlled runtime support fakes, fixtures, and assertions"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "runtime contributors" }]
 dependencies = [
   "diagnostics",
-  "jsonschema>=4.23.0",
+  "harness",
   "kernel",
   "prompting",
-  "referencing>=0.35.0",
-  "support",
   "toolkit",
 ]
 
-[project.scripts]
-conformance = "conformance.cli:main"
-
 [tool.uv.sources]
 diagnostics = { workspace = true }
+harness = { workspace = true }
 kernel = { workspace = true }
 prompting = { workspace = true }
-support = { workspace = true }
 toolkit = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/conformance"]
+packages = ["src/support"]
 
 [build-system]
 requires = ["hatchling"]

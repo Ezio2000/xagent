@@ -113,7 +113,7 @@ class RecordingToolRegistry(ScriptedToolRegistry):
         return ToolObservation.text(call_id)
 
 
-class HarnessToolRegistry(ScriptedToolRegistry):
+class FixtureToolRegistry(ScriptedToolRegistry):
     """Registry double with reusable runtime-behavior tools by name."""
 
     _DEFAULT_TOOL_NAMES = ("echo",)
@@ -184,7 +184,7 @@ class HarnessToolRegistry(ScriptedToolRegistry):
                 ),
                 self._metadata,
             )
-        raise ValueError(f"unknown harness tool: {name}")
+        raise ValueError(f"unknown fixture tool: {name}")
 
     def _echo(self, call: ToolCall, context: RuntimeContext) -> ToolOutput:
         _ = context

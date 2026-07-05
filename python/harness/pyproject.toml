@@ -1,22 +1,16 @@
 [project]
 name = "harness"
 version = "0.1.0"
-description = "Controlled kernel assembly and scenario support"
+description = "Controlled kernel scenario assembly and observation"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "runtime contributors" }]
 dependencies = [
-  "diagnostics",
   "kernel",
-  "prompting",
-  "toolkit",
 ]
 
 [tool.uv.sources]
-diagnostics = { workspace = true }
 kernel = { workspace = true }
-prompting = { workspace = true }
-toolkit = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/harness"]

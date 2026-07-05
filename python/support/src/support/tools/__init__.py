@@ -1,12 +1,12 @@
 """Tool fixtures and registry doubles for controlled runtime scenarios."""
 
-from harness.tools.registry import (
-    HarnessToolRegistry,
+from support.tools.registry import (
+    FixtureToolRegistry,
     RecordingToolRegistry,
     ScriptedToolRegistry,
     ToolInvocationRecord,
 )
-from harness.tools.toolkit_fixtures import (
+from support.tools.toolkit_fixtures import (
     AcceptFixtureTool,
     AcceptingWebSearchTool,
     CustomHandoffTool,
@@ -34,7 +34,7 @@ __all__ = [
     "FailingCustomHandoffTool",
     "FailingFixtureTool",
     "HandoffFixtureTool",
-    "HarnessToolRegistry",
+    "FixtureToolRegistry",
     "ParallelWaitFixtureTool",
     "ProgressFixtureTool",
     "RecordingToolRegistry",

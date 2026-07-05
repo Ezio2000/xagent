@@ -1,19 +1,19 @@
 """Runtime environment ports and policies for controlled runtime scenarios."""
 
-from harness.environment.approvals import (
+from support.environment.approvals import (
     ApprovalPolicyByCall,
     FailingApprovalPolicy,
     SequencedApprovalPolicy,
     StaticApprovalPolicy,
 )
-from harness.environment.hooks import RetryModelErrorHook
-from harness.environment.journals import (
+from support.environment.hooks import RetryModelErrorHook
+from support.environment.journals import (
     FailingCheckpointJournal,
     MemoryRunJournal,
     SlowRunJournal,
     TimelineRunJournal,
 )
-from harness.environment.stores import (
+from support.environment.stores import (
     FailingRunStore,
     FailingSecondCheckpointStore,
     MemoryRunStore,

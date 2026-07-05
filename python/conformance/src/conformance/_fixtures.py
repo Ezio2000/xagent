@@ -5,16 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
-from harness import (
-    ControlledModelDriver,
-    ControlledStreamingModelDriver,
-    ModelStep,
-    ModelStreamAction,
-    ModelStreamPause,
-    ModelStreamSleep,
-    RetryModelErrorHook,
-    apply_pause_request,
-)
 from kernel import (
     AgentEvent,
     AgentStatus,
@@ -41,6 +31,16 @@ from kernel import (
     RuntimeHook,
     ToolCall,
     ToolOutput,
+)
+from support import (
+    ControlledModelDriver,
+    ControlledStreamingModelDriver,
+    ModelStep,
+    ModelStreamAction,
+    ModelStreamPause,
+    ModelStreamSleep,
+    RetryModelErrorHook,
+    apply_pause_request,
 )
 from toolkit import (
     RuntimeContextSnapshot,

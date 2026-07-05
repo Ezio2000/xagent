@@ -9,6 +9,7 @@ dependencies = [
   "kernel",
   "modelkit",
   "prompting",
+  "support",
   "toolkit",
 ]
 
@@ -27,6 +28,7 @@ harness = { workspace = true }
 kernel = { workspace = true }
 modelkit = { workspace = true }
 prompting = { workspace = true }
+support = { workspace = true }
 toolkit = { workspace = true }
 
 [tool.uv.workspace]

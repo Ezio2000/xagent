@@ -2,17 +2,6 @@ from __future__ import annotations
 
 import pytest
 from harness import (
-    ApprovalPolicyByCall,
-    FailingApprovalPolicy,
-    FailingCheckpointJournal,
-    FailingRunStore,
-    FailingSecondCheckpointStore,
-    MemoryRunJournal,
-    MemoryRunStore,
-    ScriptedModel,
-    SequencedApprovalPolicy,
-    StaticApprovalPolicy,
-    TimelineRunJournal,
     timeline_event_label,
 )
 from kernel import (
@@ -28,6 +17,19 @@ from kernel import (
     RuntimeContext,
     ToolCall,
     ToolSpec,
+)
+from support import (
+    ApprovalPolicyByCall,
+    FailingApprovalPolicy,
+    FailingCheckpointJournal,
+    FailingRunStore,
+    FailingSecondCheckpointStore,
+    MemoryRunJournal,
+    MemoryRunStore,
+    ScriptedModel,
+    SequencedApprovalPolicy,
+    StaticApprovalPolicy,
+    TimelineRunJournal,
 )
 
 

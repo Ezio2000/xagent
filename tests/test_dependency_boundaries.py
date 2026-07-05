@@ -16,6 +16,7 @@ PACKAGE_IMPORTS = {
     "kernel",
     "modelkit",
     "prompting",
+    "support",
     "toolkit",
 }
 PROJECT_NAMES = {
@@ -25,6 +26,7 @@ PROJECT_NAMES = {
     "kernel": "kernel",
     "modelkit": "modelkit",
     "prompting": "prompting",
+    "support": "support",
     "toolkit": "toolkit",
 }
 RETIRED_PACKAGE_IMPORTS = {
@@ -49,11 +51,13 @@ RETIRED_PACKAGE_DIRS = {
 RETIRED_SOURCE_PATHS = (REPO_ROOT / "sdks",)
 FORBIDDEN_PROJECT_NAME_FRAGMENTS = ("xagent", "agent_", "agent-", "runtime_", "runtime-")
 HARNESS_LAYOUT_PACKAGES = {
+    "observation",
+    "scenarios",
+}
+SUPPORT_LAYOUT_PACKAGES = {
     "assertions",
     "drivers",
     "environment",
-    "observation",
-    "scenarios",
     "tools",
 }
 RETIRED_HARNESS_MODULES = {
@@ -68,26 +72,28 @@ RETIRED_HARNESS_MODULES = {
 ALLOWED_IMPORTS = {
     "kernel": set[str](),
     "diagnostics": {"kernel"},
-    "harness": {"diagnostics", "kernel", "prompting", "toolkit"},
+    "harness": {"kernel"},
     "modelkit": {"kernel"},
     "prompting": {"kernel"},
     "toolkit": {"kernel"},
-    "conformance": {"diagnostics", "harness", "kernel", "prompting", "toolkit"},
+    "support": {"diagnostics", "harness", "kernel", "prompting", "toolkit"},
+    "conformance": {"diagnostics", "kernel", "prompting", "support", "toolkit"},
 }
 EXPECTED_PROJECT_DEPENDENCIES = {
     "kernel": set[str](),
     "diagnostics": {"kernel"},
-    "harness": {"diagnostics", "kernel", "prompting", "toolkit"},
+    "harness": {"kernel"},
     "modelkit": {"kernel"},
     "prompting": {"kernel"},
     "toolkit": {"jsonschema", "kernel"},
+    "support": {"diagnostics", "harness", "kernel", "prompting", "toolkit"},
     "conformance": {
         "diagnostics",
-        "harness",
         "jsonschema",
         "kernel",
         "prompting",
         "referencing",
+        "support",
         "toolkit",
     },
 }
@@ -152,7 +158,7 @@ def test_python_package_set_is_explicit() -> None:
     assert existing == expected
 
 
-def test_harness_uses_layered_test_environment_layout() -> None:
+def test_harness_uses_assembly_and_observation_layout() -> None:
     harness_root = PACKAGE_ROOT / "harness" / "src" / "harness"
     missing: list[str] = []
     for package_name in sorted(HARNESS_LAYOUT_PACKAGES):
@@ -163,6 +169,19 @@ def test_harness_uses_layered_test_environment_layout() -> None:
         if not (package_dir / "__init__.py").is_file():
             missing.append(f"{package_name}/__init__.py")
     assert not missing, f"harness layout missing: {', '.join(missing)}"
+
+
+def test_support_uses_controlled_component_layout() -> None:
+    support_root = PACKAGE_ROOT / "support" / "src" / "support"
+    missing: list[str] = []
+    for package_name in sorted(SUPPORT_LAYOUT_PACKAGES):
+        package_dir = support_root / package_name
+        if not package_dir.is_dir():
+            missing.append(f"{package_name}/")
+            continue
+        if not (package_dir / "__init__.py").is_file():
+            missing.append(f"{package_name}/__init__.py")
+    assert not missing, f"support layout missing: {', '.join(missing)}"
 
 
 def test_harness_has_no_retired_flat_modules_or_names() -> None:
@@ -186,21 +205,32 @@ def test_harness_boundary_guide_exists() -> None:
     guide = REPO_ROOT / "docs" / "harness.md"
     text = guide.read_text()
     required = {
-        "`harness` is the controlled kernel assembly and scenario support package",
+        "`harness` is the thin controlled kernel scenario assembly and observation",
         "`scenarios`",
-        "`drivers`",
-        "`environment`",
-        "`tools`",
         "`observation`",
-        "`assertions`",
-        "`harness` may import public package roots",
-        "`diagnostics`",
+        "`support` may use `harness`",
     }
     missing = sorted(required - set(fragment for fragment in required if fragment in text))
     assert not missing, f"docs/harness.md missing boundary text: {missing}"
 
 
-def test_kernel_loop_tests_use_harness_runtime_doubles() -> None:
+def test_support_boundary_guide_exists() -> None:
+    guide = REPO_ROOT / "docs" / "support.md"
+    text = guide.read_text()
+    required = {
+        "`support` owns controlled runtime support components",
+        "`drivers`",
+        "`environment`",
+        "`tools`",
+        "`messages`",
+        "`assertions`",
+        "`support` may import public package roots",
+    }
+    missing = sorted(required - set(fragment for fragment in required if fragment in text))
+    assert not missing, f"docs/support.md missing boundary text: {missing}"
+
+
+def test_kernel_loop_tests_use_support_runtime_doubles() -> None:
     loop_tests = REPO_ROOT / "tests" / "test_kernel_loop_integration.py"
     text = loop_tests.read_text()
     forbidden = {
@@ -248,7 +278,7 @@ def test_kernel_loop_tests_use_harness_runtime_doubles() -> None:
         "def timeline_event_label",
     }
     remaining = sorted(name for name in forbidden if name in text)
-    assert not remaining, f"runtime doubles belong in harness: {remaining}"
+    assert not remaining, f"runtime support doubles belong in support: {remaining}"
 
 
 def test_conformance_standard_tools_are_owned_by_conformance() -> None:
@@ -256,7 +286,7 @@ def test_conformance_standard_tools_are_owned_by_conformance() -> None:
     standard_tools = conformance_root / "_standard_tools.py"
     assert standard_tools.is_file()
 
-    forbidden_harness_tool_imports = {
+    forbidden_support_tool_imports = {
         "AcceptTool",
         "DelayedEchoTool",
         "EchoTool",
@@ -269,13 +299,13 @@ def test_conformance_standard_tools_are_owned_by_conformance() -> None:
     }
     fixtures = conformance_root / "_fixtures.py"
     tree = ast.parse(fixtures.read_text(), filename=str(fixtures))
-    imported_from_harness: set[str] = set()
+    imported_from_support: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "harness":
-            imported_from_harness.update(alias.name for alias in node.names)
+        if isinstance(node, ast.ImportFrom) and node.module == "support":
+            imported_from_support.update(alias.name for alias in node.names)
 
-    leaked = sorted(imported_from_harness & forbidden_harness_tool_imports)
-    assert not leaked, f"conformance standard tools must not be imported from harness: {leaked}"
+    leaked = sorted(imported_from_support & forbidden_support_tool_imports)
+    assert not leaked, f"conformance standard tools must not be imported from support: {leaked}"
 
 
 def test_python_src_layout_matches_package_name() -> None:
@@ -336,15 +366,27 @@ def test_python_package_tests_follow_declared_boundaries() -> None:
     assert not violations, "\n".join(violations)
 
 
-def test_runtime_source_packages_do_not_import_harness() -> None:
-    runtime_packages = sorted(set(PACKAGE_IMPORTS) - {"conformance", "harness"})
+def test_runtime_source_packages_do_not_import_harness_or_support() -> None:
+    runtime_packages = sorted(set(PACKAGE_IMPORTS) - {"conformance", "harness", "support"})
     violations: list[str] = []
     for package_name in runtime_packages:
         src_dir = PACKAGE_ROOT / package_name / "src"
         for path in sorted(src_dir.rglob("*.py")):
-            imports = imported_packages(path, {"harness"})
+            imports = imported_packages(path, {"harness", "support"})
             if imports:
-                violations.append(f"{path.relative_to(REPO_ROOT)} imports kernel assembly package")
+                violations.append(
+                    f"{path.relative_to(REPO_ROOT)} imports higher-level support package(s): "
+                    f"{', '.join(sorted(imports))}"
+                )
+    assert not violations, "\n".join(violations)
+
+
+def test_harness_does_not_import_support() -> None:
+    violations: list[str] = []
+    for path in sorted((PACKAGE_ROOT / "harness" / "src").rglob("*.py")):
+        imports = imported_packages(path, {"support"})
+        if imports:
+            violations.append(f"{path.relative_to(REPO_ROOT)} imports support")
     assert not violations, "\n".join(violations)
 
 

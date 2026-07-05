@@ -29,8 +29,9 @@ Sibling Python packages own the parts that should be independently importable:
 | `prompting` | Prompt/message construction conveniences such as `user_text(...)`. | `kernel` |
 | `modelkit` | Model adapter helper facade that re-exports kernel stream accumulation and capability discovery helpers for adapter packages. | `kernel` |
 | `diagnostics` | Public `RunTrace`, trace construction from events, and deterministic replay validation. | `kernel` |
-| `harness` | Controlled kernel assembly and scenario support for composing repeatable runtime scenarios: thin scenario builders, model drivers, runtime port implementations and fakes, tool registries and fixtures, message fixtures, event/timeline/trace observation, and behavior assertions. | `kernel`, `toolkit`, `prompting`, `diagnostics` |
-| `conformance` | Cross-SDK fixture runner and schema validation CLI. | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness` |
+| `harness` | Thin controlled kernel scenario assembly and event/timeline observation helpers. | `kernel` |
+| `support` | Controlled runtime support components: model drivers, runtime port fakes, tool fixtures and registry doubles, message fixtures, and behavior assertions. | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness` |
+| `conformance` | Cross-SDK fixture runner and schema validation CLI. | `kernel`, `toolkit`, `prompting`, `diagnostics`, `support` |
 
 Host applications own:
 
@@ -85,15 +86,20 @@ JSON Schema validation is not a `kernel` dependency. The kernel calls
 Custom registries must enforce equivalent portable validation if they are used
 as production registries.
 
-`harness` provides controlled kernel assembly and scenario support around the
-Python runtime workspace. It assembles `kernel.AgentLoop` with deterministic
-drivers, runtime port implementations and fakes, tool fixtures and registries,
-message fixtures, observation helpers, and behavior assertions so runtime
-scenarios can be run and inspected repeatably. It may compose public APIs from
-`kernel`, `toolkit`, `prompting`, and `diagnostics`, but it must not own kernel
-runtime semantics, application-specific scenario semantics, JSON Schema
-validation rules, diagnostics replay implementation, provider adapters, or
-conformance fixture interpretation.
+`harness` provides thin controlled kernel scenario assembly and event
+observation around the Python runtime workspace. It assembles already-provided
+`kernel.AgentLoop` inputs and exposes event collection and timeline helpers. It
+must not own model drivers, runtime port fakes, tool fixtures, message
+fixtures, behavior assertions, kernel runtime semantics, application-specific
+scenario semantics, JSON Schema validation rules, diagnostics replay
+implementation, provider adapters, or conformance fixture interpretation.
+
+`support` owns controlled runtime support components used by tests, examples,
+and conformance runners: deterministic model drivers, runtime port fakes, tool
+fixtures and registry doubles, message fixtures, and behavior assertions. It may
+compose public APIs from `kernel`, `toolkit`, `prompting`, `diagnostics`, and
+`harness`, but it must not define runtime semantics, portable contracts,
+scenario assembly ownership, production infrastructure, or provider adapters.
 
 `RunTrace` is a public diagnostics concept, not a core import surface. The
 kernel records compact semantic steps internally and exposes `AgentResult.trace`

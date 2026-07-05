@@ -1,6 +1,6 @@
 """Deterministic drivers for controlled runtime scenarios."""
 
-from harness.drivers.actions import (
+from support.drivers.actions import (
     ControlledModelDriver,
     ControlledStreamingModelDriver,
     ModelStep,
@@ -9,7 +9,7 @@ from harness.drivers.actions import (
     ModelStreamSleep,
     apply_pause_request,
 )
-from harness.drivers.models import (
+from support.drivers.models import (
     AdapterTimeoutModel,
     CancellationConvertingModel,
     CancellationSwallowingModel,

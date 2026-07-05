@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
+from harness import timeline_event_label
 from kernel import EventTypes, JournalRecord
-
-from harness.observation.timeline import timeline_event_label
 
 
 class MemoryRunJournal:

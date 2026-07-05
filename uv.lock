@@ -10,6 +10,7 @@ members = [
     "kernel",
     "modelkit",
     "prompting",
+    "support",
     "toolkit",
     "workspace",
 ]
@@ -38,22 +39,22 @@ version = "0.1.0"
 source = { editable = "python/conformance" }
 dependencies = [
     { name = "diagnostics" },
-    { name = "harness" },
     { name = "jsonschema" },
     { name = "kernel" },
     { name = "prompting" },
     { name = "referencing" },
+    { name = "support" },
     { name = "toolkit" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "diagnostics", editable = "python/diagnostics" },
-    { name = "harness", editable = "python/harness" },
     { name = "jsonschema", specifier = ">=4.23.0" },
     { name = "kernel", editable = "python/kernel" },
     { name = "prompting", editable = "python/prompting" },
     { name = "referencing", specifier = ">=0.35.0" },
+    { name = "support", editable = "python/support" },
     { name = "toolkit", editable = "python/toolkit" },
 ]
 
@@ -73,19 +74,11 @@ name = "harness"
 version = "0.1.0"
 source = { editable = "python/harness" }
 dependencies = [
-    { name = "diagnostics" },
     { name = "kernel" },
-    { name = "prompting" },
-    { name = "toolkit" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "diagnostics", editable = "python/diagnostics" },
-    { name = "kernel", editable = "python/kernel" },
-    { name = "prompting", editable = "python/prompting" },
-    { name = "toolkit", editable = "python/toolkit" },
-]
+requires-dist = [{ name = "kernel", editable = "python/kernel" }]
 
 [[package]]
 name = "iniconfig"
@@ -391,6 +384,27 @@ wheels = [
 ]
 
 [[package]]
+name = "support"
+version = "0.1.0"
+source = { editable = "python/support" }
+dependencies = [
+    { name = "diagnostics" },
+    { name = "harness" },
+    { name = "kernel" },
+    { name = "prompting" },
+    { name = "toolkit" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "diagnostics", editable = "python/diagnostics" },
+    { name = "harness", editable = "python/harness" },
+    { name = "kernel", editable = "python/kernel" },
+    { name = "prompting", editable = "python/prompting" },
+    { name = "toolkit", editable = "python/toolkit" },
+]
+
+[[package]]
 name = "toolkit"
 version = "0.1.0"
 source = { editable = "python/toolkit" }
@@ -425,6 +439,7 @@ dependencies = [
     { name = "kernel" },
     { name = "modelkit" },
     { name = "prompting" },
+    { name = "support" },
     { name = "toolkit" },
 ]
 
@@ -445,6 +460,7 @@ requires-dist = [
     { name = "kernel", editable = "python/kernel" },
     { name = "modelkit", editable = "python/modelkit" },
     { name = "prompting", editable = "python/prompting" },
+    { name = "support", editable = "python/support" },
     { name = "toolkit", editable = "python/toolkit" },
 ]
 

@@ -8,13 +8,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from diagnostics import RunTrace, replay_trace
-from harness import (
-    FailingCheckpointJournal,
-    FailingRunStore,
-    MemoryRunJournal,
-    MemoryRunStore,
-    ModelStep,
-)
 from kernel import (
     AgentEvent,
     AgentLoop,
@@ -34,6 +27,13 @@ from kernel import (
     StoredCheckpoint,
 )
 from prompting import user_text
+from support import (
+    FailingCheckpointJournal,
+    FailingRunStore,
+    MemoryRunJournal,
+    MemoryRunStore,
+    ModelStep,
+)
 
 from conformance._case import (
     APPROVAL_DECISION_KEYS,
