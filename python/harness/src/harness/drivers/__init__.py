@@ -1,4 +1,4 @@
-"""Deterministic drivers for controlled runtime tests."""
+"""Deterministic drivers for controlled runtime scenarios."""
 
 from harness.drivers.actions import (
     ControlledModelDriver,

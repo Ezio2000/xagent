@@ -1,4 +1,4 @@
-"""Reusable runtime hooks for controlled runtime tests."""
+"""Reusable runtime hooks for controlled runtime scenarios."""
 
 from __future__ import annotations
 

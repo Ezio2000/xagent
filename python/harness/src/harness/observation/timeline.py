@@ -1,4 +1,4 @@
-"""Timeline labeling helpers for controlled runtime tests."""
+"""Timeline labeling helpers for controlled runtime scenarios."""
 
 from __future__ import annotations
 

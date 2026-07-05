@@ -1,4 +1,4 @@
-"""Event-stream drivers and collectors for runtime tests."""
+"""Event-stream drivers and collectors for runtime scenarios."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Action-aware model drivers for controlled runtime tests."""
+"""Action-aware model drivers for controlled runtime scenarios."""
 
 from __future__ import annotations
 

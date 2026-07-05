@@ -18,8 +18,9 @@ layout.
 The case files are the cross-SDK input, and `conformance/case.schema.json`
 defines their shared format. The Python runner is the reference implementation
 and reference fixture runner for current behavior. It may use the Python
-`harness` package as controlled test equipment, but the normative inputs are
-the fixtures, `conformance/case.schema.json`, `contracts/v0`, and this document.
+`harness` package for controlled kernel assembly and scenario support in
+deterministic runs, but the normative inputs are the fixtures,
+`conformance/case.schema.json`, `contracts/v0`, and this document.
 Other SDKs should implement their own runner against the same JSON fixtures
 instead of importing Python code or depending on Python object layouts.
 
@@ -35,8 +36,8 @@ A non-Python runner should provide the same deterministic fixture runner:
   `delayed_echo`, `wait`, `progress`, `parallel_wait`, and `strict_count`.
   The Python runner owns those portable tool behaviors in
   `python/conformance/src/conformance/_standard_tools.py`; harness tool
-  fixtures are separate test equipment and must not define conformance
-  semantics.
+  fixtures are separate runtime scenario components and must not define
+  conformance semantics.
 - Assert every `expected_*` field and every `forbidden_*` field present in the
   case. Absence of an expectation means the runner should not assert it.
 

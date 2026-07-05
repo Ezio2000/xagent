@@ -1,4 +1,4 @@
-"""Tool stubs and registry doubles for controlled runtime tests."""
+"""Tool fixtures and registry doubles for controlled runtime scenarios."""
 
 from harness.tools.registry import (
     HarnessToolRegistry,

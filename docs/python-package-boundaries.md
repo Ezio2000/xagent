@@ -11,12 +11,12 @@ namespace. Do not treat it as two kernels.
 
 | Package | Import Surface | Responsibility | Must Not Own |
 | --- | --- | --- | --- |
-| `kernel` | `import kernel` | Execution loop, scheduler, protocol/value types, state, snapshots, resume, limits, events, hooks, store/journal/approval ports, model protocol, tool call/spec/output contracts, tool registry port, canonical stream accumulation, capability normalization, and immutable trace payload emission. | Prompt engineering helpers, tool implementation protocols, default registries, concrete providers, replay tooling, public trace object helpers, test harnesses, UI, queues, deployment, or concrete stores. |
+| `kernel` | `import kernel` | Execution loop, scheduler, protocol/value types, state, snapshots, resume, limits, events, hooks, store/journal/approval ports, model protocol, tool call/spec/output contracts, tool registry port, canonical stream accumulation, capability normalization, and immutable trace payload emission. | Prompt engineering helpers, tool implementation protocols, default registries, concrete providers, replay tooling, public trace object helpers, kernel assembly scenarios, UI, queues, deployment, or concrete stores. |
 | `toolkit` | `import toolkit` | Tool implementation protocols, tool-facing invocation/context helpers, default tool registry, tool schema validation, and concrete invocation adapter from `Tool` protocols to `ToolOutput`. | Agent loop, state machine, model adapter code, conformance runner. |
 | `prompting` | `import prompting` | Message and prompt construction conveniences built on kernel message types. | Runtime state, scheduling, model/provider clients. |
 | `modelkit` | `import modelkit` | Model adapter helper facade re-exporting kernel stream accumulation and capability helper functions. | Runtime loop, tool execution, prompt helpers, independent copies of kernel model helper logic. |
 | `diagnostics` | `import diagnostics` | Public trace objects, trace-from-events helpers, deterministic replay validation, and diagnostics-only error types. | Running agents, invoking tools, provider adapters, persistence backends. |
-| `harness` | `import harness` | Workspace-level controlled test harness for exercising runtime packages in repeatable, observable scenarios: model drivers, fake runtime ports, tool stubs and registry doubles, message fixtures, event/timeline/trace observation, test scenario helpers, and behavior assertions. | Production runtime semantics, portable conformance contracts, examples, schema validation rules, diagnostics replay implementation, provider adapters, or app infrastructure. |
+| `harness` | `import harness` | Controlled kernel assembly and scenario support for composing `kernel` runtime scenarios: thin scenario builders, model drivers, runtime port implementations and fakes, tool registries and fixtures, message fixtures, event/timeline/trace observation, and behavior assertions. | Kernel runtime semantics, portable conformance contracts, application-specific scenario semantics, schema validation rules, diagnostics replay implementation, provider adapters, or app infrastructure. |
 | `conformance` | `uv run conformance ...` | Cross-SDK fixture runner and JSON Schema validation around `contracts/v0`. | Kernel internals or package-private APIs. |
 
 ## Dependency Rules
@@ -51,7 +51,7 @@ tests should prefer only that package's declared runtime dependencies.
 | Does it define canonical stream accumulation or inspect optional model capabilities used by the runtime? | `kernel` |
 | Does it expose adapter-friendly imports for kernel model helpers without adding behavior? | `modelkit` |
 | Does it inspect, replay, summarize, or validate traces after a run? | `diagnostics` |
-| Is it reusable test harness equipment for running runtime packages in controlled scenarios, such as model drivers, tool fixtures, message fixtures, stubs/fakes, synthetic runtime ports, test data or scenario helpers, event/timeline/trace observation, or behavior assertions? | `harness` |
+| Does it assemble `kernel` ports into repeatable runtime scenarios, or provide reusable controlled components for that assembly such as model drivers, tool fixtures, message fixtures, stubs/fakes, runtime port implementations, event/timeline/trace observation, or behavior assertions? | `harness` |
 | Is it portable behavior that every SDK should satisfy? | `contracts/v0` and `conformance/cases` |
 
 `modelkit` is intentionally a stable facade over selected kernel-owned model

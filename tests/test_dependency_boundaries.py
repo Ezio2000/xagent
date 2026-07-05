@@ -186,7 +186,7 @@ def test_harness_boundary_guide_exists() -> None:
     guide = REPO_ROOT / "docs" / "harness.md"
     text = guide.read_text()
     required = {
-        "`harness` is the controlled test environment for the Python runtime workspace",
+        "`harness` is the controlled kernel assembly and scenario support package",
         "`scenarios`",
         "`drivers`",
         "`environment`",
@@ -248,7 +248,7 @@ def test_kernel_loop_tests_use_harness_runtime_doubles() -> None:
         "def timeline_event_label",
     }
     remaining = sorted(name for name in forbidden if name in text)
-    assert not remaining, f"runtime test doubles belong in harness: {remaining}"
+    assert not remaining, f"runtime doubles belong in harness: {remaining}"
 
 
 def test_conformance_standard_tools_are_owned_by_conformance() -> None:
@@ -344,7 +344,7 @@ def test_runtime_source_packages_do_not_import_harness() -> None:
         for path in sorted(src_dir.rglob("*.py")):
             imports = imported_packages(path, {"harness"})
             if imports:
-                violations.append(f"{path.relative_to(REPO_ROOT)} imports test harness package")
+                violations.append(f"{path.relative_to(REPO_ROOT)} imports kernel assembly package")
     assert not violations, "\n".join(violations)
 
 

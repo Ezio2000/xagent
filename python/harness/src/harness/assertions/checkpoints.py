@@ -1,4 +1,4 @@
-"""Checkpoint assertions for controlled runtime tests."""
+"""Checkpoint assertions for controlled runtime scenarios."""
 
 from __future__ import annotations
 

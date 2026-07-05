@@ -1,4 +1,4 @@
-"""Reusable behavior assertions for controlled runtime tests."""
+"""Reusable behavior assertions for controlled runtime scenarios."""
 
 from harness.assertions.checkpoints import assert_checkpoint_statuses, checkpoint_statuses
 from harness.assertions.events import assert_event_type_order, assert_event_types

@@ -20,12 +20,11 @@ Python packages:
   accumulation and capability helper functions.
 - `diagnostics`: public trace objects, trace construction, and deterministic
   replay validation.
-- `harness`: the workspace-level controlled test harness for exercising runtime
-  packages in repeatable, observable scenarios. It provides model drivers, fake
-  runtime ports, tool stubs and registry doubles, message fixtures,
-  event/timeline/trace observation, test scenario helpers, and behavior
-  assertions without owning production runtime semantics or conformance
-  contracts.
+- `harness`: the controlled kernel assembly and scenario support package around
+  `kernel`. It provides thin scenario builders, model drivers, runtime port
+  implementations and fakes, tool registries and fixtures, message fixtures,
+  event/timeline/trace observation, and behavior assertions without owning
+  kernel runtime semantics or conformance contracts.
 - `conformance`: CLI and fixture runner for validating implementations against
   contracts and portable behavior fixtures.
 
@@ -34,8 +33,7 @@ Documentation index:
 - `contracts/v0/README.md`: cross-language contract map and schema `$id`
   policy.
 - `docs/architecture.md`: kernel architecture and package boundary.
-- `docs/harness.md`: workspace-level controlled test harness layers and package
-  boundary.
+- `docs/harness.md`: controlled kernel assembly and scenario support boundary.
 - `docs/python-package-boundaries.md`: Python package split, dependency rules,
   and placement checklist.
 - `docs/model-protocol.md`: model adapter protocol.
@@ -61,8 +59,9 @@ kernel ports such as `ModelClient`, `ToolRegistryProtocol`, `ApprovalPolicy`,
 `RunStore`, `RunJournal`, and `RuntimeHook`.
 
 Sibling helper packages may depend on `kernel`, but `kernel` must never import
-them. `harness` is test infrastructure and may compose `kernel`, `toolkit`,
-`prompting`, and `diagnostics` public APIs. `conformance` may depend on
+them. `harness` provides controlled kernel assembly and scenario support and
+may compose `kernel`, `toolkit`, `prompting`, and `diagnostics` public APIs.
+`conformance` may depend on
 `kernel`, `toolkit`, `prompting`, `diagnostics`, and `harness`, but none of
 those packages may import `conformance`.
 

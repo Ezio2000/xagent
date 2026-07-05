@@ -129,14 +129,15 @@ Prompt construction helpers such as `user_text`, `system_text`,
 `assistant_text`, `tool_text`, and `external_text` live in `prompting`. Kernel
 message types remain provider-neutral data structures.
 
-`harness` is the workspace-level controlled test environment, not merely a
-collection of mocks. Reusable model drivers, stubs and fakes, fake runtime
-ports, tool registry doubles, message fixtures, event/timeline/trace
-observation helpers, test scenario helpers, and behavior assertions live there,
-not in production runtime packages or `conformance`. It may compose public APIs
-from `kernel`, `toolkit`, `prompting`, and `diagnostics`, but it must not define
-production runtime semantics, portable conformance contracts, schema validation
-rules, or diagnostics replay implementation.
+`harness` is the workspace-level controlled kernel assembly and scenario
+support package, not merely a collection of mocks. Reusable thin scenario
+builders, model drivers, stubs and fakes, runtime port implementations, tool
+registry doubles, message fixtures, event/timeline/trace observation helpers,
+and behavior assertions live there, not in lower-level runtime packages or
+`conformance`. It may compose public APIs from `kernel`, `toolkit`,
+`prompting`, and `diagnostics`, but it must not define kernel runtime
+semantics, portable conformance contracts, schema validation rules, diagnostics
+replay implementation, or application-specific scenario semantics.
 
 `ModelProviderError` is the adapter-facing wrapper for structured provider
 failures. `ModelErrorInfo` is the serializable payload. This keeps provider

@@ -1,4 +1,4 @@
-"""Fake run stores for controlled runtime tests."""
+"""Run store implementations for controlled runtime scenarios."""
 
 from __future__ import annotations
 

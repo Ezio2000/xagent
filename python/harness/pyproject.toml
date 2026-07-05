@@ -1,7 +1,7 @@
 [project]
 name = "harness"
 version = "0.1.0"
-description = "Workspace-level controlled test harness for runtime scenarios"
+description = "Controlled kernel assembly and scenario support"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "runtime contributors" }]

@@ -1,4 +1,4 @@
-"""Trace assertions for controlled runtime tests."""
+"""Trace assertions for controlled runtime scenarios."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Scripted model drivers for controlled runtime tests."""
+"""Scripted model drivers for controlled runtime scenarios."""
 
 from __future__ import annotations
 

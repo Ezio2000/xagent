@@ -1,4 +1,4 @@
-"""Scripted approval policy doubles for runtime tests."""
+"""Scripted approval policy doubles for runtime scenarios."""
 
 from __future__ import annotations
 

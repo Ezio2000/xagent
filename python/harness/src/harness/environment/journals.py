@@ -1,4 +1,4 @@
-"""Fake run journals for controlled runtime tests."""
+"""Run journal implementations for controlled runtime scenarios."""
 
 from __future__ import annotations
 

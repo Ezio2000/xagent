@@ -1,4 +1,4 @@
-"""Scenario result containers for controlled runtime tests."""
+"""Scenario result containers for controlled runtime scenarios."""
 
 from __future__ import annotations
 

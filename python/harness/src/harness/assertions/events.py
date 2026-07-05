@@ -1,4 +1,4 @@
-"""Event assertions for controlled runtime tests."""
+"""Event assertions for controlled runtime scenarios."""
 
 from __future__ import annotations
 

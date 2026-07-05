@@ -1,4 +1,4 @@
-"""Toolkit-facing tool fixtures for controlled runtime tests."""
+"""Toolkit-facing tool fixtures for controlled runtime scenarios."""
 
 from __future__ import annotations
 

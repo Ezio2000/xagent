@@ -1,4 +1,4 @@
-"""Message fixtures for controlled runtime tests."""
+"""Message fixtures for controlled runtime scenarios."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""High-level scenario assembly for controlled runtime tests."""
+"""Thin kernel scenario assembly for controlled runtime scenarios."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tool registry doubles for controlled runtime tests."""
+"""Tool registry doubles for controlled runtime scenarios."""
 
 from __future__ import annotations
 

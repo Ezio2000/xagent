@@ -1,4 +1,4 @@
-"""Fake runtime environment ports and policies for controlled runtime tests."""
+"""Runtime environment ports and policies for controlled runtime scenarios."""
 
 from harness.environment.approvals import (
     ApprovalPolicyByCall,

@@ -13,7 +13,7 @@ kernel and are injected through its public ports.
 |---|---|---|
 | Contract map | `contracts/v0/README.md` | Cross-language wire shapes, semantic contract ownership, and schema `$id` policy. |
 | Architecture notes | `docs/architecture.md` | Kernel boundary and runtime architecture overview. |
-| Harness guide | `docs/harness.md` | Workspace-level controlled test harness layers and package boundary. |
+| Harness guide | `docs/harness.md` | Controlled kernel assembly and scenario support boundary. |
 | Model protocol | `docs/model-protocol.md` | Model adapter request/response rules. |
 | Tool protocol | `docs/tool-protocol.md` | Tool spec, invocation, approval risk, scheduling, and output rules. |
 | Event stream | `docs/event-stream.md` | Runtime event names, event ordering, and hook-emitted custom events. |
@@ -36,7 +36,7 @@ kernel and are injected through its public ports.
 | `python/prompting` | `prompting` | Prompt and message construction helpers built on kernel message types. |
 | `python/modelkit` | `modelkit` | Model adapter helper facade re-exporting kernel stream accumulation and capability normalization. |
 | `python/diagnostics` | `diagnostics` | Public trace objects, trace construction, and deterministic replay validation. |
-| `python/harness` | `harness` | Workspace-level controlled test harness: model drivers, fake runtime ports, tool stubs and registry doubles, message fixtures, event/timeline/trace observation, scenario helpers, and behavior assertions. |
+| `python/harness` | `harness` | Controlled kernel assembly and scenario support: thin runtime scenario builders, model drivers, runtime port implementations and fakes, tool registries and fixtures, message fixtures, event/timeline/trace observation, and behavior assertions. |
 | `python/conformance` | `conformance` | Python conformance CLI, case loader, fixture runner, validators, and assertions. |
 | `pyproject.toml` / `uv.lock` | none | Root uv workspace, dependency groups, lint, type-check, and test configuration. |
 
@@ -49,7 +49,7 @@ kernel and are injected through its public ports.
 | `prompting` | `kernel` | Runtime state, scheduling, model/provider clients |
 | `modelkit` | `kernel` | Runtime loop, tool execution, prompt helpers |
 | `diagnostics` | `kernel` | Running agents, invoking tools, provider adapters, persistence backends |
-| `harness` | `kernel`, `toolkit`, `prompting`, `diagnostics` | Production runtime semantics, portable conformance contracts, schema validation rules, provider adapters, or app infrastructure |
+| `harness` | `kernel`, `toolkit`, `prompting`, `diagnostics` | Kernel runtime semantics, portable conformance contracts, schema validation rules, provider adapters, or app infrastructure |
 | `conformance` | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness`, JSON Schema validation libraries | Being imported by runtime packages |
 
 Hard boundary rules:
@@ -58,8 +58,9 @@ Hard boundary rules:
   implementations depend on `kernel` and are injected through public ports.
 - Sibling helper packages may import `kernel`, but `kernel` must never import
   them.
-- `harness` is test infrastructure and may compose `kernel`, `toolkit`,
-  `prompting`, and `diagnostics` public APIs. Runtime source packages must not
+- `harness` provides controlled kernel assembly and scenario support. It may
+  compose `kernel`, `toolkit`, `prompting`, and `diagnostics` public APIs into
+  reusable runtime scenarios. Lower-level runtime source packages must not
   import `harness`.
 - `conformance` may import `kernel`, `toolkit`, `prompting`, `diagnostics`, and
   `harness`; runtime packages must never import `conformance`.

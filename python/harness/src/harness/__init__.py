@@ -1,4 +1,4 @@
-"""Workspace-level controlled test harness for runtime scenarios."""
+"""Controlled kernel assembly and scenario support APIs."""
 
 from harness.assertions import (
     assert_checkpoint_statuses,
