@@ -1,0 +1,358 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-runtime.local/conformance/case.schema.json",
+  "title": "Agent Runtime Conformance Case",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "case_type": {
+      "type": "string",
+      "enum": [
+        "run",
+        "resume",
+        "run_store_failure",
+        "run_journal_failure",
+        "run_store_journal",
+        "run_store_resume_journal",
+        "message_negative",
+        "model_response_negative"
+      ]
+    },
+    "limits": { "$ref": "#/$defs/limits" },
+    "pause_request": { "$ref": "#/$defs/pause_request" },
+    "pause_request_timing": { "type": "string", "enum": ["during_model_call", "stream_event"] },
+    "conversation_insert": { "$ref": "#/$defs/conversation_insert" },
+    "conversation_insert_timing": { "type": "string", "enum": ["during_model_call"] },
+    "model_steps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/model_step" }
+    },
+    "resume_model_steps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/model_step" }
+    },
+    "resume_append_messages": {
+      "type": "array",
+      "items": { "$ref": "https://agent-runtime.local/spec/v0/messages.schema.json" }
+    },
+    "resume_expected_pause": {
+      "$ref": "https://agent-runtime.local/spec/v0/resume-input.schema.json#/$defs/pause_selector"
+    },
+    "resume_checkpoint_status": { "$ref": "#/$defs/status" },
+    "resume_checkpoint_total_tool_calls": { "type": "integer", "minimum": 0 },
+    "retry_model_errors": { "type": "boolean" },
+    "approval_decisions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://agent-runtime.local/spec/v0/runtime-extensions.schema.json#/$defs/approval_decision"
+      }
+    },
+    "approval_metadata": { "type": "object" },
+    "expected_approval_requests": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/approval_request_expectation" }
+    },
+    "runtime_context": {
+      "$ref": "https://agent-runtime.local/spec/v0/runtime-context.schema.json"
+    },
+    "stream_model_steps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stream_step" }
+    },
+    "expected_status": { "$ref": "#/$defs/status" },
+    "expected_final_text": { "type": "string" },
+    "expected_final_part_types": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expected_final_parts": {
+      "type": "array",
+      "items": {
+        "$ref": "https://agent-runtime.local/spec/v0/messages.schema.json#/$defs/content_part"
+      }
+    },
+    "expected_tool_calls": { "type": "integer", "minimum": 0 },
+    "expected_resume_status": { "$ref": "#/$defs/status" },
+    "expected_resume_final_text": { "type": "string" },
+    "expected_resume_tool_calls": { "type": "integer", "minimum": 0 },
+    "expected_resume_message_roles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expected_resume_tool_texts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "expected_resume_error": { "type": "string", "minLength": 1 },
+    "expected_resume_trace_prefix": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expected_message_roles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expected_tool_texts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "expected_tool_text_contains": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "expected_pending_tool_call_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expected_pause": { "$ref": "#/$defs/expected_pause" },
+    "expected_tool_progress": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "expected_child_run": { "$ref": "#/$defs/expected_child_run" },
+    "expected_model_deltas": {
+      "type": "array",
+      "items": {
+        "$ref": "https://agent-runtime.local/spec/v0/events.schema.json#/$defs/model_delta_data"
+      }
+    },
+    "expected_event_types": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expected_trace_kinds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "forbidden_event_types": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "forbidden_journal_event_types": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "forbidden_checkpoint_statuses": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/status" }
+    },
+    "forbidden_checkpoint_tool_counts": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "forbidden_checkpoint_status_tool_counts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/status_tool_count" }
+    },
+    "forbidden_unpaused_checkpoint_tool_counts": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "forbidden_checkpoint_message_roles": {
+      "type": "array",
+      "items": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+    },
+    "message": {
+      "$ref": "https://agent-runtime.local/spec/v0/messages.schema.json"
+    },
+    "model_response": {
+      "$ref": "https://agent-runtime.local/spec/v0/model-response.schema.json"
+    },
+    "expected_error": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": ["planning", "executing_tools", "paused", "completed", "failed", "limit_exceeded"]
+    },
+    "resume_status": {
+      "type": "string",
+      "enum": ["planning", "executing_tools"]
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "max_iterations": { "type": "integer", "minimum": 1 },
+        "max_total_tool_calls": { "type": "integer", "minimum": 0 },
+        "timeout_seconds": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "stop_on_tool_error": { "type": "boolean" },
+        "max_parallel_tool_calls": { "type": "integer", "minimum": 1 },
+        "max_total_tokens": { "type": ["integer", "null"], "minimum": 0 },
+        "max_model_retries": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "pause_request": {
+      "type": "object",
+      "required": ["reason", "source", "wait_id", "metadata", "interrupt"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata": { "type": "object" },
+        "interrupt": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "conversation_insert": {
+      "type": "object",
+      "required": ["id", "source", "parts"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "https://agent-runtime.local/spec/v0/messages.schema.json#/$defs/content_part"
+          }
+        },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "model_step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["error"],
+          "properties": {
+            "error": {
+              "$ref": "https://agent-runtime.local/spec/v0/model-error.schema.json"
+            }
+          },
+          "additionalProperties": false
+        },
+        { "$ref": "https://agent-runtime.local/spec/v0/model-response.schema.json" }
+      ]
+    },
+    "stream_step": {
+      "type": "object",
+      "required": ["events"],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stream_event" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "stream_event": {
+      "oneOf": [
+        { "$ref": "#/$defs/text_delta_event" },
+        { "$ref": "#/$defs/reasoning_delta_event" },
+        { "$ref": "#/$defs/tool_call_delta_event" },
+        { "$ref": "#/$defs/usage_delta_event" },
+        { "$ref": "#/$defs/sleep_event" },
+        { "$ref": "#/$defs/pause_request_event" }
+      ]
+    },
+    "text_delta_event": {
+      "type": "object",
+      "required": ["type", "index", "text_delta", "part_type"],
+      "properties": {
+        "type": { "const": "text_delta" },
+        "index": { "type": "integer", "minimum": 0 },
+        "text_delta": { "type": "string" },
+        "part_type": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "reasoning_delta_event": {
+      "type": "object",
+      "required": ["type", "index", "text_delta"],
+      "properties": {
+        "type": { "const": "reasoning_delta" },
+        "index": { "type": "integer", "minimum": 0 },
+        "text_delta": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "tool_call_delta_event": {
+      "type": "object",
+      "required": ["type", "index"],
+      "properties": {
+        "type": { "const": "tool_call_delta" },
+        "index": { "type": "integer", "minimum": 0 },
+        "id": { "type": ["string", "null"], "minLength": 1 },
+        "name": { "type": ["string", "null"], "minLength": 1 },
+        "mode": { "type": ["string", "null"], "minLength": 1 },
+        "arguments_delta": { "type": ["string", "null"] },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "usage_delta_event": {
+      "type": "object",
+      "required": ["type", "usage"],
+      "properties": {
+        "type": { "const": "usage_delta" },
+        "usage": {
+          "$ref": "https://agent-runtime.local/spec/v0/events.schema.json#/$defs/usage_delta/properties/usage"
+        },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "sleep_event": {
+      "type": "object",
+      "required": ["type", "seconds"],
+      "properties": {
+        "type": { "const": "sleep" },
+        "seconds": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "pause_request_event": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "pause_request" }
+      },
+      "additionalProperties": false
+    },
+    "expected_pause": {
+      "type": "object",
+      "required": ["reason", "resume_status", "source", "wait_id", "metadata"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "resume_status": { "$ref": "#/$defs/resume_status" },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "expected_child_run": {
+      "type": "object",
+      "required": ["parent_run_id"],
+      "properties": {
+        "parent_run_id": { "type": "string", "minLength": 1 },
+        "parent_tool_call_id": { "type": "string", "minLength": 1 },
+        "run_kind": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "approval_request_expectation": {
+      "type": "object",
+      "properties": {
+        "risk": { "type": "object" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "status_tool_count": {
+      "type": "object",
+      "required": ["status", "total_tool_calls"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "total_tool_calls": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

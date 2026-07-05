@@ -79,7 +79,10 @@
         },
         "text": { "type": "string" },
         "uri": { "type": "string" },
-        "ref": { "type": "string" },
+        "ref": {
+          "type": "string",
+          "description": "For artifact content parts, this value must match data.artifact.ref."
+        },
         "media_type": { "type": "string" },
         "name": { "type": "string" },
         "data": { "type": "object" },
@@ -99,6 +102,7 @@
             "required": ["type"]
           },
           "then": {
+            "$comment": "Portable semantic invariant: the outer content part ref must equal data.artifact.ref. Draft 2020-12 JSON Schema cannot express that equality portably, so SDK validators must enforce it.",
             "required": ["ref", "data"],
             "properties": {
               "data": {

@@ -101,13 +101,12 @@ def test_model_error_info_matches_schema() -> None:
     assert ModelErrorInfo.from_dict(payload).to_dict() == payload
 
 
-def test_model_error_info_schema_accepts_explicit_null_optional_scalars() -> None:
+def test_model_error_info_schema_accepts_explicit_null_optional_scalars_except_retryable() -> None:
     payload = {
         "message": "failed",
         "provider": None,
         "code": None,
         "status_code": None,
-        "retryable": None,
         "request_id": None,
     }
 
@@ -116,3 +115,8 @@ def test_model_error_info_schema_accepts_explicit_null_optional_scalars() -> Non
         "message": "failed",
         "retryable": False,
     }
+
+    invalid_payload = dict(payload, retryable=None)
+    assert list(MODEL_ERROR_SCHEMA_VALIDATOR.iter_errors(invalid_payload))
+    with pytest.raises(TypeError, match="retryable"):
+        ModelErrorInfo.from_dict(invalid_payload)

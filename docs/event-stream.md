@@ -3,7 +3,7 @@
 The SDK emits neutral runtime events. Applications can adapt these events to
 SSE, WebSocket, logs, CLI output, or tests.
 
-Known v0.1 event types:
+Known v0 event types:
 
 - `run_started`
 - `state_changed`

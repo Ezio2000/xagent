@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 from typing import cast
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "python"
 
 PACKAGE_IMPORTS = {
@@ -48,24 +48,48 @@ RETIRED_PACKAGE_DIRS = {
 }
 RETIRED_SOURCE_PATHS = (REPO_ROOT / "sdks",)
 FORBIDDEN_PROJECT_NAME_FRAGMENTS = ("xagent", "agent_", "agent-", "runtime_", "runtime-")
+HARNESS_LAYOUT_PACKAGES = {
+    "assertions",
+    "drivers",
+    "environment",
+    "observation",
+    "scenarios",
+    "tools",
+}
+RETIRED_HARNESS_MODULES = {
+    "approval.py",
+    "events.py",
+    "model.py",
+    "models.py",
+    "ports.py",
+    "tools.py",
+}
 
 ALLOWED_IMPORTS = {
     "kernel": set[str](),
     "diagnostics": {"kernel"},
-    "harness": {"kernel"},
+    "harness": {"diagnostics", "kernel", "prompting", "toolkit"},
     "modelkit": {"kernel"},
     "prompting": {"kernel"},
     "toolkit": {"kernel"},
-    "conformance": {"diagnostics", "kernel", "prompting", "toolkit"},
+    "conformance": {"diagnostics", "harness", "kernel", "prompting", "toolkit"},
 }
 EXPECTED_PROJECT_DEPENDENCIES = {
     "kernel": set[str](),
     "diagnostics": {"kernel"},
-    "harness": {"kernel"},
+    "harness": {"diagnostics", "kernel", "prompting", "toolkit"},
     "modelkit": {"kernel"},
     "prompting": {"kernel"},
     "toolkit": {"jsonschema", "kernel"},
-    "conformance": {"diagnostics", "jsonschema", "kernel", "prompting", "referencing", "toolkit"},
+    "conformance": {
+        "diagnostics",
+        "harness",
+        "jsonschema",
+        "kernel",
+        "prompting",
+        "referencing",
+        "toolkit",
+    },
 }
 
 
@@ -128,6 +152,132 @@ def test_python_package_set_is_explicit() -> None:
     assert existing == expected
 
 
+def test_harness_uses_layered_test_environment_layout() -> None:
+    harness_root = PACKAGE_ROOT / "harness" / "src" / "harness"
+    missing: list[str] = []
+    for package_name in sorted(HARNESS_LAYOUT_PACKAGES):
+        package_dir = harness_root / package_name
+        if not package_dir.is_dir():
+            missing.append(f"{package_name}/")
+            continue
+        if not (package_dir / "__init__.py").is_file():
+            missing.append(f"{package_name}/__init__.py")
+    assert not missing, f"harness layout missing: {', '.join(missing)}"
+
+
+def test_harness_has_no_retired_flat_modules_or_names() -> None:
+    harness_root = PACKAGE_ROOT / "harness" / "src" / "harness"
+    remaining_modules = sorted(
+        path.name for path in harness_root.iterdir() if path.name in RETIRED_HARNESS_MODULES
+    )
+    violations = [f"retired flat module remains: {name}" for name in remaining_modules]
+
+    for path in sorted(harness_root.rglob("*.py")):
+        text = path.read_text()
+        if "RuntimeToolRegistry" in text:
+            violations.append(
+                f"{path.relative_to(REPO_ROOT)} uses retired name RuntimeToolRegistry"
+            )
+
+    assert not violations, "\n".join(violations)
+
+
+def test_harness_boundary_guide_exists() -> None:
+    guide = REPO_ROOT / "docs" / "harness.md"
+    text = guide.read_text()
+    required = {
+        "`harness` is the controlled test environment for the Python runtime workspace",
+        "`scenarios`",
+        "`drivers`",
+        "`environment`",
+        "`tools`",
+        "`observation`",
+        "`assertions`",
+        "`harness` may import public package roots",
+        "`diagnostics`",
+    }
+    missing = sorted(required - set(fragment for fragment in required if fragment in text))
+    assert not missing, f"docs/harness.md missing boundary text: {missing}"
+
+
+def test_kernel_loop_tests_use_harness_runtime_doubles() -> None:
+    loop_tests = REPO_ROOT / "tests" / "test_kernel_loop_integration.py"
+    text = loop_tests.read_text()
+    forbidden = {
+        "class AdapterTimeoutModel",
+        "class CancellationConvertingModel",
+        "class CancellationSwallowingModel",
+        "class CancellationSwallowingThenFailingModel",
+        "class CloseTrackingStreamingModel",
+        "class ContextInspectingModel",
+        "class CustomHandoffTool",
+        "class EchoTool",
+        "class ExternallyCancelledModel",
+        "class FailingAcceptTool",
+        "class FailingCustomHandoffTool",
+        "class FailTool",
+        "class MemoryRunStore",
+        "class FailingRunStore",
+        "class FailingSecondCheckpointStore",
+        "class SlowRunStore",
+        "class MemoryRunJournal",
+        "class TimelineRunJournal",
+        "class FailingCheckpointJournal",
+        "class SlowRunJournal",
+        "class StaticApprovalPolicy",
+        "class ApprovalPolicyByCall",
+        "class SequencedApprovalPolicy",
+        "class FailingApprovalPolicy",
+        "class FastStreamingModel",
+        "class FlakyProviderErrorModel",
+        "class MetadataTool",
+        "class ParallelWaitingTool",
+        "class ProviderErrorModel",
+        "class RejectingWebSearchTool",
+        "class RequestCapturingModel",
+        "class SlowModel",
+        "class SlowTool",
+        "class SlowStreamingModel",
+        "class StreamingProviderErrorModel",
+        "class StreamingTextModel",
+        "class StreamingToolModel",
+        "class StreamingToolThenSlowModel",
+        "class StrictCountTool",
+        "class StrictCustomHandoffTool",
+        "class WaitingTool",
+        "def timeline_event_label",
+    }
+    remaining = sorted(name for name in forbidden if name in text)
+    assert not remaining, f"runtime test doubles belong in harness: {remaining}"
+
+
+def test_conformance_standard_tools_are_owned_by_conformance() -> None:
+    conformance_root = PACKAGE_ROOT / "conformance" / "src" / "conformance"
+    standard_tools = conformance_root / "_standard_tools.py"
+    assert standard_tools.is_file()
+
+    forbidden_harness_tool_imports = {
+        "AcceptTool",
+        "DelayedEchoTool",
+        "EchoTool",
+        "FailTool",
+        "HandoffTool",
+        "ParallelWaitTool",
+        "ProgressTool",
+        "StrictCountTool",
+        "WaitTool",
+    }
+    fixtures = conformance_root / "_fixtures.py"
+    tree = ast.parse(fixtures.read_text(), filename=str(fixtures))
+    imported_from_harness: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "harness":
+            imported_from_harness.update(alias.name for alias in node.names)
+
+    leaked = sorted(imported_from_harness & forbidden_harness_tool_imports)
+    assert not leaked, f"conformance standard tools must not be imported from harness: {leaked}"
+
+
 def test_python_src_layout_matches_package_name() -> None:
     for package_dir in sorted(PACKAGE_ROOT.iterdir()):
         if not package_dir.is_dir():
@@ -162,6 +312,39 @@ def test_python_package_dependencies_follow_declared_boundaries() -> None:
                     f"{path.relative_to(REPO_ROOT)} imports forbidden package(s): "
                     f"{', '.join(sorted(forbidden))}"
                 )
+    assert not violations, "\n".join(violations)
+
+
+def test_python_package_tests_follow_declared_boundaries() -> None:
+    violations: list[str] = []
+    for package_dir in sorted(PACKAGE_ROOT.iterdir()):
+        if not package_dir.is_dir():
+            continue
+        package_name = package_dir.name
+        allowed = ALLOWED_IMPORTS[package_name] | {package_name}
+        tests_dir = package_dir / "tests"
+        if not tests_dir.is_dir():
+            continue
+        for path in sorted(tests_dir.rglob("*.py")):
+            imports = imported_packages(path, PACKAGE_IMPORTS)
+            forbidden = imports - allowed
+            if forbidden:
+                violations.append(
+                    f"{path.relative_to(REPO_ROOT)} imports test-only forbidden package(s): "
+                    f"{', '.join(sorted(forbidden))}"
+                )
+    assert not violations, "\n".join(violations)
+
+
+def test_runtime_source_packages_do_not_import_harness() -> None:
+    runtime_packages = sorted(set(PACKAGE_IMPORTS) - {"conformance", "harness"})
+    violations: list[str] = []
+    for package_name in runtime_packages:
+        src_dir = PACKAGE_ROOT / package_name / "src"
+        for path in sorted(src_dir.rglob("*.py")):
+            imports = imported_packages(path, {"harness"})
+            if imports:
+                violations.append(f"{path.relative_to(REPO_ROOT)} imports test harness package")
     assert not violations, "\n".join(violations)
 
 
@@ -230,13 +413,6 @@ def test_project_names_do_not_use_retired_prefixes() -> None:
                 f"{', '.join(forbidden)}"
             )
     assert not violations, "\n".join(violations)
-
-
-def test_kernel_and_diagnostics_frozen_helpers_stay_identical() -> None:
-    kernel_helper = PACKAGE_ROOT / "kernel" / "src" / "kernel" / "_frozen.py"
-    diagnostics_helper = PACKAGE_ROOT / "diagnostics" / "src" / "diagnostics" / "_frozen.py"
-
-    assert kernel_helper.read_bytes() == diagnostics_helper.read_bytes()
 
 
 def dependency_name(dependency: str) -> str:

@@ -16,12 +16,17 @@ Python packages:
   invocation glue built on kernel protocols.
 - `prompting`: prompt and message construction helpers built on kernel message
   types.
-- `modelkit`: model adapter helpers such as stream accumulation and capability
-  normalization.
+- `modelkit`: model adapter helper facade re-exporting kernel stream
+  accumulation and capability helper functions.
 - `diagnostics`: public trace objects, trace construction, and deterministic
   replay validation.
-- `harness`: reusable test harness helpers.
-- `conformance`: CLI and harness for validating implementations against
+- `harness`: the workspace-level controlled test harness for exercising runtime
+  packages in repeatable, observable scenarios. It provides model drivers, fake
+  runtime ports, tool stubs and registry doubles, message fixtures,
+  event/timeline/trace observation, test scenario helpers, and behavior
+  assertions without owning production runtime semantics or conformance
+  contracts.
+- `conformance`: CLI and fixture runner for validating implementations against
   contracts and portable behavior fixtures.
 
 Documentation index:
@@ -29,6 +34,8 @@ Documentation index:
 - `contracts/v0/README.md`: cross-language contract map and schema `$id`
   policy.
 - `docs/architecture.md`: kernel architecture and package boundary.
+- `docs/harness.md`: workspace-level controlled test harness layers and package
+  boundary.
 - `docs/python-package-boundaries.md`: Python package split, dependency rules,
   and placement checklist.
 - `docs/model-protocol.md`: model adapter protocol.
@@ -36,6 +43,7 @@ Documentation index:
 - `docs/event-stream.md`: runtime event stream and hook-emitted custom events.
 - `docs/state-machine.md`: status transitions, checkpoints, pause, and resume.
 - `docs/public-api-audit.md`: Python public API naming and export decisions.
+- `conformance/case.schema.json`: portable JSON conformance fixture format.
 - `conformance/README.md`: shared conformance case format and runner contract.
 
 Retired runtime packages and imports are not allowed back: `agent_runtime`,
@@ -53,8 +61,10 @@ kernel ports such as `ModelClient`, `ToolRegistryProtocol`, `ApprovalPolicy`,
 `RunStore`, `RunJournal`, and `RuntimeHook`.
 
 Sibling helper packages may depend on `kernel`, but `kernel` must never import
-them. `conformance` may depend on `kernel`, `toolkit`, `prompting`, and
-`diagnostics`, but none of those packages may import `conformance`.
+them. `harness` is test infrastructure and may compose `kernel`, `toolkit`,
+`prompting`, and `diagnostics` public APIs. `conformance` may depend on
+`kernel`, `toolkit`, `prompting`, `diagnostics`, and `harness`, but none of
+those packages may import `conformance`.
 
 Project and package names must not use retired fragments: `xagent`, `agent_`,
 `agent-`, `runtime_`, or `runtime-`. The current Python package names are

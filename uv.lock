@@ -38,6 +38,7 @@ version = "0.1.0"
 source = { editable = "python/conformance" }
 dependencies = [
     { name = "diagnostics" },
+    { name = "harness" },
     { name = "jsonschema" },
     { name = "kernel" },
     { name = "prompting" },
@@ -48,6 +49,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "diagnostics", editable = "python/diagnostics" },
+    { name = "harness", editable = "python/harness" },
     { name = "jsonschema", specifier = ">=4.23.0" },
     { name = "kernel", editable = "python/kernel" },
     { name = "prompting", editable = "python/prompting" },
@@ -71,11 +73,19 @@ name = "harness"
 version = "0.1.0"
 source = { editable = "python/harness" }
 dependencies = [
+    { name = "diagnostics" },
     { name = "kernel" },
+    { name = "prompting" },
+    { name = "toolkit" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "kernel", editable = "python/kernel" }]
+requires-dist = [
+    { name = "diagnostics", editable = "python/diagnostics" },
+    { name = "kernel", editable = "python/kernel" },
+    { name = "prompting", editable = "python/prompting" },
+    { name = "toolkit", editable = "python/toolkit" },
+]
 
 [[package]]
 name = "iniconfig"

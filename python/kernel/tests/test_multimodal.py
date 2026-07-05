@@ -1,21 +1,30 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 import pytest
 from kernel import (
     AgentLoop,
     ContentPart,
+    InvalidToolCall,
     Message,
     ModelRequest,
     ModelResponse,
     RuntimeContext,
     ToolCall,
     ToolObservation,
+    ToolOutput,
     ToolSpec,
 )
-from prompting import assistant_text, user_text
-from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
+
+
+def user_text(text: str) -> Message:
+    return Message.user([ContentPart.text_part(text)])
+
+
+def assistant_text(text: str) -> Message:
+    return Message.assistant([ContentPart.text_part(text)])
 
 
 class InspectingModel:
@@ -43,17 +52,34 @@ class InspectingModel:
         )
 
 
-class FileTool:
-    spec = ToolSpec(
+class FileRegistry:
+    _spec = ToolSpec(
         name="make_file",
         description="Return a generated file artifact.",
         input_schema={"type": "object", "properties": {}},
     )
 
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = invocation, context
+    def specs(self) -> tuple[ToolSpec, ...]:
+        return (ToolSpec.from_dict(self._spec.to_dict()),)
+
+    def spec_for(self, name: str) -> ToolSpec | None:
+        if name != "make_file":
+            return None
+        return ToolSpec.from_dict(self._spec.to_dict())
+
+    def validate_call(self, call: ToolCall) -> None:
+        if call.name != "make_file":
+            raise InvalidToolCall(f"unknown tool: {call.name}")
+
+    async def invoke(
+        self,
+        call: ToolCall,
+        context: RuntimeContext,
+        *,
+        progress_emitter: Callable[[Mapping[str, Any]], None] | None = None,
+        cancel_checker: Callable[[], bool] | None = None,
+    ) -> ToolOutput:
+        _ = call, context, progress_emitter, cancel_checker
         return ToolObservation(
             parts=[
                 ContentPart.text_part("created"),
@@ -65,7 +91,7 @@ class FileTool:
 @pytest.mark.asyncio
 async def test_multimodal_user_message_and_file_result() -> None:
     model = InspectingModel()
-    result = await AgentLoop(model=model, tools=ToolRegistry([FileTool()])).run(
+    result = await AgentLoop(model=model, tools=FileRegistry()).run(
         [
             Message.user(
                 [

@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any, cast
 
 from diagnostics import RunTrace, replay_trace
+from harness import (
+    FailingCheckpointJournal,
+    FailingRunStore,
+    MemoryRunJournal,
+    MemoryRunStore,
+    ModelStep,
+)
 from kernel import (
     AgentEvent,
     AgentLoop,
@@ -36,7 +43,7 @@ from conformance._case import (
     MODEL_STEP_KEYS,
     MODEL_STEP_RESPONSE_KEYS,
     NEGATIVE_CASE_TYPES,
-    STREAM_EVENT_KEYS,
+    STREAM_EVENT_KEYS_BY_TYPE,
     STREAM_EVENT_REQUIRED_KEYS,
     STREAM_STEP_KEYS,
     check,
@@ -51,11 +58,6 @@ from conformance._case import (
     reject_unknown_keys,
 )
 from conformance._fixtures import (
-    CapturingRunJournal,
-    CapturingRunStore,
-    FailingCheckpointJournal,
-    FailingCheckpointStore,
-    ModelStep,
     approval_metadata_from_case,
     approval_policy_from_case,
     case_tools,
@@ -71,6 +73,7 @@ from conformance._fixtures import (
 )
 from conformance._schemas import (
     assert_validator_matches,
+    build_case_validator,
     build_validators,
     load_json_object,
 )
@@ -87,10 +90,26 @@ class ConformanceCaseResult:
 class ConformanceRunner:
     """Load and execute shared conformance cases."""
 
-    def __init__(self, *, cases_dir: Path, spec_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        cases_dir: Path,
+        spec_dir: Path,
+        case_schema_path: Path | None = None,
+    ) -> None:
         self.cases_dir = cases_dir
         self.spec_dir = spec_dir
+        self.case_schema_path = case_schema_path or self._infer_case_schema_path(
+            cases_dir, spec_dir
+        )
         self.validators = build_validators(spec_dir)
+        self.case_validator: Any = build_case_validator(spec_dir, self.case_schema_path)
+
+    @staticmethod
+    def _infer_case_schema_path(cases_dir: Path, spec_dir: Path) -> Path:
+        if cases_dir.name == "cases" and cases_dir.parent.name == "conformance":
+            return cases_dir.parent / "case.schema.json"
+        return spec_dir.parent.parent / "conformance" / "case.schema.json"
 
     def load_cases(self) -> list[dict[str, Any]]:
         if not self.cases_dir.is_dir():
@@ -102,6 +121,7 @@ class ConformanceRunner:
         for path in paths:
             case = load_json_object(path, "conformance case")
             try:
+                self.assert_matches_schema(str(path), self.case_validator, case)
                 self.validate_case_keys(str(path), case)
             except Exception as exc:
                 raise ValueError(f"{path}: invalid conformance case: {exc}") from exc
@@ -323,11 +343,13 @@ class ConformanceRunner:
                     not isinstance(limits[key], int) or isinstance(limits[key], bool)
                 ):
                     raise TypeError(f"{name}.limits.{key} must be an integer")
-            if "timeout_seconds" in limits and (
-                not isinstance(limits["timeout_seconds"], int | float)
-                or isinstance(limits["timeout_seconds"], bool)
-            ):
-                raise TypeError(f"{name}.limits.timeout_seconds must be a number")
+            if "timeout_seconds" in limits:
+                timeout_seconds = limits["timeout_seconds"]
+                if timeout_seconds is not None and (
+                    not isinstance(timeout_seconds, int | float)
+                    or isinstance(timeout_seconds, bool)
+                ):
+                    raise TypeError(f"{name}.limits.timeout_seconds must be a number or null")
             if "stop_on_tool_error" in limits and not isinstance(
                 limits["stop_on_tool_error"], bool
             ):
@@ -478,10 +500,13 @@ class ConformanceRunner:
         self, name: str, step_index: int, event_index: int, event: dict[str, Any]
     ) -> None:
         label = f"{name}.stream_model_steps[{step_index}].events[{event_index}]"
-        reject_unknown_keys(set(event), STREAM_EVENT_KEYS, label)
         if "type" not in event:
             raise KeyError(f"{label} missing required key: type")
         event_type = expect_case_str(event["type"], f"{name}.stream_model_steps event type")
+        allowed = STREAM_EVENT_KEYS_BY_TYPE.get(event_type)
+        if allowed is None:
+            raise ValueError(f"{label} has invalid type: {event_type}")
+        reject_unknown_keys(set(event), allowed, label)
         required = STREAM_EVENT_REQUIRED_KEYS.get(event_type)
         if required is None:
             raise ValueError(f"{label} has invalid type: {event_type}")
@@ -498,6 +523,8 @@ class ConformanceRunner:
             expect_case_number(event["seconds"], f"{label}.seconds")
         if "metadata" in event:
             expect_case_mapping(event["metadata"], f"{label}.metadata")
+        if "usage" in event:
+            expect_case_mapping(event["usage"], f"{label}.usage")
         for optional_key in ("id", "name", "mode", "arguments_delta"):
             if optional_key in event:
                 expect_case_optional_str(event[optional_key], f"{label}.{optional_key}")
@@ -622,7 +649,7 @@ class ConformanceRunner:
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         controller = controller_from_case(case)
         model = model_from_case(case, steps, stream_steps, controller, self.validators)
-        journal = CapturingRunJournal()
+        journal = MemoryRunJournal()
         events: list[AgentEvent] = []
         try:
             async for event in AgentLoop(
@@ -632,7 +659,7 @@ class ConformanceRunner:
                 hooks=hooks_from_case(case),
                 approval_policy=approval_policy_from_case(case, self.validators),
                 approval_metadata=approval_metadata_from_case(case),
-                run_store=FailingCheckpointStore(),
+                run_store=FailingRunStore(),
                 run_journal=journal,
             ).run_events(
                 [user_text("run conformance case")],
@@ -677,7 +704,7 @@ class ConformanceRunner:
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         controller = controller_from_case(case)
         model = model_from_case(case, steps, stream_steps, controller, self.validators)
-        store = CapturingRunStore()
+        store = MemoryRunStore()
         journal = FailingCheckpointJournal()
         events: list[AgentEvent] = []
         try:
@@ -739,8 +766,8 @@ class ConformanceRunner:
         stream_steps = cast(list[dict[str, Any]], case.get("stream_model_steps") or [])
         controller = controller_from_case(case)
         model = model_from_case(case, steps, stream_steps, controller, self.validators)
-        store = CapturingRunStore()
-        journal = CapturingRunJournal()
+        store = MemoryRunStore()
+        journal = MemoryRunJournal()
         events = [
             event
             async for event in AgentLoop(
@@ -862,8 +889,8 @@ class ConformanceRunner:
             model_step_from_case_step(step)
             for step in cast(list[dict[str, Any]], case.get("resume_model_steps") or [])
         ]
-        store = CapturingRunStore()
-        journal = CapturingRunJournal()
+        store = MemoryRunStore()
+        journal = MemoryRunJournal()
         events = [
             event
             async for event in AgentLoop(
@@ -927,8 +954,8 @@ class ConformanceRunner:
     async def _assert_store_journal_segment(
         self,
         events: Sequence[AgentEvent],
-        store: CapturingRunStore,
-        journal: CapturingRunJournal,
+        store: MemoryRunStore,
+        journal: MemoryRunJournal,
         *,
         initial_parent_checkpoint_id: str | None,
     ) -> None:

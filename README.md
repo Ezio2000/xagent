@@ -13,12 +13,14 @@ kernel and are injected through its public ports.
 |---|---|---|
 | Contract map | `contracts/v0/README.md` | Cross-language wire shapes, semantic contract ownership, and schema `$id` policy. |
 | Architecture notes | `docs/architecture.md` | Kernel boundary and runtime architecture overview. |
+| Harness guide | `docs/harness.md` | Workspace-level controlled test harness layers and package boundary. |
 | Model protocol | `docs/model-protocol.md` | Model adapter request/response rules. |
 | Tool protocol | `docs/tool-protocol.md` | Tool spec, invocation, approval risk, scheduling, and output rules. |
 | Event stream | `docs/event-stream.md` | Runtime event names, event ordering, and hook-emitted custom events. |
 | State machine | `docs/state-machine.md` | Status meanings, transitions, checkpoints, pause, and resume behavior. |
 | Public API audit | `docs/public-api-audit.md` | Exported Python SDK names and public/internal boundary decisions. |
 | Conformance guide | `conformance/README.md` | Shared case format and runner expectations for SDK implementations. |
+| Conformance case schema | `conformance/case.schema.json` | Portable JSON fixture format consumed by SDK conformance runners. |
 | CI workflow | `.github/workflows/ci.yml` | Required repository validation gate. |
 | Agent instructions | `AGENTS.md` | Coding-agent operating rules generated from the current repo shape. |
 
@@ -27,15 +29,15 @@ kernel and are injected through its public ports.
 | Path | Import package | Responsibility |
 |---|---|---|
 | `contracts/v0` | none | Cross-language JSON Schemas and portable runtime contract docs. |
-| `conformance/cases` | none | Shared JSON behavior fixtures that every SDK must pass. |
+| `conformance/case.schema.json` / `conformance/cases` | none | Shared JSON behavior fixture format and cases that every SDK must pass. |
 | `docs` | none | Architecture, public API, model/tool/event/state protocol notes. |
 | `python/kernel` | `kernel` | Runtime kernel: loop, scheduler, model/tool protocols, events, state, snapshots, resume, limits, approval/store/journal/hook ports, trace payload emission, and public SDK exports. |
 | `python/toolkit` | `toolkit` | Default tool registry, JSON Schema validation, and concrete invocation glue. |
 | `python/prompting` | `prompting` | Prompt and message construction helpers built on kernel message types. |
 | `python/modelkit` | `modelkit` | Model adapter helper facade re-exporting kernel stream accumulation and capability normalization. |
 | `python/diagnostics` | `diagnostics` | Public trace objects, trace construction, and deterministic replay validation. |
-| `python/harness` | `harness` | Reusable test harness helpers. |
-| `python/conformance` | `conformance` | Python conformance CLI, case loader, scripted harness, validators, and assertions. |
+| `python/harness` | `harness` | Workspace-level controlled test harness: model drivers, fake runtime ports, tool stubs and registry doubles, message fixtures, event/timeline/trace observation, scenario helpers, and behavior assertions. |
+| `python/conformance` | `conformance` | Python conformance CLI, case loader, fixture runner, validators, and assertions. |
 | `pyproject.toml` / `uv.lock` | none | Root uv workspace, dependency groups, lint, type-check, and test configuration. |
 
 ## Dependency Rules
@@ -47,8 +49,8 @@ kernel and are injected through its public ports.
 | `prompting` | `kernel` | Runtime state, scheduling, model/provider clients |
 | `modelkit` | `kernel` | Runtime loop, tool execution, prompt helpers |
 | `diagnostics` | `kernel` | Running agents, invoking tools, provider adapters, persistence backends |
-| `harness` | `kernel` | Production runtime semantics or conformance contracts |
-| `conformance` | `kernel`, `toolkit`, `prompting`, `diagnostics`, JSON Schema validation libraries | Being imported by runtime packages |
+| `harness` | `kernel`, `toolkit`, `prompting`, `diagnostics` | Production runtime semantics, portable conformance contracts, schema validation rules, provider adapters, or app infrastructure |
+| `conformance` | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness`, JSON Schema validation libraries | Being imported by runtime packages |
 
 Hard boundary rules:
 
@@ -56,8 +58,11 @@ Hard boundary rules:
   implementations depend on `kernel` and are injected through public ports.
 - Sibling helper packages may import `kernel`, but `kernel` must never import
   them.
-- `conformance` may import `kernel`, `toolkit`, `prompting`, and `diagnostics`;
-  runtime packages must never import `conformance`.
+- `harness` is test infrastructure and may compose `kernel`, `toolkit`,
+  `prompting`, and `diagnostics` public APIs. Runtime source packages must not
+  import `harness`.
+- `conformance` may import `kernel`, `toolkit`, `prompting`, `diagnostics`, and
+  `harness`; runtime packages must never import `conformance`.
 - No top-level `sdks/` source tree. Python packages live under `python`.
 - Retired runtime imports must not reappear: `agent_runtime`,
   `agent_runtime_conformance`, `engine`, `protocol`, `run_state`,

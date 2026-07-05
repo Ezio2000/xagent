@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from conformance._case import CASE_KEYS, STREAM_EVENT_KEYS_BY_TYPE, STREAM_EVENT_REQUIRED_KEYS
 from diagnostics import RunTrace
 from jsonschema import Draft202012Validator
 from kernel import (
@@ -23,6 +24,7 @@ from conformance import main as conformance_main
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SPEC_DIR = REPO_ROOT / "contracts" / "v0"
 CASES_DIR = REPO_ROOT / "conformance" / "cases"
+CASE_SCHEMA_PATH = REPO_ROOT / "conformance" / "case.schema.json"
 SHARED_CONFORMANCE_RUNNER = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
 
 
@@ -47,6 +49,7 @@ def load_json_schema(path: Path) -> dict[str, Any]:
 
 
 SCHEMAS = {path.name: load_json_schema(path) for path in sorted(SPEC_DIR.glob("*.schema.json"))}
+CASE_SCHEMA = load_json_schema(CASE_SCHEMA_PATH)
 REGISTRY_CLS: Any = Registry
 RESOURCE_CLS: Any = Resource
 DRAFT_2020_12_SPEC: Any = DRAFT202012
@@ -87,6 +90,7 @@ LIMITS_SCHEMA_VALIDATOR = Draft202012Validator(
     SCHEMAS["limits.schema.json"],
     registry=SCHEMA_REGISTRY,
 )
+CASE_SCHEMA_VALIDATOR = Draft202012Validator(CASE_SCHEMA, registry=SCHEMA_REGISTRY)
 
 
 def assert_matches_schema(
@@ -109,6 +113,39 @@ def test_shared_conformance_runner_loads_repository_cases() -> None:
     cases = SHARED_CONFORMANCE_RUNNER.load_cases()
 
     assert len(cases) == len(list(CASES_DIR.glob("*.json")))
+
+
+def test_conformance_case_schema_matches_python_case_constants() -> None:
+    assert set(CASE_SCHEMA["properties"]) == CASE_KEYS
+
+    event_defs = {
+        schema["properties"]["type"]["const"]: schema
+        for name, schema in CASE_SCHEMA["$defs"].items()
+        if name.endswith("_event") and "properties" in schema
+    }
+    assert set(event_defs) == set(STREAM_EVENT_KEYS_BY_TYPE)
+    for event_type, schema in event_defs.items():
+        assert set(schema["properties"]) == STREAM_EVENT_KEYS_BY_TYPE[event_type]
+        assert set(schema["required"]) - {"type"} == STREAM_EVENT_REQUIRED_KEYS[event_type]
+
+
+@pytest.mark.parametrize("path", sorted(CASES_DIR.glob("*.json")), ids=lambda path: path.name)
+def test_repository_cases_match_shared_case_schema(path: Path) -> None:
+    case = json.loads(path.read_text())
+    if not isinstance(case, dict):
+        raise TypeError(f"{path.name} must contain an object")
+
+    assert_matches_schema(path.name, CASE_SCHEMA_VALIDATOR, cast(Mapping[str, Any], case))
+
+
+def test_shared_conformance_runner_validates_loaded_cases_against_case_schema() -> None:
+    runner = ConformanceRunner(cases_dir=CASES_DIR, spec_dir=SPEC_DIR)
+    validator = CountingValidator()
+    runner.case_validator = validator
+
+    cases = runner.load_cases()
+
+    assert len(validator.instances) == len(cases)
 
 
 def conformance_case(name: str) -> dict[str, Any]:
@@ -146,6 +183,29 @@ def test_conformance_cli_reports_invalid_case_json_path(
     assert status == 1
     assert str(bad_case.resolve()) in output
     assert "invalid JSON" in output
+
+
+def test_conformance_cli_accepts_explicit_case_schema_for_custom_case_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    custom_cases = tmp_path / "cases"
+    custom_cases.mkdir()
+    (custom_cases / "final_only.json").write_text((CASES_DIR / "final_only.json").read_text())
+
+    status = conformance_main(
+        [
+            str(custom_cases),
+            "--spec-dir",
+            str(SPEC_DIR),
+            "--case-schema",
+            str(CASE_SCHEMA_PATH),
+            "--quiet",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert status == 0
+    assert "1 passed, 0 failed" in output
 
 
 @pytest.mark.asyncio
@@ -225,7 +285,7 @@ def test_conformance_cli_reports_invalid_case_content_path(
     assert status == 1
     assert str(bad_case.resolve()) in output
     assert "invalid conformance case" in output
-    assert "unknown key" in output
+    assert "Additional properties" in output
 
 
 def test_conformance_cli_reports_invalid_spec_json_path(
@@ -324,6 +384,30 @@ def test_conformance_case_validation_rejects_incomplete_stream_events() -> None:
         )
 
 
+def test_conformance_case_validation_rejects_stream_event_keys_for_wrong_type() -> None:
+    with pytest.raises(AssertionError, match="unknown key"):
+        SHARED_CONFORMANCE_RUNNER.validate_case_keys(
+            "bad_stream_case",
+            {
+                "name": "bad_stream_case",
+                "model_steps": [],
+                "stream_model_steps": [
+                    {
+                        "events": [
+                            {
+                                "type": "usage_delta",
+                                "usage": {"input_tokens": 1},
+                                "index": 0,
+                            }
+                        ]
+                    }
+                ],
+                "expected_status": "completed",
+                "expected_tool_calls": 0,
+            },
+        )
+
+
 def test_conformance_case_validation_rejects_resume_keys_without_resume_type() -> None:
     with pytest.raises(AssertionError, match="resume-only"):
         SHARED_CONFORMANCE_RUNNER.validate_case_keys(
@@ -412,6 +496,48 @@ def test_conformance_case_validation_rejects_mistyped_limits() -> None:
                 "expected_tool_calls": 0,
             },
         )
+
+
+def test_conformance_case_schema_matches_limit_contract_semantics() -> None:
+    def case_with_limits(limits: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "name": "limit_case",
+            "limits": limits,
+            "model_steps": [],
+            "expected_status": "completed",
+            "expected_tool_calls": 0,
+        }
+
+    valid_null_timeout = case_with_limits({"timeout_seconds": None})
+    assert_matches_schema("null timeout", CASE_SCHEMA_VALIDATOR, valid_null_timeout)
+    SHARED_CONFORMANCE_RUNNER.validate_case_keys("null_timeout_case", valid_null_timeout)
+
+    invalid_cases = {
+        "zero max_iterations": case_with_limits({"max_iterations": 0}),
+        "zero timeout_seconds": case_with_limits({"timeout_seconds": 0}),
+    }
+    for label, case in invalid_cases.items():
+        with pytest.raises(AssertionError, match="schema violation"):
+            assert_matches_schema(label, CASE_SCHEMA_VALIDATOR, case)
+
+
+def test_conformance_case_schema_restricts_expected_pause_resume_status() -> None:
+    case: dict[str, Any] = {
+        "name": "bad_pause_expectation",
+        "model_steps": [],
+        "expected_status": "paused",
+        "expected_tool_calls": 0,
+        "expected_pause": {
+            "reason": "manual_pause",
+            "resume_status": "completed",
+            "source": "host",
+            "wait_id": None,
+            "metadata": {},
+        },
+    }
+
+    with pytest.raises(AssertionError, match="schema violation"):
+        assert_matches_schema("bad expected_pause resume_status", CASE_SCHEMA_VALIDATOR, case)
 
 
 def test_run_trace_schema_rejects_raw_payload_metadata() -> None:
@@ -569,6 +695,23 @@ def test_tool_call_ids_are_portably_unique_beyond_json_schema() -> None:
         Message.from_dict(message)
     with pytest.raises(ValueError, match="unique"):
         ModelResponse.from_dict(response)
+
+
+def test_artifact_part_ref_match_is_portable_semantic_invariant() -> None:
+    message = {
+        "role": "user",
+        "parts": [
+            {
+                "type": "artifact",
+                "ref": "artifact://run-1/outer",
+                "data": {"artifact": {"ref": "artifact://run-1/inner"}},
+            }
+        ],
+    }
+
+    assert_matches_schema("artifact ref structural message", MESSAGE_SCHEMA_VALIDATOR, message)
+    with pytest.raises(ValueError, match="artifact ref"):
+        Message.from_dict(message)
 
 
 def test_tool_result_pause_schemas_reject_interrupting_waits() -> None:

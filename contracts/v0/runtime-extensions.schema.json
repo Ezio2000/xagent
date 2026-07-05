@@ -74,6 +74,7 @@
     },
     "stored_checkpoint": {
       "type": "object",
+      "$comment": "Portable semantic invariant: run_id, sequence, and status must match snapshot.context.run_id, snapshot.context.sequence, and snapshot.state.status.",
       "required": [
         "run_id",
         "checkpoint_id",
@@ -98,6 +99,7 @@
     },
     "journal_record": {
       "type": "object",
+      "$comment": "Portable semantic invariant: run_id, sequence, event_type, and created_at must match the nested event envelope.",
       "required": [
         "run_id",
         "sequence",

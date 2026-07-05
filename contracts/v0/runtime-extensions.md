@@ -38,6 +38,11 @@ after resuming from a snapshot must use the resumed snapshot's
 with the greatest stored checkpoint `sequence` for that run. `list_checkpoints(run_id)` must
 return summaries for checkpoints stored for the run; ordering is host-defined
 unless a conformance case states otherwise.
+Portable store records are mirrors over their nested snapshot: top-level
+`run_id` must equal `snapshot.context.run_id`, top-level `sequence` must equal
+`snapshot.context.sequence`, and top-level `status` must equal
+`snapshot.state.status`. These are semantic invariants even when a JSON Schema
+validator only checks each field independently.
 Terminal snapshots with
 `completed`, `failed`, or `limit_exceeded` remain invocation-terminal and must
 not become valid resume inputs merely because they were stored.
@@ -102,6 +107,11 @@ Journal records reference:
 - optional `payload_ref` and `payload_hash` for host-managed large payloads;
 - host metadata.
 
+Journal records are mirrors over their nested event envelope: top-level
+`run_id`, `sequence`, `event_type`, and `created_at` must equal the nested
+event's `run_id`, `sequence`, `type`, and `created_at`. These mirror fields are
+included for indexing and audit queries; they must not diverge from the event.
+
 `RunTrace` remains the compact deterministic replay surface. Journal playback
 must not be required to reconstruct durable agent state; resuming and
 time-travel-style forks should start from a `RunSnapshot`.
@@ -154,6 +164,10 @@ mechanism.
 Content parts may reference host-owned artifacts by ref. The portable convention
 is `ContentPart(type="artifact", ref=..., data={"artifact": ArtifactRef...})`.
 Artifact refs carry optional media type, name, byte size, SHA-256, and metadata.
+For artifact content parts, the outer content part `ref` and
+`data.artifact.ref` must be identical. The duplicated value lets readers index
+the part without parsing artifact metadata while preserving a complete
+`ArtifactRef` object.
 Core runtimes must preserve the reference fields but must not dereference,
 persist payload bytes, garbage-collect, or enforce artifact access control.
 Those concerns belong to host artifact stores.

@@ -3,14 +3,57 @@ from __future__ import annotations
 import asyncio
 import gc
 import time as time_module
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from time import monotonic
 from time import time as wall_time
 from typing import Any, cast
 
-import kernel.loop as loop_module
 import pytest
 from diagnostics import RunTrace, TraceStepKinds, replay_trace
+from harness import (
+    AcceptingWebSearchTool,
+    AdapterTimeoutModel,
+    ApprovalPolicyByCall,
+    CancellationConvertingModel,
+    CancellationSwallowingModel,
+    CancellationSwallowingThenFailingModel,
+    CloseTrackingStreamingModel,
+    ContextInspectingModel,
+    CustomHandoffTool,
+    ExternallyCancelledModel,
+    FailingAcceptTool,
+    FailingApprovalPolicy,
+    FailingCheckpointJournal,
+    FailingCustomHandoffTool,
+    FailingFixtureTool,
+    FailingRunStore,
+    FailingSecondCheckpointStore,
+    FastStreamingModel,
+    FlakyProviderErrorModel,
+    HarnessToolRegistry,
+    MemoryRunJournal,
+    MemoryRunStore,
+    ProviderErrorModel,
+    RecordingToolRegistry,
+    RejectingWebSearchTool,
+    RequestCapturingModel,
+    ScriptedModel,
+    SequencedApprovalPolicy,
+    SlowModel,
+    SlowRunJournal,
+    SlowRunStore,
+    SlowStreamingModel,
+    StaticApprovalPolicy,
+    StreamingProviderErrorModel,
+    StreamingTextModel,
+    StreamingToolModel,
+    StreamingToolThenSlowModel,
+    StrictCountFixtureTool,
+    StrictCustomHandoffTool,
+    TimelineRunJournal,
+    collect_events,
+    timeline_event_label,
+)
 from kernel import (
     AgentEvent,
     AgentLoop,
@@ -31,14 +74,11 @@ from kernel import (
     LoopLimits,
     Message,
     ModelCapabilities,
-    ModelContentDelta,
     ModelErrorDecision,
     ModelErrorInfo,
     ModelOptions,
-    ModelProviderError,
     ModelRequest,
     ModelResponse,
-    ModelToolCallDelta,
     ModelUsage,
     PauseRequest,
     PauseSelector,
@@ -49,7 +89,6 @@ from kernel import (
     RuntimeContext,
     RuntimeHook,
     StoredCheckpoint,
-    ToolAcceptance,
     ToolBatch,
     ToolCall,
     ToolCatalog,
@@ -57,183 +96,17 @@ from kernel import (
     ToolCompleted,
     ToolObservation,
     ToolOutput,
-    ToolRejection,
     ToolScheduler,
     ToolSpec,
     ToolStarted,
 )
-from kernel._loop_types import RunControlState
 from prompting import tool_text, user_text
 from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
-
-
-class ScriptedModel:
-    def __init__(self, steps: Sequence[ModelResponse]) -> None:
-        self._steps = list(steps)
-        self.calls = 0
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        if self.calls >= len(self._steps):
-            raise AssertionError("scripted model exhausted")
-        response = self._steps[self.calls]
-        self.calls += 1
-        return response
 
 
 def rt(result: AgentResult) -> RunTrace:
     assert result.trace is not None
     return RunTrace.from_dict(result.trace)
-
-
-class RequestCapturingModel:
-    def __init__(self) -> None:
-        self.request: ModelRequest | None = None
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = context
-        self.request = request
-        return ModelResponse.text("done")
-
-
-class StreamingTextModel:
-    capabilities = ModelCapabilities(streaming=True)
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise AssertionError("stream path should not call complete")
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = request, context
-        yield ModelContentDelta(index=0, text_delta="hel")
-        yield ModelContentDelta(index=0, text_delta="lo")
-
-
-class StreamingToolModel:
-    capabilities = ModelCapabilities(streaming=True)
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise AssertionError("stream path should not call complete")
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = context
-        self.calls += 1
-        if self.calls == 1:
-            yield ModelToolCallDelta(index=0, id="call-1", name="echo")
-            yield ModelToolCallDelta(index=0, arguments_delta='{"text":')
-            yield ModelToolCallDelta(index=0, arguments_delta='"hello"}')
-            return
-        assert request.messages[-1].role == "tool"
-        yield ModelContentDelta(index=0, text_delta="done")
-
-
-class StreamingToolThenSlowModel:
-    capabilities = ModelCapabilities(streaming=True)
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise AssertionError("stream path should not call complete")
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = context
-        self.calls += 1
-        if self.calls == 1:
-            yield ModelToolCallDelta(index=0, id="call-1", name="echo")
-            yield ModelToolCallDelta(index=0, arguments_delta='{"text":"hello"}')
-            return
-        assert request.messages[-1].role == "tool"
-        yield ModelContentDelta(index=0, text_delta="partial")
-        await asyncio.sleep(1)
-
-
-class SlowStreamingModel:
-    capabilities = ModelCapabilities(streaming=True)
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise AssertionError("stream path should not call complete")
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = request, context
-        yield ModelContentDelta(index=0, text_delta="partial")
-        await asyncio.sleep(1)
-
-
-class FastStreamingModel:
-    capabilities = ModelCapabilities(streaming=True)
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise AssertionError("stream path should not call complete")
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = request, context
-        yield ModelContentDelta(index=0, text_delta="first")
-        yield ModelContentDelta(index=0, text_delta="second")
-
-
-class CloseTrackingStreamingModel:
-    capabilities = ModelCapabilities(streaming=True)
-
-    def __init__(self) -> None:
-        self.next_chunk_started = asyncio.Event()
-        self.closed = asyncio.Event()
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise AssertionError("stream path should not call complete")
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = request, context
-        try:
-            yield ModelContentDelta(index=0, text_delta="partial")
-            self.next_chunk_started.set()
-            await asyncio.sleep(1)
-        finally:
-            self.closed.set()
-
-
-class ProviderErrorModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise ModelProviderError(
-            ModelErrorInfo(
-                message="provider unavailable",
-                provider="test-provider",
-                code="rate_limit",
-                status_code=429,
-                retryable=True,
-                request_id="req-1",
-            )
-        )
-
-
-class FlakyProviderErrorModel:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        self.calls += 1
-        if self.calls == 1:
-            raise ModelProviderError(
-                ModelErrorInfo(
-                    message="provider unavailable",
-                    provider="test-provider",
-                    code="rate_limit",
-                    status_code=429,
-                    retryable=True,
-                    request_id="req-1",
-                )
-            )
-        return ModelResponse.text("recovered")
 
 
 class ClearingReadRunController(RunController):
@@ -248,194 +121,6 @@ class ClearingReadRunController(RunController):
         if self.reads == 1:
             return self._request_copy
         return None
-
-
-class StreamingProviderErrorModel:
-    capabilities = ModelCapabilities(streaming=True)
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise AssertionError("stream path should not call complete")
-
-    async def stream(self, request: ModelRequest, context: RuntimeContext) -> AsyncIterator[object]:
-        _ = request, context
-        yield ModelContentDelta(index=0, text_delta="partial")
-        raise ModelProviderError(
-            ModelErrorInfo(
-                message="provider unavailable",
-                provider="test-provider",
-                code="rate_limit",
-                status_code=429,
-                retryable=True,
-                request_id="req-1",
-            )
-        )
-
-
-class RecordingTool:
-    spec = ToolSpec(
-        name="record",
-        description="Record executed call ids.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        call_id = str(invocation.arguments["id"])
-        self.calls.append(call_id)
-        return ToolObservation.text(call_id)
-
-
-class MemoryRunStore:
-    def __init__(self) -> None:
-        self.checkpoints: list[StoredCheckpoint] = []
-
-    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
-        self.checkpoints.append(
-            StoredCheckpoint(
-                run_id=checkpoint.run_id,
-                checkpoint_id=checkpoint.checkpoint_id,
-                parent_checkpoint_id=checkpoint.parent_checkpoint_id,
-                sequence=checkpoint.sequence,
-                status=checkpoint.status,
-                snapshot=checkpoint.snapshot,
-                created_at=checkpoint.created_at,
-                metadata=checkpoint.metadata,
-            )
-        )
-
-    async def load_checkpoint(self, run_id: str, checkpoint_id: str | None = None) -> RunSnapshot:
-        matches = [checkpoint for checkpoint in self.checkpoints if checkpoint.run_id == run_id]
-        if checkpoint_id is not None:
-            matches = [
-                checkpoint for checkpoint in matches if checkpoint.checkpoint_id == checkpoint_id
-            ]
-        if not matches:
-            raise KeyError(run_id)
-        return RunSnapshot.from_dict(matches[-1].snapshot.to_dict())
-
-    async def list_checkpoints(self, run_id: str) -> Sequence[CheckpointSummary]:
-        return [
-            checkpoint.summary() for checkpoint in self.checkpoints if checkpoint.run_id == run_id
-        ]
-
-
-class FailingRunStore(MemoryRunStore):
-    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
-        _ = checkpoint
-        raise RuntimeError("store unavailable")
-
-
-class FailingSecondCheckpointStore(MemoryRunStore):
-    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
-        if self.checkpoints:
-            raise RuntimeError("store unavailable")
-        await super().save_checkpoint(checkpoint)
-
-
-class SlowRunStore(MemoryRunStore):
-    async def save_checkpoint(self, checkpoint: StoredCheckpoint) -> None:
-        _ = checkpoint
-        await asyncio.sleep(10)
-
-
-class MemoryRunJournal:
-    def __init__(self) -> None:
-        self.records: list[JournalRecord] = []
-
-    async def append(self, record: JournalRecord) -> None:
-        self.records.append(
-            JournalRecord(
-                event=AgentEvent(**record.event.to_dict()),
-                checkpoint_id=record.checkpoint_id,
-                trace_step_id=record.trace_step_id,
-                payload_ref=record.payload_ref,
-                payload_hash=record.payload_hash,
-                metadata=record.metadata,
-            )
-        )
-
-    async def read(
-        self, run_id: str, *, after_sequence: int | None = None
-    ) -> AsyncIterator[JournalRecord]:
-        for record in self.records:
-            if record.run_id != run_id:
-                continue
-            if after_sequence is not None and record.sequence <= after_sequence:
-                continue
-            yield record
-
-
-def timeline_event_label(prefix: str, event: AgentEvent) -> str:
-    if event.type == EventTypes.STATE_CHANGED:
-        return f"{prefix}:{event.type}:{event.data['to']}"
-    return f"{prefix}:{event.type}"
-
-
-class TimelineRunJournal(MemoryRunJournal):
-    def __init__(self, timeline: list[str]) -> None:
-        super().__init__()
-        self.timeline = timeline
-
-    async def append(self, record: JournalRecord) -> None:
-        self.timeline.append(timeline_event_label("journal", record.event))
-        await super().append(record)
-
-
-class FailingCheckpointJournal(MemoryRunJournal):
-    async def append(self, record: JournalRecord) -> None:
-        if record.event_type == EventTypes.CHECKPOINT:
-            raise RuntimeError("journal unavailable")
-        await super().append(record)
-
-
-class SlowRunJournal(MemoryRunJournal):
-    async def append(self, record: JournalRecord) -> None:
-        _ = record
-        await asyncio.sleep(10)
-
-
-class StaticApprovalPolicy:
-    def __init__(self, decision: ApprovalDecision) -> None:
-        self.decision = decision
-        self.requests: list[ApprovalRequest] = []
-
-    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
-        self.requests.append(request)
-        return self.decision
-
-
-class ApprovalPolicyByCall:
-    def __init__(self, decisions: Mapping[str, ApprovalDecision]) -> None:
-        self.decisions = dict(decisions)
-        self.requests: list[ApprovalRequest] = []
-
-    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
-        self.requests.append(request)
-        return self.decisions.get(request.tool_call.id, ApprovalDecision.allow())
-
-
-class SequencedApprovalPolicy:
-    def __init__(self, decisions: Sequence[ApprovalDecision]) -> None:
-        self.decisions = list(decisions)
-        self.requests: list[ApprovalRequest] = []
-
-    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
-        self.requests.append(request)
-        if not self.decisions:
-            return ApprovalDecision.allow()
-        return self.decisions.pop(0)
-
-
-class FailingApprovalPolicy:
-    async def decide(self, request: ApprovalRequest) -> ApprovalDecision:
-        _ = request
-        raise RuntimeError("approval backend unavailable")
 
 
 class TimedTool:
@@ -555,23 +240,9 @@ class StaggeredGappedTimeoutTool:
         return ToolObservation.text(call_id)
 
 
-class EchoTool:
-    spec = ToolSpec(
-        name="echo",
-        description="Return input text.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        return ToolObservation.text(str(invocation.arguments.get("text", "")))
-
-
 class StructuralToolRegistry:
-    def __init__(self, tools: Sequence[object]) -> None:
-        self._registry = ToolRegistry(cast(Sequence[Any], tools))
+    def __init__(self, *tool_names: str) -> None:
+        self._registry = HarnessToolRegistry(*tool_names)
         self.invocations = 0
 
     def specs(self) -> tuple[ToolSpec, ...]:
@@ -605,239 +276,6 @@ class NonCallableToolRegistry:
     spec_for = None
     validate_call = None
     invoke = None
-
-
-class StrictCountTool:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    spec = ToolSpec(
-        name="strict_count",
-        description="Require an integer count.",
-        input_schema={
-            "type": "object",
-            "required": ["count"],
-            "properties": {"count": {"type": "integer"}},
-            "additionalProperties": False,
-        },
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        self.calls += 1
-        return ToolObservation.text(str(invocation.arguments["count"]))
-
-
-class MetadataTool:
-    spec = ToolSpec(
-        name="metadata_tool",
-        description="Return metadata-bearing content.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = invocation, context
-        return ToolObservation(
-            parts=[ContentPart.text_part("tool", metadata={"secret": "part"})],
-            metadata={"secret": "result"},
-        )
-
-
-class AcceptingWebSearchTool:
-    spec = ToolSpec(
-        name="web_search",
-        description="Accept a web search job for external completion.",
-        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
-        modes=("accept",),
-    )
-
-    def __init__(self) -> None:
-        self.accepted: list[ToolInvocation] = []
-
-    async def accept(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolAcceptance:
-        _ = context
-        self.accepted.append(invocation)
-        return ToolAcceptance.text(
-            f"accepted: {invocation.arguments['query']}",
-            correlation_id=f"web-search:{invocation.id}",
-        )
-
-
-class RejectingWebSearchTool:
-    spec = ToolSpec(
-        name="web_search",
-        description="Reject a web search job.",
-        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
-        modes=("accept",),
-    )
-
-    async def accept(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolRejection:
-        _ = context
-        return ToolRejection.text(f"rejected: {invocation.arguments['query']}")
-
-
-class FailingAcceptTool:
-    spec = ToolSpec(
-        name="web_search",
-        description="Fail while accepting a web search job.",
-        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
-        modes=("accept",),
-    )
-
-    async def accept(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolAcceptance:
-        _ = invocation, context
-        raise RuntimeError("accept unavailable")
-
-
-class CustomHandoffTool:
-    spec = ToolSpec(
-        name="handoff",
-        description="Return generic custom-mode tool output.",
-        input_schema={"type": "object", "properties": {}},
-        modes=("handoff",),
-    )
-
-    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
-        _ = context
-        pause = None
-        if "wait_id" in invocation.arguments:
-            pause = PauseRequest(
-                reason="external_callback",
-                source="tool",
-                wait_id=str(invocation.arguments["wait_id"]),
-                metadata={},
-            )
-        kind = str(invocation.arguments.get("kind", "handoff"))
-        return ToolOutput(
-            kind=kind,
-            parts=[ContentPart.text_part(str(invocation.arguments.get("text", "handoff")))],
-            is_error=bool(invocation.arguments.get("is_error", False)),
-            pause=pause,
-            correlation_id=str(invocation.arguments.get("correlation_id", invocation.id)),
-        )
-
-
-class StrictCustomHandoffTool:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    spec = ToolSpec(
-        name="strict_handoff",
-        description="Require a string custom handoff target.",
-        input_schema={
-            "type": "object",
-            "required": ["target"],
-            "properties": {"target": {"type": "string"}},
-            "additionalProperties": False,
-        },
-        modes=("handoff",),
-    )
-
-    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
-        _ = context
-        self.calls += 1
-        return ToolOutput(
-            kind="handoff",
-            parts=[ContentPart.text_part(str(invocation.arguments["target"]))],
-            correlation_id=invocation.id,
-        )
-
-
-class FailingCustomHandoffTool:
-    spec = ToolSpec(
-        name="handoff",
-        description="Fail while handling custom-mode tool output.",
-        input_schema={"type": "object", "properties": {}},
-        modes=("handoff",),
-    )
-
-    async def invoke(self, invocation: ToolInvocation, context: ToolExecutionContext) -> ToolOutput:
-        _ = invocation, context
-        raise RuntimeError("handoff unavailable")
-
-
-class WaitingTool:
-    spec = ToolSpec(
-        name="wait",
-        description="Start external work and pause the run.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        return ToolObservation.waiting(
-            "external job started",
-            wait_id=str(invocation.arguments["wait_id"]),
-            reason="external_callback",
-        )
-
-
-class ParallelWaitingTool:
-    spec = ToolSpec(
-        name="parallel_wait",
-        description="Start external work and pause the run.",
-        input_schema={"type": "object", "properties": {}},
-        annotations={"parallel_safe": True, "read_only": True, "idempotent": True},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = context
-        await asyncio.sleep(float(invocation.arguments.get("delay", 0)))
-        return ToolObservation.waiting(
-            str(invocation.arguments["wait_id"]),
-            wait_id=str(invocation.arguments["wait_id"]),
-            reason="external_callback",
-        )
-
-
-class FailTool:
-    spec = ToolSpec(
-        name="fail",
-        description="Raise an error.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = invocation, context
-        raise RuntimeError("tool failed")
-
-
-class SlowTool:
-    spec = ToolSpec(
-        name="slow",
-        description="Sleep too long.",
-        input_schema={"type": "object", "properties": {}},
-    )
-
-    async def execute(
-        self, invocation: ToolInvocation, context: ToolExecutionContext
-    ) -> ToolObservation:
-        _ = invocation, context
-        await asyncio.sleep(1)
-        return ToolObservation.text("late")
-
-
-class SlowModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        await asyncio.sleep(1)
-        return ModelResponse.text("late")
 
 
 class AcceptWebSearchModel:
@@ -951,64 +389,6 @@ class SelfPausingToolCallModel:
         return ModelResponse(
             tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "hello"})]
         )
-
-
-class AdapterTimeoutModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        raise TimeoutError("provider timeout")
-
-
-class CancellationConvertingModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        try:
-            await asyncio.sleep(1)
-        except asyncio.CancelledError as exc:
-            raise RuntimeError("provider converted cancellation") from exc
-        return ModelResponse.text("late")
-
-
-class CancellationSwallowingModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        try:
-            await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            await asyncio.sleep(0.05)
-        return ModelResponse.text("late")
-
-
-class CancellationSwallowingThenFailingModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        try:
-            await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            await asyncio.sleep(0.01)
-            raise RuntimeError("late provider failure") from None
-        return ModelResponse.text("late")
-
-
-class ExternallyCancelledModel:
-    def __init__(self) -> None:
-        self.started = asyncio.Event()
-
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request, context
-        self.started.set()
-        try:
-            await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            await asyncio.sleep(0.01)
-            raise RuntimeError("late provider failure") from None
-        return ModelResponse.text("late")
-
-
-class ContextInspectingModel:
-    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
-        _ = request
-        return ModelResponse.text(str(context.metadata["tenant"]))
 
 
 class StructuralAfterModelHook:
@@ -1141,12 +521,6 @@ class CoreEventEmittingHook(RuntimeHook):
         _ = context
         if event.type == EventTypes.MODEL_STARTED:
             emitter.emit(EventTypes.MODEL_COMPLETED, {"summary": "host-emitted"})
-
-
-class RecursiveCustomEventHook(RuntimeHook):
-    def on_event(self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter) -> None:
-        _ = context
-        emitter.emit("recursive_custom_event", {"parent_type": event.type})
 
 
 class FailingQueuedEventAfterHook(RuntimeHook):
@@ -1455,17 +829,6 @@ class MutatingResultScheduler(StandaloneSerialScheduler):
         yield ToolCompleted(batch=batch, index=0, call=call, result=result)
 
 
-class KeyboardInterruptOnCloseIterator:
-    def __aiter__(self) -> KeyboardInterruptOnCloseIterator:
-        return self
-
-    async def __anext__(self) -> object:
-        raise StopAsyncIteration
-
-    def aclose(self) -> None:
-        raise KeyboardInterrupt
-
-
 class BadModelResponseShapeHook(RuntimeHook):
     def after_model(self, response: ModelResponse, context: RuntimeContext) -> ModelResponse:
         _ = context
@@ -1479,48 +842,6 @@ class BadToolObservationShapeHook(RuntimeHook):
         observation = cast(ToolObservation, result)
         observation.is_error = cast(Any, "yes")
         return observation
-
-
-async def collect_events(
-    agent: AgentLoop,
-    messages: Sequence[Message],
-    *,
-    stream: bool = False,
-    controller: RunController | None = None,
-) -> list[AgentEvent]:
-    return [
-        event
-        async for event in agent.run_events(
-            messages,
-            stream=stream,
-            controller=controller,
-        )
-    ]
-
-
-class PauseExposingLoop(AgentLoop):
-    async def await_model_for_test(
-        self,
-        awaitable: Awaitable[ModelResponse],
-        control: RunControlState,
-    ) -> ModelResponse:
-        return await self._await_model_with_interrupt(awaitable, control)
-
-    async def apply_pause_for_test(
-        self,
-        state: AgentState,
-        context: RuntimeContext,
-        control: RunControlState,
-        request: PauseRequest,
-    ) -> tuple[AgentEvent, ...]:
-        return await self._pause(
-            state,
-            context,
-            control,
-            request,
-            resume_status=AgentStatus.EXECUTING_TOOLS,
-            origin="control",
-        )
 
 
 def parts_text(parts: Sequence[Any]) -> str:
@@ -1566,9 +887,8 @@ async def test_streaming_text_deltas_are_observable_but_commit_atomically() -> N
 
 @pytest.mark.asyncio
 async def test_streaming_tool_call_executes_only_after_model_completed() -> None:
-    tool = EchoTool()
     events = await collect_events(
-        AgentLoop(model=StreamingToolModel(), tools=ToolRegistry([tool])),
+        AgentLoop(model=StreamingToolModel(), tools=HarnessToolRegistry("echo")),
         [user_text("stream tool")],
         stream=True,
     )
@@ -1589,7 +909,7 @@ async def test_streaming_tool_call_executes_only_after_model_completed() -> None
 
 @pytest.mark.asyncio
 async def test_agent_loop_accepts_structural_tool_registry() -> None:
-    registry = StructuralToolRegistry([EchoTool()])
+    registry = StructuralToolRegistry("echo")
     model = ScriptedModel(
         [
             ModelResponse(
@@ -1737,7 +1057,7 @@ async def test_stream_interrupt_wins_over_immediately_ready_next_delta() -> None
 async def test_later_stream_timeout_trace_uses_last_checkpoint_as_partial_baseline() -> None:
     result = await AgentLoop(
         model=StreamingToolThenSlowModel(),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         limits=LoopLimits(timeout_seconds=0.02),
     ).run(
         [user_text("stream after tool")],
@@ -1790,15 +1110,6 @@ async def test_early_event_consumer_close_closes_stream_iterator() -> None:
     await cast(Any, iterator).aclose()
 
     assert model.closed.is_set()
-
-
-@pytest.mark.asyncio
-async def test_close_async_iterator_does_not_swallow_keyboard_interrupt() -> None:
-    loop = AgentLoop(model=ScriptedModel([ModelResponse.text("done")]))
-    close_async_iterator = object.__getattribute__(loop, "_close_async_iterator")
-
-    with pytest.raises(KeyboardInterrupt):
-        await close_async_iterator(KeyboardInterruptOnCloseIterator())
 
 
 @pytest.mark.asyncio
@@ -1966,7 +1277,7 @@ async def test_custom_tool_scheduler_factory_is_used_per_run() -> None:
                 ModelResponse.text("done"),
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         limits=limits,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
@@ -1993,7 +1304,7 @@ async def test_custom_tool_scheduler_receives_defensive_tool_catalog() -> None:
                 ModelResponse.text("done"),
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2029,7 +1340,7 @@ async def test_custom_tool_scheduler_factory_accepts_protocol_implementations() 
                 ModelResponse.text("done"),
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2055,7 +1366,7 @@ async def test_custom_tool_scheduler_must_return_non_empty_prefix_batch() -> Non
                 )
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2071,7 +1382,7 @@ async def test_custom_tool_scheduler_must_return_non_empty_prefix_batch() -> Non
 
 @pytest.mark.asyncio
 async def test_custom_tool_scheduler_cannot_mutate_pending_calls_in_next_batch() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
 
     def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingNextBatchScheduler:
         _ = tools, runtime_limits
@@ -2085,7 +1396,7 @@ async def test_custom_tool_scheduler_cannot_mutate_pending_calls_in_next_batch()
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2116,7 +1427,7 @@ async def test_custom_tool_scheduler_progress_is_validated(
         model=ScriptedModel(
             [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})])]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2147,7 +1458,7 @@ async def test_custom_tool_scheduler_execute_gate_prevents_lifecycle_violations(
     message: str,
     expected_calls: list[str],
 ) -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
 
     def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> StandaloneSerialScheduler:
         _ = tools, runtime_limits
@@ -2161,7 +1472,7 @@ async def test_custom_tool_scheduler_execute_gate_prevents_lifecycle_violations(
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2174,7 +1485,7 @@ async def test_custom_tool_scheduler_execute_gate_prevents_lifecycle_violations(
 
 @pytest.mark.asyncio
 async def test_custom_tool_scheduler_cannot_mutate_call_after_start() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
 
     def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingRunBatchScheduler:
         _ = tools, runtime_limits
@@ -2188,7 +1499,7 @@ async def test_custom_tool_scheduler_cannot_mutate_call_after_start() -> None:
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2201,7 +1512,7 @@ async def test_custom_tool_scheduler_cannot_mutate_call_after_start() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_tool_scheduler_cannot_mutate_execute_result() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
 
     def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingResultScheduler:
         _ = tools, runtime_limits
@@ -2215,7 +1526,7 @@ async def test_custom_tool_scheduler_cannot_mutate_execute_result() -> None:
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
 
@@ -2229,7 +1540,7 @@ async def test_custom_tool_scheduler_cannot_mutate_execute_result() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_tool_scheduler_cannot_mutate_approval_allowed_result() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
     policy = StaticApprovalPolicy(ApprovalDecision.allow("safe"))
 
     def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingResultScheduler:
@@ -2244,7 +1555,7 @@ async def test_custom_tool_scheduler_cannot_mutate_approval_allowed_result() -> 
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         approval_policy=policy,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
@@ -2258,7 +1569,7 @@ async def test_custom_tool_scheduler_cannot_mutate_approval_allowed_result() -> 
 
 @pytest.mark.asyncio
 async def test_custom_tool_scheduler_cannot_mutate_approval_denied_result() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
     policy = StaticApprovalPolicy(ApprovalDecision.deny("blocked"))
 
     def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MutatingResultScheduler:
@@ -2273,7 +1584,7 @@ async def test_custom_tool_scheduler_cannot_mutate_approval_denied_result() -> N
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         approval_policy=policy,
         tool_scheduler_factory=factory,
     ).run([user_text("tool")])
@@ -2323,7 +1634,7 @@ async def test_model_usage_is_aggregated_into_result_and_snapshot() -> None:
                 ),
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
     ).run([user_text("tool")])
 
     assert result.status is AgentStatus.COMPLETED
@@ -2352,7 +1663,7 @@ async def test_model_usage_missing_fields_preserve_known_cumulative_values() -> 
                 ),
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         limits=LoopLimits(max_total_tokens=10),
     ).run([user_text("tool")])
 
@@ -2378,7 +1689,7 @@ async def test_model_usage_none_preserves_known_cumulative_values() -> None:
                 ModelResponse(parts=[ContentPart.text_part("done")]),
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         limits=LoopLimits(max_total_tokens=10),
     ).run([user_text("tool")])
 
@@ -2434,7 +1745,7 @@ async def test_tool_result_metadata_is_not_persisted_in_checkpoint_message() -> 
             ModelResponse.text("done"),
         ]
     )
-    result = await AgentLoop(model=model, tools=ToolRegistry([MetadataTool()])).run(
+    result = await AgentLoop(model=model, tools=HarnessToolRegistry("metadata_tool")).run(
         [user_text("tool")]
     )
 
@@ -2864,7 +2175,9 @@ async def test_one_tool_then_final() -> None:
             ModelResponse.text("hello"),
         ]
     )
-    result = await AgentLoop(model=model, tools=ToolRegistry([EchoTool()])).run([user_text("echo")])
+    result = await AgentLoop(model=model, tools=HarnessToolRegistry("echo")).run(
+        [user_text("echo")]
+    )
 
     assert result.status is AgentStatus.COMPLETED
     assert parts_text(result.final_parts) == "hello"
@@ -2922,7 +2235,7 @@ async def test_pause_request_is_captured_once_before_applying_pause() -> None:
 async def test_pause_during_tool_call_model_response_has_no_executing_checkpoint() -> None:
     controller = RunController()
     events = await collect_events(
-        AgentLoop(model=SelfPausingToolCallModel(controller), tools=ToolRegistry([EchoTool()])),
+        AgentLoop(model=SelfPausingToolCallModel(controller), tools=HarnessToolRegistry("echo")),
         [user_text("call tool")],
         controller=controller,
     )
@@ -2941,7 +2254,7 @@ async def test_pause_during_tool_call_model_response_has_no_executing_checkpoint
 
     resumed = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("done")]),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
     ).run_snapshot(ResumeInput(snapshot=paused))
 
     assert resumed.status is AgentStatus.COMPLETED
@@ -3058,26 +2371,6 @@ async def test_final_completion_wins_over_pause_requested_during_model_call() ->
     assert parts_text(result.final_parts) == "done"
 
 
-@pytest.mark.asyncio
-async def test_completed_model_task_wins_same_turn_interrupt_race() -> None:
-    controller = RunController()
-    controller.interrupt(reason="race_interrupt")
-    loop = PauseExposingLoop(model=ScriptedModel([]))
-    future: asyncio.Future[ModelResponse] = asyncio.get_running_loop().create_future()
-    future.set_result(ModelResponse.text("done"))
-
-    response = await loop.await_model_for_test(
-        future,
-        RunControlState(
-            run_id="race-run",
-            started_at=wall_time(),
-            run_controller=controller,
-        ),
-    )
-
-    assert parts_text(response.parts) == "done"
-
-
 def test_controller_can_be_reused_across_event_loops() -> None:
     class SlowFinalModel:
         async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
@@ -3132,7 +2425,7 @@ async def test_multi_step_tools() -> None:
             ModelResponse.text("a b"),
         ]
     )
-    result = await AgentLoop(model=model, tools=ToolRegistry([EchoTool()])).run(
+    result = await AgentLoop(model=model, tools=HarnessToolRegistry("echo")).run(
         [user_text("echo twice")]
     )
 
@@ -3153,7 +2446,7 @@ async def test_max_iterations() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         limits=LoopLimits(max_iterations=2),
     ).run([user_text("loop")])
 
@@ -3181,7 +2474,7 @@ async def test_tool_call_limit_takes_precedence_over_pause_after_model_response(
     events = await collect_events(
         AgentLoop(
             model=SelfPausingToolCallModel(controller),
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             limits=LoopLimits(max_total_tool_calls=0),
         ),
         [user_text("echo")],
@@ -3205,7 +2498,9 @@ async def test_tool_error_recovery_by_default() -> None:
             ModelResponse.text("handled"),
         ]
     )
-    result = await AgentLoop(model=model, tools=ToolRegistry([FailTool()])).run([user_text("fail")])
+    result = await AgentLoop(model=model, tools=ToolRegistry([FailingFixtureTool()])).run(
+        [user_text("fail")]
+    )
 
     assert result.status is AgentStatus.COMPLETED
     assert parts_text(result.final_parts) == "handled"
@@ -3225,7 +2520,7 @@ async def test_waiting_tool_result_pauses_after_tool_commit_and_resumes() -> Non
         ]
     )
 
-    result = await AgentLoop(model=model, tools=ToolRegistry([WaitingTool()])).run(
+    result = await AgentLoop(model=model, tools=HarnessToolRegistry("wait")).run(
         [user_text("start external work")]
     )
 
@@ -3244,7 +2539,7 @@ async def test_waiting_tool_result_pauses_after_tool_commit_and_resumes() -> Non
     resumed_model = ScriptedModel([ModelResponse.text("external job complete")])
     resumed = await AgentLoop(
         model=resumed_model,
-        tools=ToolRegistry([WaitingTool()]),
+        tools=HarnessToolRegistry("wait"),
     ).run_snapshot(ResumeInput(snapshot=result.snapshot or raise_assertion()))
 
     assert resumed.status is AgentStatus.COMPLETED
@@ -3263,7 +2558,7 @@ async def test_external_wait_has_no_resumable_checkpoint_before_paused_decision(
     )
 
     events = await collect_events(
-        AgentLoop(model=model, tools=ToolRegistry([WaitingTool()])),
+        AgentLoop(model=model, tools=HarnessToolRegistry("wait")),
         [user_text("start external work")],
     )
     snapshots = [
@@ -3300,7 +2595,7 @@ async def test_host_pause_during_tool_completion_replaces_unpaused_commit_checkp
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             hooks=[RequestPauseOnEventHook(EventTypes.TOOL_COMPLETED, controller)],
         ),
         [user_text("run tool")],
@@ -3343,7 +2638,7 @@ async def test_parallel_waiting_tool_results_commit_batch_and_first_pause_wins()
 
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([ParallelWaitingTool()]),
+        tools=HarnessToolRegistry("parallel_wait"),
         limits=LoopLimits(max_parallel_tool_calls=2),
     ).run([user_text("start external work")])
 
@@ -3360,46 +2655,13 @@ async def test_parallel_waiting_tool_results_commit_batch_and_first_pause_wins()
 
 
 @pytest.mark.asyncio
-async def test_external_wait_pause_respects_expired_deadline() -> None:
-    now = wall_time()
-    context = RuntimeContext(run_id="expired-wait", started_at=now - 2, deadline=now - 1)
-    control = RunControlState(
-        run_id=context.run_id,
-        started_at=context.started_at,
-        deadline=context.deadline,
-        monotonic_deadline=monotonic() - 1,
-    )
-    state = AgentState(
-        status=AgentStatus.EXECUTING_TOOLS,
-        messages=[user_text("wait")],
-    )
-
-    events = await PauseExposingLoop(model=ScriptedModel([])).apply_pause_for_test(
-        state,
-        context,
-        control,
-        PauseRequest(
-            reason="external_callback",
-            source="tool",
-            wait_id="job-1",
-            metadata={},
-        ),
-    )
-
-    assert state.status is AgentStatus.LIMIT_EXCEEDED
-    assert state.error == "timeout_seconds"
-    assert state.pause is None
-    assert EventTypes.PAUSE_REQUESTED not in [event.type for event in events]
-
-
-@pytest.mark.asyncio
 async def test_stop_on_tool_error() -> None:
     model = ScriptedModel(
         [ModelResponse(tool_calls=[ToolCall(id="call-1", name="fail", arguments={})])]
     )
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([FailTool()]),
+        tools=ToolRegistry([FailingFixtureTool()]),
         limits=LoopLimits(stop_on_tool_error=True),
     ).run([user_text("fail")])
 
@@ -3419,7 +2681,7 @@ async def test_stop_on_tool_error_has_no_resumable_checkpoint_before_failed_deci
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([FailTool()]),
+            tools=ToolRegistry([FailingFixtureTool()]),
             limits=LoopLimits(stop_on_tool_error=True),
         ),
         [user_text("fail")],
@@ -3475,7 +2737,7 @@ async def test_unknown_tool_is_not_implementation_invoked() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_input_schema_error_is_committed_as_observation_error() -> None:
-    tool = StrictCountTool()
+    tool = StrictCountFixtureTool()
     model = ScriptedModel(
         [
             ModelResponse(
@@ -3504,7 +2766,7 @@ async def test_tool_input_schema_error_is_committed_as_observation_error() -> No
 
 @pytest.mark.asyncio
 async def test_tool_input_schema_error_is_not_implementation_invoked() -> None:
-    tool = StrictCountTool()
+    tool = StrictCountFixtureTool()
     model = ScriptedModel(
         [
             ModelResponse(
@@ -3564,7 +2826,7 @@ async def test_after_tool_cannot_turn_approval_denial_into_success() -> None:
                     )
                 ]
             ),
-            tools=ToolRegistry([RecordingTool()]),
+            tools=RecordingToolRegistry(),
             approval_policy=StaticApprovalPolicy(ApprovalDecision.deny("blocked")),
             hooks=[SuccessfulAfterToolHook()],
         ),
@@ -3607,7 +2869,7 @@ async def test_after_tool_cannot_turn_approval_denial_into_pause() -> None:
                     )
                 ]
             ),
-            tools=ToolRegistry([RecordingTool()]),
+            tools=RecordingToolRegistry(),
             approval_policy=StaticApprovalPolicy(ApprovalDecision.deny("blocked")),
             hooks=[PausingAfterToolHook()],
         ),
@@ -4039,7 +3301,7 @@ async def test_tool_timeout_is_hard_limit() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([SlowTool()]),
+        tools=HarnessToolRegistry("slow"),
         limits=LoopLimits(timeout_seconds=0.01),
     ).run([user_text("slow")])
 
@@ -4055,7 +3317,7 @@ async def test_approval_allow_tool_timeout_trace_replays() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([SlowTool()]),
+        tools=HarnessToolRegistry("slow"),
         limits=LoopLimits(timeout_seconds=0.01),
         approval_policy=StaticApprovalPolicy(ApprovalDecision.allow("safe")),
     ).run([user_text("slow")])
@@ -4083,7 +3345,7 @@ async def test_tool_call_limit_leaves_only_unexecuted_pending_calls() -> None:
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             limits=LoopLimits(max_total_tool_calls=1),
         ),
         [user_text("echo twice")],
@@ -4091,56 +3353,6 @@ async def test_tool_call_limit_leaves_only_unexecuted_pending_calls() -> None:
 
     assert events[-1].data["state"]["pending_tool_call_count"] == 1
     assert events[-1].data["state"]["total_tool_calls"] == 1
-
-
-@pytest.mark.asyncio
-async def test_model_response_checkpoint_rechecks_timeout_after_state_changed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expired = False
-
-    def fake_monotonic() -> float:
-        return 2.0 if expired else 0.0
-
-    class ExpireAfterModelTransitionHook(RuntimeHook):
-        def on_event(
-            self, event: AgentEvent, context: RuntimeContext, emitter: EventEmitter
-        ) -> None:
-            nonlocal expired
-            _ = context, emitter
-            if (
-                event.type == EventTypes.STATE_CHANGED
-                and event.data["from"] == AgentStatus.PLANNING.value
-                and event.data["to"] == AgentStatus.EXECUTING_TOOLS.value
-            ):
-                expired = True
-
-    monkeypatch.setattr(loop_module, "monotonic", fake_monotonic)
-    now = wall_time()
-    model = ScriptedModel(
-        [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "late"})])]
-    )
-
-    events = [
-        event
-        async for event in AgentLoop(
-            model=model,
-            tools=ToolRegistry([EchoTool()]),
-            hooks=[ExpireAfterModelTransitionHook()],
-        ).run_events(
-            [user_text("echo")],
-            context=RuntimeContext(started_at=now, deadline=now + 1),
-        )
-    ]
-
-    checkpoint_statuses = [
-        RunSnapshot.from_dict(event.data).state.status
-        for event in events
-        if event.type == EventTypes.CHECKPOINT
-    ]
-    assert AgentStatus.EXECUTING_TOOLS not in checkpoint_statuses
-    assert events[-1].data["state"]["status"] == AgentStatus.LIMIT_EXCEEDED.value
-    assert events[-1].data["state"]["error"] == "timeout_seconds"
 
 
 @pytest.mark.asyncio
@@ -4158,7 +3370,7 @@ async def test_tool_call_limit_wins_over_tool_result_pause() -> None:
 
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([WaitingTool(), EchoTool()]),
+        tools=HarnessToolRegistry("wait", "echo"),
         limits=LoopLimits(max_total_tool_calls=1),
     ).run([user_text("wait then echo")])
 
@@ -4189,7 +3401,7 @@ async def test_tool_call_limit_wins_over_pause_requested_after_tool_completed() 
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             hooks=[RequestPauseOnEventHook(EventTypes.TOOL_COMPLETED, controller)],
             limits=LoopLimits(max_total_tool_calls=1),
         ),
@@ -4214,7 +3426,7 @@ async def test_tool_result_pause_loses_to_iteration_limit_after_final_tool() -> 
 
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([WaitingTool()]),
+        tools=HarnessToolRegistry("wait"),
         limits=LoopLimits(max_iterations=1),
     ).run([user_text("wait")])
 
@@ -4241,7 +3453,7 @@ async def test_tool_final_planning_boundary_applies_pause_before_checkpoint() ->
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             hooks=[
                 RequestPauseOnStateChangeHook(
                     AgentStatus.EXECUTING_TOOLS,
@@ -4279,7 +3491,7 @@ async def test_iteration_limit_wins_over_pause_requested_after_final_tool() -> N
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             hooks=[
                 RequestPauseOnStateChangeHook(
                     AgentStatus.EXECUTING_TOOLS,
@@ -4395,7 +3607,7 @@ async def test_tool_batch_ids_reset_for_each_run_on_reused_loop() -> None:
             ModelResponse.text("second"),
         ]
     )
-    agent = AgentLoop(model=model, tools=ToolRegistry([EchoTool()]))
+    agent = AgentLoop(model=model, tools=HarnessToolRegistry("echo"))
 
     first_events = await collect_events(agent, [user_text("first")])
     second_events = await collect_events(agent, [user_text("second")])
@@ -4737,7 +3949,7 @@ async def test_checkpoint_event_after_each_tool_commit_is_resumable() -> None:
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             limits=LoopLimits(max_total_tool_calls=1),
         ),
         [user_text("echo twice")],
@@ -4770,15 +3982,15 @@ async def test_model_tool_checkpoint_resumes_into_tool_execution_without_recalli
         ]
     )
     events = await collect_events(
-        AgentLoop(model=model, tools=ToolRegistry([RecordingTool()])),
+        AgentLoop(model=model, tools=RecordingToolRegistry()),
         [user_text("record twice")],
     )
     first_checkpoint = next(event for event in events if event.type == EventTypes.CHECKPOINT)
     snapshot = RunSnapshot.from_dict(first_checkpoint.data)
     resumed_model = ScriptedModel([ModelResponse.text("resumed done")])
-    resumed_tool = RecordingTool()
+    resumed_tool = RecordingToolRegistry()
 
-    result = await AgentLoop(model=resumed_model, tools=ToolRegistry([resumed_tool])).run_snapshot(
+    result = await AgentLoop(model=resumed_model, tools=resumed_tool).run_snapshot(
         ResumeInput(snapshot=snapshot)
     )
 
@@ -5014,7 +4226,7 @@ async def test_resume_input_rejects_append_messages_when_resuming_pending_tools(
                 )
             ]
         ),
-        tools=ToolRegistry([WaitingTool(), EchoTool()]),
+        tools=HarnessToolRegistry("wait", "echo"),
     ).run([user_text("start")])
 
     assert paused.snapshot is not None
@@ -5366,7 +4578,7 @@ async def test_after_tool_hook_invalid_result_is_rejected() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         hooks=[BadAfterToolHook()],
     ).run([user_text("hello")])
 
@@ -5382,7 +4594,7 @@ async def test_tool_completed_event_is_not_emitted_if_after_tool_result_is_inval
     events = await collect_events(
         AgentLoop(
             model=model,
-            tools=ToolRegistry([EchoTool()]),
+            tools=HarnessToolRegistry("echo"),
             hooks=[BadToolObservationShapeHook()],
         ),
         [user_text("hello")],
@@ -5404,7 +4616,7 @@ async def test_before_tool_argument_rewrite_updates_assistant_history() -> None:
     )
     result = await AgentLoop(
         model=model,
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         hooks=[ToolArgumentHook()],
     ).run([user_text("echo")])
 
@@ -5423,7 +4635,7 @@ async def test_before_tool_cannot_mutate_tool_call_identity_in_place() -> None:
                 )
             ]
         ),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         hooks=[MutatingToolIdentityHook()],
     ).run([user_text("echo")])
 
@@ -5473,21 +4685,6 @@ async def test_hook_emitted_events_cannot_use_core_event_types() -> None:
 
 
 @pytest.mark.asyncio
-async def test_custom_event_dispatch_chain_is_bounded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(loop_module, "_MAX_DISPATCHED_EVENTS_PER_RUNTIME_EVENT", 4)
-
-    result = await AgentLoop(
-        model=ScriptedModel([ModelResponse.text("done")]),
-        hooks=[RecursiveCustomEventHook()],
-    ).run([user_text("hello")])
-
-    assert result.status is AgentStatus.FAILED
-    assert result.error == "custom event dispatch limit exceeded"
-
-
-@pytest.mark.asyncio
 async def test_custom_hook_events_do_not_pollute_runtime_trace() -> None:
     result = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("done")]),
@@ -5522,7 +4719,7 @@ async def test_event_order_is_stable() -> None:
         ]
     )
     events = await collect_events(
-        AgentLoop(model=model, tools=ToolRegistry([EchoTool()])),
+        AgentLoop(model=model, tools=HarnessToolRegistry("echo")),
         [user_text("echo")],
     )
 
@@ -5779,7 +4976,7 @@ def test_approval_request_nested_objects_are_defensive_copies() -> None:
 
 @pytest.mark.asyncio
 async def test_approval_denial_commits_tool_error_without_invoking_tool() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
     policy = StaticApprovalPolicy(
         ApprovalDecision.deny("requires human approval", metadata={"policy": "test"})
     )
@@ -5792,7 +4989,7 @@ async def test_approval_denial_commits_tool_error_without_invoking_tool() -> Non
                 ModelResponse.text("recovered"),
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         approval_policy=policy,
     )
 
@@ -5827,7 +5024,7 @@ async def test_approval_denial_commits_tool_error_without_invoking_tool() -> Non
 
 @pytest.mark.asyncio
 async def test_approval_allow_invokes_tool_implementation() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
     policy = StaticApprovalPolicy(ApprovalDecision.allow("safe"))
     agent = AgentLoop(
         model=ScriptedModel(
@@ -5838,7 +5035,7 @@ async def test_approval_allow_invokes_tool_implementation() -> None:
                 ModelResponse.text("done"),
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         approval_policy=policy,
     )
 
@@ -5954,7 +5151,7 @@ async def test_approval_event_trace_replays_when_resolution_event_hook_times_out
                 )
             ]
         ),
-        tools=ToolRegistry([RecordingTool()]),
+        tools=RecordingToolRegistry(),
         approval_policy=StaticApprovalPolicy(decision),
         limits=LoopLimits(timeout_seconds=0.01),
         hooks=[SlowOnEventHook(slow_event_type)],
@@ -6183,7 +5380,7 @@ async def test_run_store_journal_pause_after_deferred_transition_order_is_consis
     events: list[AgentEvent] = []
     async for event in AgentLoop(
         model=SelfPausingToolCallModel(controller),
-        tools=ToolRegistry([EchoTool()]),
+        tools=HarnessToolRegistry("echo"),
         hooks=[TimelineVisibilityHook(timeline)],
         run_store=MemoryRunStore(),
         run_journal=journal,
@@ -6246,7 +5443,7 @@ async def test_store_failure_after_tool_result_rolls_back_to_prior_checkpoint() 
                 )
             ]
         ),
-        tools=ToolRegistry([RecordingTool()]),
+        tools=RecordingToolRegistry(),
         run_store=store,
     )
 
@@ -6353,7 +5550,7 @@ async def test_approval_failure_journals_request_without_completion() -> None:
                 )
             ]
         ),
-        tools=ToolRegistry([RecordingTool()]),
+        tools=RecordingToolRegistry(),
         approval_policy=FailingApprovalPolicy(),
         run_journal=journal,
     )
@@ -6391,7 +5588,7 @@ async def test_resume_checkpoint_store_records_parent_checkpoint_id() -> None:
                 )
             ]
         ),
-        tools=ToolRegistry([WaitingTool()]),
+        tools=HarnessToolRegistry("wait"),
     ).run([user_text("start job")])
     assert first.snapshot is not None
     parent_id = f"checkpoint-{first.snapshot.context.sequence}"
@@ -6399,7 +5596,7 @@ async def test_resume_checkpoint_store_records_parent_checkpoint_id() -> None:
     store = MemoryRunStore()
     resumed = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("resumed")]),
-        tools=ToolRegistry([WaitingTool()]),
+        tools=HarnessToolRegistry("wait"),
         run_store=store,
     ).run_snapshot(
         ResumeInput(
@@ -6415,7 +5612,7 @@ async def test_resume_checkpoint_store_records_parent_checkpoint_id() -> None:
 
 @pytest.mark.asyncio
 async def test_approval_pause_stops_before_tool_execution_and_preserves_pending_call() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
     policy = StaticApprovalPolicy(
         ApprovalDecision.pause("approval_required", metadata={"policy": "test"})
     )
@@ -6427,7 +5624,7 @@ async def test_approval_pause_stops_before_tool_execution_and_preserves_pending_
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         approval_policy=policy,
     )
 
@@ -6454,7 +5651,7 @@ async def test_approval_pause_stops_before_tool_execution_and_preserves_pending_
 
 @pytest.mark.asyncio
 async def test_approval_pause_can_resume_and_execute_pending_call_once() -> None:
-    tool = RecordingTool()
+    tool = RecordingToolRegistry()
     policy = SequencedApprovalPolicy(
         [
             ApprovalDecision.pause("approval_required"),
@@ -6469,7 +5666,7 @@ async def test_approval_pause_can_resume_and_execute_pending_call_once() -> None
                 )
             ]
         ),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         approval_policy=policy,
     ).run([user_text("use tool")])
 
@@ -6481,7 +5678,7 @@ async def test_approval_pause_can_resume_and_execute_pending_call_once() -> None
     store = MemoryRunStore()
     resumed = await AgentLoop(
         model=ScriptedModel([ModelResponse.text("done")]),
-        tools=ToolRegistry([tool]),
+        tools=tool,
         approval_policy=policy,
         run_store=store,
     ).run_snapshot(ResumeInput(snapshot=first.snapshot))
@@ -6548,8 +5745,8 @@ async def test_approval_pause_after_prior_parallel_call_has_only_applied_approva
 
 @pytest.mark.asyncio
 async def test_approval_policy_receives_normalized_risk_annotations() -> None:
-    class RiskyTool(RecordingTool):
-        spec = ToolSpec(
+    tool = RecordingToolRegistry(
+        ToolSpec(
             name="record",
             description="Record with risk annotations.",
             input_schema={
@@ -6568,6 +5765,7 @@ async def test_approval_policy_receives_normalized_risk_annotations() -> None:
                 },
             },
         )
+    )
 
     policy = StaticApprovalPolicy(ApprovalDecision.allow("ok"))
     agent = AgentLoop(
@@ -6579,7 +5777,7 @@ async def test_approval_policy_receives_normalized_risk_annotations() -> None:
                 ModelResponse.text("done"),
             ]
         ),
-        tools=ToolRegistry([RiskyTool()]),
+        tools=tool,
         approval_metadata={"surface": "cli"},
         approval_policy=policy,
     )
@@ -6599,7 +5797,7 @@ async def test_approval_policy_receives_normalized_risk_annotations() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_progress_and_cancel_request_are_live_events_and_trace_replays() -> None:
-    class ProgressTool:
+    class ProgressFixtureTool:
         spec = ToolSpec(
             name="progress",
             description="Emit progress and cooperatively observe cancellation.",
@@ -6625,7 +5823,7 @@ async def test_tool_progress_and_cancel_request_are_live_events_and_trace_replay
                 ModelResponse.text("handled"),
             ]
         ),
-        tools=ToolRegistry([ProgressTool()]),
+        tools=ToolRegistry([ProgressFixtureTool()]),
     )
 
     events: list[AgentEvent] = []

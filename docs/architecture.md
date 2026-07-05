@@ -29,8 +29,8 @@ Sibling Python packages own the parts that should be independently importable:
 | `prompting` | Prompt/message construction conveniences such as `user_text(...)`. | `kernel` |
 | `modelkit` | Model adapter helper facade that re-exports kernel stream accumulation and capability discovery helpers for adapter packages. | `kernel` |
 | `diagnostics` | Public `RunTrace`, trace construction from events, and deterministic replay validation. | `kernel` |
-| `harness` | Reusable test harness helpers such as scripted models and event collection. | `kernel` |
-| `conformance` | Cross-SDK fixture runner and schema validation CLI. | `kernel`, `toolkit`, `prompting`, `diagnostics` |
+| `harness` | Workspace-level controlled test harness for exercising runtime packages in repeatable scenarios: model drivers, fake runtime ports, tool stubs and registry doubles, message fixtures, event/timeline/trace observation, test scenario helpers, and behavior assertions. | `kernel`, `toolkit`, `prompting`, `diagnostics` |
+| `conformance` | Cross-SDK fixture runner and schema validation CLI. | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness` |
 
 Host applications own:
 
@@ -42,7 +42,7 @@ Host applications own:
 - concrete checkpoint stores, approval UIs, queues, sandboxes, provider
   adapters, artifact storage, dashboards, and deployment runtime.
 
-The v0.1 runtime intentionally excludes concrete checkpoint stores, approval
+The v0 runtime intentionally excludes concrete checkpoint stores, approval
 UIs, memory implementations, sandboxing, MCP, subagent schedulers, artifact
 stores, job queues, and concrete provider adapters. Those are extension
 concerns. The core exposes neutral hooks, context, model protocols, tool
@@ -58,6 +58,15 @@ JSON Schema validation is not a `kernel` dependency. The kernel calls
 `toolkit.ToolRegistry` implements that protocol with `jsonschema` validation.
 Custom registries must enforce equivalent portable validation if they are used
 as production registries.
+
+`harness` is the controlled test environment around the Python runtime
+workspace. It assembles deterministic drivers, fake runtime ports, tool stubs,
+message fixtures, observation helpers, and behavior assertions so tests can run
+runtime packages in repeatable scenarios. It may compose public APIs from
+`kernel`, `toolkit`, `prompting`, and `diagnostics`, but it is not a production
+extension layer and must not own runtime semantics, JSON Schema validation
+rules, diagnostics replay implementation, provider adapters, or conformance
+fixture interpretation.
 
 `RunTrace` is a public diagnostics concept, not a core import surface. The
 kernel records compact semantic steps internally and exposes `AgentResult.trace`

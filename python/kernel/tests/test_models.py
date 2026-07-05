@@ -5,6 +5,7 @@ from typing import Any, cast
 import pytest
 from kernel import (
     ContentPart,
+    Message,
     ModelCapabilities,
     ModelContentDelta,
     ModelOptions,
@@ -23,9 +24,10 @@ from kernel import (
     ToolChoice,
     model_capabilities,
 )
-from modelkit import ModelStreamAccumulator as ModelkitModelStreamAccumulator
-from modelkit import model_capabilities as modelkit_model_capabilities
-from prompting import user_text
+
+
+def user_text(text: str) -> Message:
+    return Message.user([ContentPart.text_part(text)])
 
 
 def test_model_request_standard_fields_round_trip() -> None:
@@ -179,10 +181,6 @@ def test_model_stream_accumulator_preserves_open_content_part_types() -> None:
     assert response.parts[0].text == "xy"
 
 
-def test_modelkit_stream_accumulator_reexports_kernel_accumulator() -> None:
-    assert ModelkitModelStreamAccumulator is ModelStreamAccumulator
-
-
 def test_model_stream_accumulator_accumulates_complete_response() -> None:
     accumulator = ModelStreamAccumulator()
     events: list[ModelStreamEvent] = [
@@ -299,18 +297,6 @@ def test_model_capabilities_helper_accepts_default_mapping_and_callable() -> Non
     assert model_capabilities(MappingCapabilitiesModel()).streaming is True
     assert model_capabilities(MappingCapabilitiesModel()).tools is True
     assert model_capabilities(CallableCapabilitiesModel()).structured_output is True
-
-
-def test_modelkit_capabilities_helper_reexports_kernel_helper_behavior() -> None:
-    class MappingCapabilitiesModel:
-        capabilities = {"streaming": True, "tools": True, "metadata": {"source": "test"}}
-
-    class CallableCapabilitiesModel:
-        def capabilities(self) -> dict[str, bool]:
-            return {"structured_output": True, "usage": True}
-
-    for client in (object(), MappingCapabilitiesModel(), CallableCapabilitiesModel()):
-        assert modelkit_model_capabilities(client).to_dict() == model_capabilities(client).to_dict()
 
 
 def test_model_capabilities_from_dict_rejects_invalid_boolean_fields() -> None:

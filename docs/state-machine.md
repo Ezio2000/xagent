@@ -1,6 +1,6 @@
 # State Machine
 
-The v0.1 state machine has six states:
+The v0 state machine has six states:
 
 - `planning`: call the model and ask it for either a final answer or tool calls.
 - `executing_tools`: execute or accept requested tool calls and append outputs.

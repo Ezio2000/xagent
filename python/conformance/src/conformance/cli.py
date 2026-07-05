@@ -28,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory containing contracts/v0 schema JSON. Defaults to the repository layout.",
     )
     parser.add_argument(
+        "--case-schema",
+        type=Path,
+        help="Path to conformance/case.schema.json. Defaults to the repository layout.",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Only print failures and the final summary.",
@@ -66,8 +71,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     cases_dir = args.cases_dir.resolve()
     spec_dir = args.spec_dir.resolve() if args.spec_dir is not None else infer_spec_dir(cases_dir)
+    case_schema_path = args.case_schema.resolve() if args.case_schema is not None else None
     try:
-        runner = ConformanceRunner(cases_dir=cases_dir, spec_dir=spec_dir)
+        runner = ConformanceRunner(
+            cases_dir=cases_dir,
+            spec_dir=spec_dir,
+            case_schema_path=case_schema_path,
+        )
         return asyncio.run(
             _run_cli_cases(
                 runner,

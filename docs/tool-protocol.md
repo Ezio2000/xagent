@@ -118,9 +118,11 @@ job state, retries, callbacks, later worker updates, and any eventual resume or
 conversation insertion.
 
 Message content can reference host-owned artifacts through
-`ContentPart(type="artifact", data={"artifact": ...})`. Core preserves the
-reference, media type, name, size, hash, and metadata but does not dereference,
-retain, or garbage-collect artifact payloads.
+`ContentPart(type="artifact", ref=..., data={"artifact": ...})`. Core preserves
+the reference, media type, name, size, hash, and metadata but does not
+dereference, retain, or garbage-collect artifact payloads. For artifact parts,
+the outer content part `ref` must match `data.artifact.ref`; SDK validators
+enforce this semantic invariant in addition to the JSON Schema shape.
 
 The registry exposes neutral `ToolSpec` values. Provider adapters are
 responsible for converting those specs to provider-specific tool formats.

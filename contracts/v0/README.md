@@ -106,8 +106,12 @@ SDK-local detail:
 JSON Schema is the shared structural gate. SDK constructors and replay
 validators must enforce semantic constraints that are awkward or impossible to
 express portably in JSON Schema. Examples include duplicate tool-call id
-rejection, restored tool-message adjacency, and replay accounting between
-`model_result`, checkpoints, tool results, and `total_tool_calls`.
+rejection, artifact content parts requiring `ref == data.artifact.ref`, stored
+checkpoint mirrors requiring top-level `run_id`, `sequence`, and `status` to
+match the nested `snapshot`, journal record mirrors requiring top-level event
+fields to match the nested `event`, restored tool-message adjacency, and replay
+accounting between `model_result`, checkpoints, tool results, and
+`total_tool_calls`.
 
 When a behavior is portable across SDKs, update this directory and the shared
 conformance cases together. Python-only conveniences belong in the Python SDK

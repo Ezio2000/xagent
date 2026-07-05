@@ -7,6 +7,7 @@ license = { text = "MIT" }
 authors = [{ name = "runtime contributors" }]
 dependencies = [
   "diagnostics",
+  "harness",
   "jsonschema>=4.23.0",
   "kernel",
   "prompting",
@@ -19,6 +20,7 @@ conformance = "conformance.cli:main"
 
 [tool.uv.sources]
 diagnostics = { workspace = true }
+harness = { workspace = true }
 kernel = { workspace = true }
 prompting = { workspace = true }
 toolkit = { workspace = true }

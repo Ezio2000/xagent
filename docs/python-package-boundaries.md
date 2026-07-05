@@ -16,7 +16,7 @@ namespace. Do not treat it as two kernels.
 | `prompting` | `import prompting` | Message and prompt construction conveniences built on kernel message types. | Runtime state, scheduling, model/provider clients. |
 | `modelkit` | `import modelkit` | Model adapter helper facade re-exporting kernel stream accumulation and capability helper functions. | Runtime loop, tool execution, prompt helpers, independent copies of kernel model helper logic. |
 | `diagnostics` | `import diagnostics` | Public trace objects, trace-from-events helpers, deterministic replay validation, and diagnostics-only error types. | Running agents, invoking tools, provider adapters, persistence backends. |
-| `harness` | `import harness` | Reusable tests and examples support such as scripted models and event collection. | Production runtime semantics, conformance contracts, public kernel ports. |
+| `harness` | `import harness` | Workspace-level controlled test harness for exercising runtime packages in repeatable, observable scenarios: model drivers, fake runtime ports, tool stubs and registry doubles, message fixtures, event/timeline/trace observation, test scenario helpers, and behavior assertions. | Production runtime semantics, portable conformance contracts, examples, schema validation rules, diagnostics replay implementation, provider adapters, or app infrastructure. |
 | `conformance` | `uv run conformance ...` | Cross-SDK fixture runner and JSON Schema validation around `contracts/v0`. | Kernel internals or package-private APIs. |
 
 ## Dependency Rules
@@ -28,12 +28,13 @@ namespace. Do not treat it as two kernels.
 | `prompting` | `kernel` | Import only `kernel` package root. |
 | `modelkit` | `kernel` | Import only `kernel` package root. |
 | `diagnostics` | `kernel` | Import only `kernel` package root. |
-| `harness` | `kernel` | Import only `kernel` package root. |
-| `conformance` | `kernel`, `toolkit`, `prompting`, `diagnostics` | Use public package roots only. |
+| `harness` | `kernel`, `toolkit`, `prompting`, `diagnostics` | Import public package roots only; runtime source packages must not import `harness`. |
+| `conformance` | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness` | Use public package roots only. |
 
-The boundary tests in `python/kernel/tests/test_dependency_boundaries.py`
+The boundary tests in `tests/test_dependency_boundaries.py`
 enforce the allowed package set, declared dependencies, retired package names,
-and public-root-only cross-package imports.
+runtime-to-test dependency direction, and public-root-only cross-package
+imports.
 
 These dependency rules apply to production import packages under
 `python/*/src`. Package tests and examples may include workspace integration
@@ -50,7 +51,7 @@ tests should prefer only that package's declared runtime dependencies.
 | Does it define canonical stream accumulation or inspect optional model capabilities used by the runtime? | `kernel` |
 | Does it expose adapter-friendly imports for kernel model helpers without adding behavior? | `modelkit` |
 | Does it inspect, replay, summarize, or validate traces after a run? | `diagnostics` |
-| Is it a reusable fake, scripted model, collector, or test-only convenience? | `harness` |
+| Is it reusable test harness equipment for running runtime packages in controlled scenarios, such as model drivers, tool fixtures, message fixtures, stubs/fakes, synthetic runtime ports, test data or scenario helpers, event/timeline/trace observation, or behavior assertions? | `harness` |
 | Is it portable behavior that every SDK should satisfy? | `contracts/v0` and `conformance/cases` |
 
 ## Public API Rule

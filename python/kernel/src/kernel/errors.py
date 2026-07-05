@@ -20,9 +20,6 @@ from kernel._validation import (
     expect_optional_non_empty_str as _expect_optional_non_empty_str,
 )
 from kernel._validation import (
-    expect_present_optional_bool as _expect_present_optional_bool,
-)
-from kernel._validation import (
     expect_present_optional_int as _expect_present_optional_int,
 )
 from kernel._validation import (
@@ -106,6 +103,11 @@ class ModelErrorInfo:
         }
         _reject_unknown_keys(value, known, "model error info")
         raw_metadata: object = value.get("metadata", {})
+        retryable = (
+            _expect_bool(value["retryable"], "model error retryable")
+            if "retryable" in value
+            else False
+        )
         return cls(
             message=_expect_str(value["message"], "model error message"),
             provider=_expect_present_optional_str(value, "provider", "model error provider"),
@@ -113,8 +115,7 @@ class ModelErrorInfo:
             status_code=_expect_present_optional_int(
                 value, "status_code", "model error status_code"
             ),
-            retryable=_expect_present_optional_bool(value, "retryable", "model error retryable")
-            or False,
+            retryable=retryable,
             request_id=_expect_present_optional_str(value, "request_id", "model error request_id"),
             metadata=_expect_mapping(raw_metadata, "model error metadata"),
         )

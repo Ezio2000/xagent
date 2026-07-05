@@ -83,13 +83,17 @@ def load_json_object(path: Path, label: str) -> dict[str, Any]:
     return cast(dict[str, Any], value)
 
 
-def build_validators(spec_dir: Path) -> ConformanceValidators:
+def load_contract_schemas(spec_dir: Path) -> dict[str, dict[str, Any]]:
     if not spec_dir.is_dir():
         raise FileNotFoundError(f"spec directory not found: {spec_dir}")
     schemas = {path.name: load_json_schema(path) for path in sorted(spec_dir.glob("*.schema.json"))}
     missing = REQUIRED_SCHEMA_FILES - set(schemas)
     if missing:
         raise ValueError(f"spec directory missing schema file(s): {', '.join(sorted(missing))}")
+    return schemas
+
+
+def build_schema_registry(schemas: Mapping[str, Mapping[str, Any]]) -> Any:
     registry: Any = REGISTRY_CLS().with_resources(
         [
             (
@@ -101,6 +105,18 @@ def build_validators(spec_dir: Path) -> ConformanceValidators:
             for schema in schemas.values()
         ]
     )
+    return registry
+
+
+def build_case_validator(spec_dir: Path, case_schema_path: Path) -> Draft202012Validator:
+    schemas = load_contract_schemas(spec_dir)
+    registry = build_schema_registry(schemas)
+    return Draft202012Validator(load_json_schema(case_schema_path), registry=registry)
+
+
+def build_validators(spec_dir: Path) -> ConformanceValidators:
+    schemas = load_contract_schemas(spec_dir)
+    registry = build_schema_registry(schemas)
     runtime_extensions_ref = "https://agent-runtime.local/spec/v0/runtime-extensions.schema.json"
 
     def runtime_extension_validator(def_name: str) -> Draft202012Validator:

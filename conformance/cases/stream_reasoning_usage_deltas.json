@@ -1,0 +1,61 @@
+{
+  "name": "stream_reasoning_usage_deltas",
+  "model_steps": [],
+  "stream_model_steps": [
+    {
+      "events": [
+        {
+          "type": "reasoning_delta",
+          "index": 0,
+          "text_delta": "thinking",
+          "metadata": {
+            "adapter": "stream-fixture"
+          }
+        },
+        {
+          "type": "text_delta",
+          "index": 0,
+          "text_delta": "answer",
+          "part_type": "text"
+        },
+        {
+          "type": "usage_delta",
+          "usage": {
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "total_tokens": 5,
+            "reasoning_tokens": 1
+          }
+        }
+      ]
+    }
+  ],
+  "expected_status": "completed",
+  "expected_final_text": "answer",
+  "expected_tool_calls": 0,
+  "expected_model_deltas": [
+    {
+      "kind": "reasoning_delta",
+      "index": 0,
+      "text_delta": "thinking",
+      "metadata": {
+        "adapter": "stream-fixture"
+      }
+    },
+    {
+      "kind": "text_delta",
+      "index": 0,
+      "text_delta": "answer",
+      "part_type": "text"
+    },
+    {
+      "kind": "usage_delta",
+      "usage": {
+        "input_tokens": 2,
+        "output_tokens": 3,
+        "total_tokens": 5,
+        "reasoning_tokens": 1
+      }
+    }
+  ]
+}

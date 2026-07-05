@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
-from kernel import AgentState, AgentStatus, RunSnapshot, RuntimeContext
-from prompting import user_text
+from kernel import AgentState, AgentStatus, ContentPart, Message, RunSnapshot, RuntimeContext
+
+
+def user_text(text: str) -> Message:
+    return Message.user([ContentPart.text_part(text)])
 
 
 def test_runtime_context_from_dict_rejects_missing_required_fields() -> None:

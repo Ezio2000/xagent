@@ -79,17 +79,21 @@ MODEL_STEP_KEYS = {
     "metadata",
 }
 STREAM_STEP_KEYS = {"events"}
-STREAM_EVENT_KEYS = {
-    "type",
-    "index",
-    "text_delta",
-    "part_type",
-    "metadata",
-    "id",
-    "name",
-    "arguments_delta",
-    "mode",
-    "seconds",
+STREAM_EVENT_KEYS_BY_TYPE: dict[str, set[str]] = {
+    "text_delta": {"type", "index", "text_delta", "part_type", "metadata"},
+    "reasoning_delta": {"type", "index", "text_delta", "metadata"},
+    "tool_call_delta": {
+        "type",
+        "index",
+        "id",
+        "name",
+        "arguments_delta",
+        "mode",
+        "metadata",
+    },
+    "usage_delta": {"type", "usage", "metadata"},
+    "sleep": {"type", "seconds"},
+    "pause_request": {"type"},
 }
 LIMIT_KEYS = {
     "max_iterations",
@@ -104,7 +108,9 @@ APPROVAL_DECISION_KEYS = {"action", "reason", "metadata"}
 APPROVAL_REQUEST_EXPECTATION_KEYS = {"risk", "metadata"}
 STREAM_EVENT_REQUIRED_KEYS: dict[str, set[str]] = {
     "text_delta": {"index", "text_delta", "part_type"},
+    "reasoning_delta": {"index", "text_delta"},
     "tool_call_delta": {"index"},
+    "usage_delta": {"usage"},
     "sleep": {"seconds"},
     "pause_request": set(),
 }

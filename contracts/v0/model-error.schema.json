@@ -22,7 +22,7 @@
       "minimum": 100
     },
     "retryable": {
-      "type": ["boolean", "null"]
+      "type": "boolean"
     },
     "request_id": {
       "type": ["string", "null"],
