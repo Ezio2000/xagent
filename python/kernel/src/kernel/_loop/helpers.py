@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from kernel._loop_types import RunControlState
+from kernel._loop.types import RunControlState
 from kernel.context import RuntimeContext
 from kernel.control import ToolCancelRequest
 from kernel.errors import AgentError

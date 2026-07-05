@@ -6,7 +6,7 @@ from time import monotonic
 from time import time as wall_time
 from typing import Any, cast
 
-import kernel.loop as loop_module
+import kernel._loop.agent_loop as loop_module
 import pytest
 from kernel import (
     AgentEvent,
@@ -30,7 +30,7 @@ from kernel import (
     ToolOutput,
     ToolSpec,
 )
-from kernel._loop_types import RunControlState
+from kernel._loop.types import RunControlState
 
 
 def user_text(text: str) -> Message:

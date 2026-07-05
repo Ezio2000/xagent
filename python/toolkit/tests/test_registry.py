@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
-import toolkit.registry as registry_module
+import toolkit._registry.api as registry_module
 from kernel import (
     ContentPart,
     DuplicateToolError,
