@@ -98,7 +98,6 @@ from kernel.state import AgentState, PauseState
 from kernel.status import AgentStatus
 from kernel.store import RunStore, StoredCheckpoint
 from kernel.tools import (
-    ToolInvocation,
     ToolOutput,
     ToolRegistryProtocol,
     normalized_tool_risk,
@@ -1065,8 +1064,7 @@ class AgentLoop:
                 validate_tool_output_mode(canonical_call, result)
                 if not implementation_invoked:
                     validate_non_invoked_tool_output(canonical_call, result)
-                invocation = ToolInvocation.from_tool_call(canonical_call)
-                tool_message = result.to_message(invocation)
+                tool_message = result.to_message(canonical_call)
                 completed[progress.index] = (canonical_call, result, tool_message)
                 tool_completed_events = await self._events(
                     context,

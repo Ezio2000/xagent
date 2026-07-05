@@ -11,15 +11,13 @@ from kernel import (
     PauseRequest,
     RuntimeContext,
     ToolCall,
-    ToolExecutionContext,
-    ToolInvocation,
     ToolObservation,
     ToolOutput,
     ToolRejection,
     ToolSpec,
     normalized_tool_risk,
 )
-from toolkit import ToolRegistry
+from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
 
 
 class EchoTool:
@@ -314,7 +312,7 @@ def test_tool_result_to_message_strips_host_metadata() -> None:
         is_error=True,
     )
 
-    message = result.to_message(ToolInvocation.from_tool_call(ToolCall(id="call-1", name="tool")))
+    message = result.to_message(ToolCall(id="call-1", name="tool"))
 
     assert message.metadata == {"result_kind": "observation", "is_error": True}
     assert message.parts[0].metadata == {}

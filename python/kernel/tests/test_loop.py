@@ -55,8 +55,6 @@ from kernel import (
     ToolCatalog,
     ToolChoice,
     ToolCompleted,
-    ToolExecutionContext,
-    ToolInvocation,
     ToolObservation,
     ToolOutput,
     ToolRejection,
@@ -66,7 +64,7 @@ from kernel import (
 )
 from kernel._loop_types import RunControlState
 from prompting import tool_text, user_text
-from toolkit import ToolRegistry
+from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
 
 
 class ScriptedModel:

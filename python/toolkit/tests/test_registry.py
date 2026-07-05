@@ -7,12 +7,10 @@ import toolkit.registry as registry_module
 from kernel import (
     RuntimeContext,
     ToolCall,
-    ToolExecutionContext,
-    ToolInvocation,
     ToolObservation,
     ToolSpec,
 )
-from toolkit import ToolRegistry
+from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
 
 
 class StrictCountTool:

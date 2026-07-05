@@ -17,13 +17,11 @@ from kernel import (
     RunSnapshot,
     RuntimeContext,
     ToolCall,
-    ToolExecutionContext,
-    ToolInvocation,
     ToolObservation,
     ToolSpec,
 )
 from prompting import user_text
-from toolkit import ToolRegistry
+from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
 
 
 class ExternalWaitTool:

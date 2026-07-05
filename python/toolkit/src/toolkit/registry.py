@@ -8,24 +8,27 @@ from typing import Any, cast
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from kernel import (
-    AcceptableTool,
     DuplicateToolError,
-    ExecutableTool,
     InvalidToolCall,
+    ToolAcceptance,
+    ToolCall,
+    ToolError,
+    ToolObservation,
+    ToolOutput,
+    ToolRejection,
+    ToolSpec,
+)
+
+from toolkit.tool import (
+    AcceptableTool,
+    ExecutableTool,
     InvocableTool,
     RuntimeContextSnapshot,
     Tool,
-    ToolAcceptance,
-    ToolCall,
     ToolCancelChecker,
-    ToolError,
     ToolExecutionContext,
     ToolInvocation,
-    ToolObservation,
-    ToolOutput,
     ToolProgressEmitter,
-    ToolRejection,
-    ToolSpec,
 )
 
 _RESERVED_TOOL_OUTPUT_KINDS = {"observation", "acceptance", "rejection"}

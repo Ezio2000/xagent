@@ -1,6 +1,10 @@
 # Tool Protocol
 
-A tool is a model-neutral capability with an explicit invocation mode.
+A tool is a model-neutral capability with an explicit invocation mode. The
+kernel owns the portable `ToolCall`, `ToolSpec`, `ToolOutput`, and
+`ToolRegistryProtocol` contracts. `toolkit` owns tool implementation protocols
+and the default registry that adapts concrete tool objects to those kernel
+contracts.
 
 Tools expose:
 
@@ -17,20 +21,22 @@ Tools expose:
 - `accept(invocation, context)` when the tool supports `accept`.
 - `invoke(invocation, context)` when the tool supports extension modes.
 
-`ToolInvocation` contains `id`, `name`, `mode`, `arguments`, and call metadata.
-Model adapters map provider syntax into that shape. For a model-facing operator
-such as `accept(web_search({"query": "..."}))`, the normalized runtime shape is
-the original tool name plus `mode: "accept"`; core does not create wrapper tool
-names such as `accept_web_search`.
+Model adapters map provider syntax into `ToolCall`. For a model-facing
+operator such as `accept(web_search({"query": "..."}))`, the normalized
+runtime shape is the original tool name plus `mode: "accept"`; core does not
+create wrapper tool names such as `accept_web_search`.
+`toolkit.ToolInvocation` contains the same `id`, `name`, `mode`, `arguments`,
+and call metadata as a tool-facing view constructed by `toolkit` before calling
+concrete tool implementations.
 Before a tool implementation is called, `AgentLoop` asks the configured
 `ToolRegistryProtocol` to validate the call. The default `toolkit.ToolRegistry`
-validates `ToolInvocation.arguments` against `spec.input_schema` with JSON
-Schema. Validation failure is an invalid tool call: execute-mode calls commit
-an error `ToolObservation`, accept-mode calls commit a `ToolRejection`, and
-extension modes commit an error `ToolOutput` with a custom `tool_error` result
-kind. The model can observe that tool error on the next planning turn and
-recover. The corresponding tool lifecycle event and trace payloads use
-`implementation_invoked: false`.
+validates `ToolCall.arguments` against `spec.input_schema` with JSON Schema,
+then adapts the validated call to `toolkit.ToolInvocation`. Validation failure
+is an invalid tool call: execute-mode calls commit an error `ToolObservation`,
+accept-mode calls commit a `ToolRejection`, and extension modes commit an error
+`ToolOutput` with a custom `tool_error` result kind. The model can observe that
+tool error on the next planning turn and recover. The corresponding tool
+lifecycle event and trace payloads use `implementation_invoked: false`.
 
 If an approval policy is configured, valid tool calls are sent to it for an
 `allow`, `deny`, or `pause` decision before calling the tool implementation.
@@ -71,7 +77,7 @@ Extension-mode tools return `ToolOutput` with a non-empty custom `kind`. Core
 runtime validation preserves the generic output shape and only applies
 mode/result-kind coupling to known `execute` and `accept` modes.
 
-Tool implementations receive a `ToolExecutionContext`. They can call
+Tool implementations receive a `toolkit.ToolExecutionContext`. They can call
 `context.emit_progress({...})` to emit live `tool_progress` events and poll
 `context.cancel_requested` to observe host cancellation requests made through
 `RunController.cancel_tool(...)`. Cancellation is active-call scoped:

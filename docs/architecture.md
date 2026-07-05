@@ -6,7 +6,7 @@ independent sibling packages for optional helper layers.
 The `kernel` package owns:
 
 - the lightweight execution loop and state machine;
-- model and tool protocol interfaces;
+- model protocol interfaces and tool call/spec/output contracts;
 - provider-neutral model options, tool choice, response format, usage, and
   streaming delta contracts;
 - loop limits, event stream emission, runtime context, hook slots, and
@@ -25,7 +25,7 @@ Sibling Python packages own the parts that should be independently importable:
 | Package | Owns | May Depend On |
 | --- | --- | --- |
 | `kernel` | Core execution loop, public protocol/value types, scheduler, events, state, snapshots, resume, limits, hooks, ports, stream accumulation, and capability normalization. | No internal runtime package. |
-| `toolkit` | Default `ToolRegistry`, JSON Schema validation, and concrete tool invocation glue. | `kernel` |
+| `toolkit` | Tool implementation protocols, tool-facing invocation/context helpers, default `ToolRegistry`, JSON Schema validation, and concrete tool invocation glue. | `kernel` |
 | `prompting` | Prompt/message construction conveniences such as `user_text(...)`. | `kernel` |
 | `modelkit` | Model adapter helper facade that re-exports kernel stream accumulation and capability discovery helpers for adapter packages. | `kernel` |
 | `diagnostics` | Public `RunTrace`, trace construction from events, and deterministic replay validation. | `kernel` |

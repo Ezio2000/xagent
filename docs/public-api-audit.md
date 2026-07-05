@@ -26,14 +26,12 @@ audit promotes it.
 - Keep event names: `AgentEvent`, `EventType`, `EventTypes`, `EventEmitter`,
   and `QueuedEvent`.
 - Keep message names: `Message`, `ContentPart`, `ArtifactRef`, and `ToolCall`.
-- Keep model and tool protocol names: `ModelRequest`, `ModelResponse`,
+- Keep model protocol and tool contract names: `ModelRequest`, `ModelResponse`,
   `ModelClient`, `StreamingModelClient`, `ModelOptions`, `ToolChoice`,
   `ResponseFormat`, `ModelCapabilities`, `ModelUsage`, `model_capabilities`,
-  `ToolSpec`, `ToolInvocation`, `ToolExecutionContext`,
-  `RuntimeContextSnapshot`, `ToolCancelChecker`, `ToolProgressEmitter`,
-  `ToolObservation`, `ToolAcceptance`, `ToolRejection`, `ToolOutput`,
-  `BackgroundTask`, `ExecutableTool`, `AcceptableTool`, `InvocableTool`,
-  `Tool`, `ToolRegistryProtocol`, and `normalized_tool_risk`.
+  `ToolSpec`, `ToolObservation`, `ToolAcceptance`, `ToolRejection`,
+  `ToolOutput`, `BackgroundTask`, `ToolRegistryProtocol`, and
+  `normalized_tool_risk`.
 - Keep model streaming names: `ModelStreamEvent`, `ModelContentDelta`,
   `ModelToolCallDelta`, `ModelReasoningDelta`, `ModelUsageDelta`,
   `ModelStreamStarted`, `ModelStreamCompleted`, and
@@ -66,9 +64,9 @@ not a general query object; it only matches the paused snapshot before resume.
 They intentionally avoid provider-specific terms such as chat, prompt, block,
 or function call. `ArtifactRef` is the portable host-owned artifact reference
 stored in content part data. `ToolCall` is model-requested work.
-`ToolInvocation` is the tool-facing view of that work, including an open `mode`
-string. `ToolObservation` is execute-mode output, `ToolAcceptance` is
-accept-mode acknowledgement for external completion, `ToolRejection` is
+`toolkit.ToolInvocation` is the tool-facing view of that work, including an
+open `mode` string. `ToolObservation` is execute-mode output, `ToolAcceptance`
+is accept-mode acknowledgement for external completion, `ToolRejection` is
 accept-mode failure output, and `ToolOutput` is the generic extension output
 shape. `BackgroundTask` is the optional host-owned background work reference
 that tool outputs can surface in events and durable tool-message metadata.
@@ -120,9 +118,12 @@ and accounting separate from the model client implementation. The helper
 `model_capabilities` is a public kernel helper and is re-exported by `modelkit`;
 it stays lower-case because it is a helper function, not a value type.
 
-`ToolRegistry` moved to `toolkit`. `kernel` keeps `ToolRegistryProtocol` and
-tool protocol/value types so hosts can inject a custom registry without making
-the kernel depend on JSON Schema or a concrete registry implementation.
+`ToolRegistry`, `Tool`, `ExecutableTool`, `AcceptableTool`, `InvocableTool`,
+`ToolInvocation`, `ToolExecutionContext`, `RuntimeContextSnapshot`,
+`ToolProgressEmitter`, and `ToolCancelChecker` live in `toolkit`. `kernel`
+keeps `ToolRegistryProtocol` plus tool call/spec/output value types so hosts
+can inject a custom registry without making the kernel depend on JSON Schema,
+concrete tool implementation protocols, or a concrete registry implementation.
 
 Prompt construction helpers such as `user_text`, `system_text`,
 `assistant_text`, `tool_text`, and `external_text` live in `prompting`. Kernel

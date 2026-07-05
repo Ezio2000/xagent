@@ -11,13 +11,11 @@ from kernel import (
     ModelResponse,
     RuntimeContext,
     ToolCall,
-    ToolExecutionContext,
-    ToolInvocation,
     ToolObservation,
     ToolSpec,
 )
 from prompting import assistant_text, user_text
-from toolkit import ToolRegistry
+from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
 
 
 class InspectingModel:

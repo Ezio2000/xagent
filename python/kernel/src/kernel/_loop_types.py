@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Any, TypeAlias
 
 from kernel._trace import TraceRecorder
+from kernel.context import RuntimeContext
 from kernel.control import ConversationInsert, PauseRequest, RunController
 from kernel.errors import InvalidToolCall
 from kernel.journal import RunJournal
@@ -19,7 +20,7 @@ from kernel.snapshot import RunSnapshot
 from kernel.state import AgentState
 from kernel.status import AgentStatus
 from kernel.store import RunStore
-from kernel.tools import RuntimeContextSnapshot, ToolOutput, ToolSpec
+from kernel.tools import ToolOutput, ToolSpec
 
 ToolSchedulerFactory: TypeAlias = Callable[[ToolCatalog, LoopLimits], ToolSchedulerProtocol]
 TracePayload: TypeAlias = Mapping[str, Any]
@@ -91,7 +92,7 @@ class EmptyToolRegistry:
     async def invoke(
         self,
         call: ToolCall,
-        context: RuntimeContextSnapshot,
+        context: RuntimeContext,
         *,
         progress_emitter: Callable[[Mapping[str, Any]], None] | None = None,
         cancel_checker: Callable[[], bool] | None = None,

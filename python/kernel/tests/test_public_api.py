@@ -45,7 +45,16 @@ def test_sibling_package_root_exports_are_sorted_and_resolve() -> None:
 
 def test_sibling_owned_helpers_are_not_kernel_root_exports() -> None:
     assert {
+        "AcceptableTool",
+        "ExecutableTool",
+        "InvocableTool",
+        "RuntimeContextSnapshot",
         "RunTrace",
+        "Tool",
+        "ToolCancelChecker",
+        "ToolExecutionContext",
+        "ToolInvocation",
+        "ToolProgressEmitter",
         "ToolRegistry",
         "replay_trace",
         "user_text",
