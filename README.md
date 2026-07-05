@@ -67,7 +67,7 @@ Hard boundary rules:
 - Retired runtime imports must not reappear: `agent_runtime`,
   `agent_runtime_conformance`, `engine`, `protocol`, `run_state`,
   `run-state`, `extensions`, and `tracing`.
-- Project and package names must not use the retired fragments `xagent`,
+- Package names must not use the retired fragments `xagent`,
   `agent_`, `agent-`, `runtime_`, or `runtime-`. The current package names are
   `kernel`, `toolkit`, `prompting`, `modelkit`, `diagnostics`, `harness`, and
   `conformance`.
@@ -155,7 +155,8 @@ conformance runner lives in the `conformance` package.
 The repository deliberately does not include provider adapters, concrete
 storage backends, approval UIs, tool packs, artifact stores, memory systems, MCP
 clients, job queues, deployment runtimes, or product applications. Those belong
-above the kernel.
+above the kernel. Treat them as future extension packages or product-layer
+roadmap work, not as required gaps in the current core kernel SDK.
 
 ## Change Policy
 
