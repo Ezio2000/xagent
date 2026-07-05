@@ -129,16 +129,19 @@ Prompt construction helpers such as `user_text`, `system_text`,
 `assistant_text`, `tool_text`, and `external_text` live in `prompting`. Kernel
 message types remain provider-neutral data structures.
 
-`harness` is the workspace-level controlled kernel scenario assembly and
-observation package. Its public surface is intentionally small: thin scenario
-builders and event/timeline observation helpers live there. Controlled model
-drivers, stubs and fakes, runtime port implementations, tool registry doubles,
-message fixtures, and behavior assertions live in `support`, not in lower-level
-runtime packages, `harness`, or `conformance`. `support` may compose public APIs
-from `kernel`, `toolkit`, `prompting`, `diagnostics`, and `harness`, but it
-must not define kernel runtime semantics, portable conformance contracts, schema
-validation rules, diagnostics replay implementation, production infrastructure,
-provider adapters, or application-specific scenario semantics.
+`harness` is the workspace-level open agent workflow and controlled scenario
+package. Its public surface includes `AgentHarness` for provider-neutral
+workflow assembly, `KernelScenario` for lower-level controlled runs, and
+event/timeline observation helpers. `AgentHarness` accepts public kernel ports
+and can adapt toolkit tool sequences into `ToolRegistry`, but it does not own
+runtime semantics or concrete integrations. Controlled model drivers, stubs and
+fakes, runtime port implementations, tool registry doubles, message fixtures,
+and behavior assertions live in `support`, not in lower-level runtime packages,
+`harness`, or `conformance`. `support` may compose public APIs from `kernel`,
+`toolkit`, `prompting`, `diagnostics`, and `harness`, but it must not define
+kernel runtime semantics, portable conformance contracts, schema validation
+rules, diagnostics replay implementation, production infrastructure, provider
+adapters, or application-specific scenario semantics.
 
 `ModelProviderError` is the adapter-facing wrapper for structured provider
 failures. `ModelErrorInfo` is the serializable payload. This keeps provider

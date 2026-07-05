@@ -431,6 +431,15 @@ class Message:
         correlation_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> Message:
+        insert_id = _expect_str(insert_id, "external message insert_id")
+        source = _expect_str(source, "external message source")
+        correlation_id = _expect_optional_str(correlation_id, "external message correlation_id")
+        if not insert_id:
+            raise ValueError("external message insert_id must not be empty")
+        if not source:
+            raise ValueError("external message source must not be empty")
+        if correlation_id == "":
+            raise ValueError("external message correlation_id must not be empty")
         external_metadata = dict(metadata or {})
         external_metadata["insert_id"] = insert_id
         external_metadata["source"] = source

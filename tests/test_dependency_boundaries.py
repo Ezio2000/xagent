@@ -53,6 +53,7 @@ FORBIDDEN_PROJECT_NAME_FRAGMENTS = ("xagent", "agent_", "agent-", "runtime_", "r
 HARNESS_LAYOUT_PACKAGES = {
     "observation",
     "scenarios",
+    "workflows",
 }
 SUPPORT_LAYOUT_PACKAGES = {
     "assertions",
@@ -72,7 +73,7 @@ RETIRED_HARNESS_MODULES = {
 ALLOWED_IMPORTS = {
     "kernel": set[str](),
     "diagnostics": {"kernel"},
-    "harness": {"kernel"},
+    "harness": {"diagnostics", "kernel", "prompting", "toolkit"},
     "modelkit": {"kernel"},
     "prompting": {"kernel"},
     "toolkit": {"kernel"},
@@ -82,7 +83,7 @@ ALLOWED_IMPORTS = {
 EXPECTED_PROJECT_DEPENDENCIES = {
     "kernel": set[str](),
     "diagnostics": {"kernel"},
-    "harness": {"kernel"},
+    "harness": {"diagnostics", "kernel", "prompting", "toolkit"},
     "modelkit": {"kernel"},
     "prompting": {"kernel"},
     "toolkit": {"jsonschema", "kernel"},
@@ -205,7 +206,8 @@ def test_harness_boundary_guide_exists() -> None:
     guide = REPO_ROOT / "docs" / "harness.md"
     text = guide.read_text()
     required = {
-        "`harness` is the thin controlled kernel scenario assembly and observation",
+        "`harness` is the open agent workflow and controlled scenario package",
+        "`workflows`",
         "`scenarios`",
         "`observation`",
         "`support` may use `harness`",

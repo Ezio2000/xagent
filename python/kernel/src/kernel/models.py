@@ -47,6 +47,7 @@ from kernel._validation import (
 from kernel._validation import (
     reject_unknown_keys as _reject_unknown_keys,
 )
+from kernel.context import RuntimeContext
 from kernel.errors import AgentError
 from kernel.messages import (
     ContentPart,
@@ -83,6 +84,16 @@ def _copy_mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if value is None:
         return {}
     return deepcopy(dict(_expect_mapping(value, "mapping")))
+
+
+_MODEL_USAGE_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
 
 
 @dataclass(slots=True)
@@ -280,14 +291,7 @@ class ModelUsage:
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
     def __post_init__(self) -> None:
-        for name in (
-            "input_tokens",
-            "output_tokens",
-            "total_tokens",
-            "reasoning_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-        ):
+        for name in _MODEL_USAGE_FIELDS:
             value = _expect_optional_int(getattr(self, name), f"model usage {name}")
             setattr(self, name, value)
             if value is not None and value < 0:
@@ -331,20 +335,28 @@ class ModelUsage:
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
-        for name in (
-            "input_tokens",
-            "output_tokens",
-            "total_tokens",
-            "reasoning_tokens",
-            "cache_read_tokens",
-            "cache_write_tokens",
-        ):
+        for name in _MODEL_USAGE_FIELDS:
             value = getattr(self, name)
             if value is not None:
                 data[name] = value
         if self.metadata:
             data["metadata"] = _copy_mapping(self.metadata)
         return data
+
+
+def _merge_model_usage(existing: ModelUsage | None, update: ModelUsage) -> ModelUsage:
+    if existing is None:
+        return ModelUsage.from_dict(update.to_dict())
+    values: dict[str, int] = {}
+    for field_name in _MODEL_USAGE_FIELDS:
+        updated_value = getattr(update, field_name)
+        existing_value = getattr(existing, field_name)
+        value = updated_value if updated_value is not None else existing_value
+        if value is not None:
+            values[field_name] = value
+    metadata = _copy_mapping(existing.metadata)
+    metadata.update(update.metadata)
+    return ModelUsage(**values, metadata=metadata)
 
 
 @dataclass(slots=True, frozen=True)
@@ -678,7 +690,11 @@ class ModelResponse:
 
 @dataclass(slots=True, frozen=True)
 class ModelStreamStarted:
-    """A model stream has started."""
+    """A model stream has started.
+
+    Metadata is adapter-local unless a later delta or completed response carries
+    metadata into a model_delta event or the final response.
+    """
 
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
 
@@ -758,7 +774,7 @@ class ModelToolCallDelta:
 
 @dataclass(slots=True, frozen=True)
 class ModelUsageDelta:
-    """Incremental or final model usage data."""
+    """Current cumulative model usage snapshot for a streaming model call."""
 
     usage: ModelUsage
     metadata: Mapping[str, Any] = field(default_factory=_empty_mapping)
@@ -811,22 +827,35 @@ class _ToolCallBuffer:
 class ModelStreamAccumulator:
     """Accumulate provider-neutral stream deltas into a complete ModelResponse."""
 
-    __slots__ = ("_content", "_finish_reason", "_model", "_response_id", "_tool_calls", "_usage")
+    __slots__ = (
+        "_completed_response",
+        "_content",
+        "_finish_reason",
+        "_metadata",
+        "_model",
+        "_response_id",
+        "_tool_calls",
+        "_usage",
+    )
 
+    _completed_response: ModelResponse | None
     _content: dict[int, _ContentBuffer]
     _finish_reason: str | None
+    _metadata: Mapping[str, Any]
     _model: str | None
     _response_id: str | None
     _tool_calls: dict[int, _ToolCallBuffer]
     _usage: ModelUsage | None
 
     def __init__(self) -> None:
+        self._completed_response = None
         self._content = {}
         self._tool_calls = {}
         self._usage = None
         self._finish_reason = None
         self._model = None
         self._response_id = None
+        self._metadata = {}
 
     def apply(self, event: ModelStreamEvent) -> ModelResponse | None:
         if isinstance(event, ModelStreamStarted | ModelReasoningDelta):
@@ -862,16 +891,45 @@ class ModelStreamAccumulator:
                 buffer.metadata = _copy_mapping(event.metadata)
             return None
         if isinstance(event, ModelUsageDelta):
-            self._usage = ModelUsage.from_dict(event.usage.to_dict())
+            self._usage = _merge_model_usage(self._usage, event.usage)
             return None
         response = ModelResponse.from_dict(event.response.to_dict())
-        self._finish_reason = response.finish_reason
-        self._usage = response.usage
-        self._model = response.model
-        self._response_id = response.response_id
-        return response
+        self._completed_response = response
+        if response.finish_reason is not None:
+            self._finish_reason = response.finish_reason
+        if response.usage is not None:
+            self._usage = _merge_model_usage(self._usage, response.usage)
+        if response.model is not None:
+            self._model = response.model
+        if response.response_id is not None:
+            self._response_id = response.response_id
+        if response.metadata:
+            self._metadata = _copy_mapping(response.metadata)
+        return self.response()
 
     def response(self) -> ModelResponse:
+        completed_response = self._completed_response
+        parts = self._accumulated_parts()
+        if not parts and completed_response is not None:
+            parts = [ContentPart.from_dict(part.to_dict()) for part in completed_response.parts]
+
+        tool_calls = self._accumulated_tool_calls()
+        if not tool_calls and completed_response is not None:
+            tool_calls = [
+                ToolCall.from_dict(call.to_dict()) for call in completed_response.tool_calls
+            ]
+
+        return ModelResponse(
+            parts=parts,
+            tool_calls=tool_calls,
+            finish_reason=self._finish_reason,
+            usage=self._usage,
+            model=self._model,
+            response_id=self._response_id,
+            metadata=self._metadata,
+        )
+
+    def _accumulated_parts(self) -> list[ContentPart]:
         parts: list[ContentPart] = []
         for index in sorted(self._content):
             buffer = self._content[index]
@@ -885,7 +943,9 @@ class ModelStreamAccumulator:
                         metadata=buffer.metadata,
                     )
                 )
+        return parts
 
+    def _accumulated_tool_calls(self) -> list[ToolCall]:
         tool_calls: list[ToolCall] = []
         for index in sorted(self._tool_calls):
             buffer = self._tool_calls[index]
@@ -907,15 +967,7 @@ class ModelStreamAccumulator:
                     metadata=buffer.metadata,
                 )
             )
-
-        return ModelResponse(
-            parts=parts,
-            tool_calls=tool_calls,
-            finish_reason=self._finish_reason,
-            usage=self._usage,
-            model=self._model,
-            response_id=self._response_id,
-        )
+        return tool_calls
 
 
 def stream_event_to_delta_payload(event: ModelStreamEvent) -> dict[str, Any] | None:
@@ -987,7 +1039,7 @@ def _raise_type(message: str) -> NoReturn:
 class ModelClient(Protocol):
     """Protocol implemented by model adapters."""
 
-    async def complete(self, request: ModelRequest, context: Any) -> ModelResponse:
+    async def complete(self, request: ModelRequest, context: RuntimeContext) -> ModelResponse:
         """Return the next model decision."""
         ...
 
@@ -995,6 +1047,8 @@ class ModelClient(Protocol):
 class StreamingModelClient(ModelClient, Protocol):
     """Optional protocol implemented by streaming model adapters."""
 
-    def stream(self, request: ModelRequest, context: Any) -> AsyncIterator[ModelStreamEvent]:
+    def stream(
+        self, request: ModelRequest, context: RuntimeContext
+    ) -> AsyncIterator[ModelStreamEvent]:
         """Yield provider-neutral model stream events."""
         ...

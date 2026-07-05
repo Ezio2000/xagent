@@ -55,6 +55,22 @@ def test_message_constructors_reject_invalid_core_types() -> None:
         Message(role=cast(Any, 1), parts=[])
 
 
+def test_external_message_requires_non_empty_insert_metadata() -> None:
+    with pytest.raises(ValueError, match="insert_id"):
+        Message.external([ContentPart.text_part("callback")], insert_id="", source="webhook")
+
+    with pytest.raises(ValueError, match="source"):
+        Message.external([ContentPart.text_part("callback")], insert_id="insert-1", source="")
+
+    with pytest.raises(ValueError, match="correlation_id"):
+        Message.external(
+            [ContentPart.text_part("callback")],
+            insert_id="insert-1",
+            source="webhook",
+            correlation_id="",
+        )
+
+
 def test_message_from_dict_rejects_unknown_wire_fields() -> None:
     with pytest.raises(ValueError, match="unknown"):
         ContentPart.from_dict({"type": "text", "text": "hello", "provider": {}})

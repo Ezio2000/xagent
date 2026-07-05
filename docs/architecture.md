@@ -29,7 +29,7 @@ Sibling Python packages own the parts that should be independently importable:
 | `prompting` | Prompt/message construction conveniences such as `user_text(...)`. | `kernel` |
 | `modelkit` | Model adapter helper facade that re-exports kernel stream accumulation and capability discovery helpers for adapter packages. | `kernel` |
 | `diagnostics` | Public `RunTrace`, trace construction from events, and deterministic replay validation. | `kernel` |
-| `harness` | Thin controlled kernel scenario assembly and event/timeline observation helpers. | `kernel` |
+| `harness` | Open agent workflow facades, controlled kernel scenario assembly, and event/timeline observation helpers. | `kernel`, `toolkit`, `prompting`, `diagnostics` |
 | `support` | Controlled runtime support components: model drivers, runtime port fakes, tool fixtures and registry doubles, message fixtures, and behavior assertions. | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness` |
 | `conformance` | Cross-SDK fixture runner and schema validation CLI. | `kernel`, `toolkit`, `prompting`, `diagnostics`, `support` |
 
@@ -86,13 +86,17 @@ JSON Schema validation is not a `kernel` dependency. The kernel calls
 Custom registries must enforce equivalent portable validation if they are used
 as production registries.
 
-`harness` provides thin controlled kernel scenario assembly and event
-observation around the Python runtime workspace. It assembles already-provided
-`kernel.AgentLoop` inputs and exposes event collection and timeline helpers. It
-must not own model drivers, runtime port fakes, tool fixtures, message
-fixtures, behavior assertions, kernel runtime semantics, application-specific
-scenario semantics, JSON Schema validation rules, diagnostics replay
-implementation, provider adapters, or conformance fixture interpretation.
+`harness` provides open agent workflow facades, controlled kernel scenario
+assembly, and event observation around the Python runtime workspace. It
+assembles already-provided public runtime inputs and exposes common input
+normalization, tool-loop execution, event streaming, pause/resume helpers, trace
+replay wiring, waiting/background-task extraction, event collection, and
+timeline helpers. It must not own model drivers, runtime port fakes, tool
+fixtures, message fixtures, behavior assertions, kernel runtime semantics,
+application-specific scenario semantics, JSON Schema validation rules,
+diagnostics replay implementation, provider adapters, concrete tool packs,
+production stores, UI, deployment runtime, or conformance fixture
+interpretation.
 
 `support` owns controlled runtime support components used by tests, examples,
 and conformance runners: deterministic model drivers, runtime port fakes, tool

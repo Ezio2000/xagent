@@ -39,6 +39,17 @@ Known `model_delta` payload shapes:
 events for the same index. If `mode` is omitted, the accumulated tool call uses
 `execute`. Tool-call arguments are accumulated as JSON object bytes and become
 durable only in the final `ModelResponse`.
+`usage_delta` carries the current cumulative usage snapshot for the current
+streaming model call. Multiple usage deltas are merged field-by-field; later
+non-null token fields replace the same field, and omitted fields do not clear
+previously reported fields.
+
+If an SDK exposes a stream-completed event with a `ModelResponse`, that response
+provides final completion metadata and fallback content/tool calls when no
+matching deltas were emitted. Content and tool-call deltas that were emitted
+remain canonical for durable assistant content and tool calls. Usage on the
+completed response is merged with prior usage deltas using the same field-level
+rules.
 
 Tool execution must wait until the complete streamed `ModelResponse` is
 available.

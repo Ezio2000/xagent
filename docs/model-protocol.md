@@ -78,6 +78,21 @@ Adapters that need to assemble streamed deltas outside a live run can use
 `kernel.ModelStreamAccumulator` or the `modelkit.ModelStreamAccumulator`
 facade.
 
+`ModelUsageDelta` carries the current cumulative usage snapshot for the current
+streaming model call. Multiple usage deltas are merged field-by-field: a later
+non-null token field replaces that field, and omitted fields do not clear
+previously reported fields. When a stream emits `ModelStreamCompleted`, the
+runtime treats its `ModelResponse` as final completion metadata and as a
+fallback for response parts or tool calls that were not emitted through deltas.
+If content or tool call deltas were emitted, those accumulated deltas remain the
+canonical assistant content and tool calls. A completed response that omits
+usage, or omits individual usage fields, does not clear usage already reported
+through `ModelUsageDelta`.
+
+`ModelStreamStarted.metadata` is adapter-local context. The runtime does not
+emit, persist, or copy it into the final response unless later delta events or
+the completed response carry their own metadata.
+
 External inputs that arrive while a model call is in flight use run-control
 conversation insertion. The runtime cancels the in-flight model call, appends an
 `external` message, checkpoints, and starts planning again. This insertion

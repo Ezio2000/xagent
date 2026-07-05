@@ -696,7 +696,6 @@ class AgentLoop(TimeoutMixin, HookMixin):
         stream_method = cast(Any, self._model).stream
         iterator = stream_method(request, context).__aiter__()
         accumulator = ModelStreamAccumulator()
-        completed_response: ModelResponse | None = None
 
         try:
             while True:
@@ -704,9 +703,7 @@ class AgentLoop(TimeoutMixin, HookMixin):
                     stream_event = await self._anext_model_with_interrupt(iterator, control)
                 except StopAsyncIteration:
                     break
-                response = accumulator.apply(stream_event)
-                if response is not None:
-                    completed_response = response
+                accumulator.apply(stream_event)
                 payload = stream_event_to_delta_payload(stream_event)
                 if payload is None:
                     continue
@@ -720,7 +717,7 @@ class AgentLoop(TimeoutMixin, HookMixin):
         finally:
             await self._close_async_iterator(iterator)
 
-        response_holder.append(completed_response or accumulator.response())
+        response_holder.append(accumulator.response())
 
     async def _tool_step(
         self, state: AgentState, context: RuntimeContext, control: RunControlState
@@ -759,6 +756,17 @@ class AgentLoop(TimeoutMixin, HookMixin):
                 calls=tool_calls_from_snapshots(pending_snapshots[: len(batch.calls)]),
                 parallel=batch.parallel,
             )
+            scheduler_policy_error = self._scheduler_batch_policy_error(batch)
+            if scheduler_policy_error is not None:
+                for event in await self._transition(
+                    state,
+                    AgentStatus.FAILED,
+                    context,
+                    control,
+                    error=scheduler_policy_error,
+                ):
+                    yield event
+                return
 
             prepared_holder: list[PreparedToolBatch | None] = []
             try:
@@ -1023,6 +1031,10 @@ class AgentLoop(TimeoutMixin, HookMixin):
                     raise AgentError("tool scheduler emitted duplicate tool_started")
                 if progress.index in completed_indices:
                     raise AgentError("tool scheduler started a completed tool call")
+                max_active = self._active_tool_call_limit(batch)
+                active_indices = started_indices - completed_indices
+                if len(active_indices) >= max_active:
+                    raise AgentError("tool scheduler exceeded max active tool calls")
                 started_indices.add(progress.index)
                 implementation_invoked = canonical_call.id not in precomputed_results
                 if implementation_invoked:
@@ -1184,6 +1196,51 @@ class AgentLoop(TimeoutMixin, HookMixin):
             raise scheduler_error
         if completed_indices != set(range(len(batch.calls))):
             raise AgentError("tool scheduler ended before completing the selected batch")
+
+    def _scheduler_batch_policy_error(self, batch: ToolBatch) -> str | None:
+        if not self._is_non_empty_string(batch.id):
+            return "tool scheduler batch id must be a non-empty string"
+        if not self._is_bool(batch.parallel):
+            return "tool scheduler batch parallel flag must be a boolean"
+        if not batch.calls:
+            return "tool scheduler must return a non-empty prefix batch"
+        if self._limits.stop_on_tool_error and len(batch.calls) > 1:
+            return "tool scheduler must use single-call batches when stop_on_tool_error is enabled"
+        if batch.parallel and len(batch.calls) > 1:
+            if self._limits.max_parallel_tool_calls <= 1:
+                return "tool scheduler returned a parallel batch while parallelism is disabled"
+            unsafe = [call.name for call in batch.calls if not self._parallel_eligible(call)]
+            if unsafe:
+                names = ", ".join(unsafe)
+                return (
+                    "tool scheduler returned non-parallel-safe tool(s) in a parallel batch: "
+                    f"{names}"
+                )
+        return None
+
+    @staticmethod
+    def _is_non_empty_string(value: object) -> bool:
+        return isinstance(value, str) and bool(value)
+
+    @staticmethod
+    def _is_bool(value: object) -> bool:
+        return isinstance(value, bool)
+
+    def _parallel_eligible(self, call: ToolCall) -> bool:
+        spec = self._tools.spec_for(call.name)
+        if spec is None:
+            return False
+        annotations = spec.annotations
+        return (
+            annotations.get("parallel_safe") is True
+            and annotations.get("read_only") is True
+            and annotations.get("idempotent") is True
+        )
+
+    def _active_tool_call_limit(self, batch: ToolBatch) -> int:
+        if self._limits.stop_on_tool_error or not batch.parallel:
+            return 1
+        return self._limits.max_parallel_tool_calls
 
     async def _run_tool_scheduler_events(
         self,

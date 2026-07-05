@@ -8,20 +8,18 @@ from collections.abc import Mapping
 from typing import Any
 
 from diagnostics import RunTrace, replay_trace
+from harness import AgentHarness
 from kernel import (
-    AgentLoop,
     ModelRequest,
     ModelResponse,
     PauseSelector,
-    ResumeInput,
     RunSnapshot,
     RuntimeContext,
     ToolCall,
     ToolObservation,
     ToolSpec,
 )
-from prompting import user_text
-from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
+from toolkit import ToolExecutionContext, ToolInvocation
 
 
 class ExternalWaitTool:
@@ -87,29 +85,26 @@ def print_trace_summary(label: str, trace: Mapping[str, Any]) -> None:
 
 
 async def main() -> None:
-    agent = AgentLoop(model=DemoModel(), tools=ToolRegistry([ExternalWaitTool()]))
+    agent = AgentHarness(model=DemoModel(), tools=[ExternalWaitTool()])
 
-    paused = await agent.run([user_text("start external job")])
-    if paused.snapshot is None or paused.trace is None:
+    paused = await agent.run_until_pause("start external job")
+    if paused.result.trace is None:
         raise RuntimeError("expected paused run with snapshot and trace")
 
-    print(f"paused status: {paused.status.value}")
-    print_trace_summary("initial paused run", paused.trace)
+    print(f"paused status: {paused.result.status.value}")
+    print_trace_summary("initial paused run", paused.result.trace)
 
     saved_snapshot_payload = paused.snapshot.to_dict()
     restored_snapshot = RunSnapshot.from_dict(saved_snapshot_payload)
-    resume_agent = AgentLoop(model=DemoModel(), tools=ToolRegistry([ExternalWaitTool()]))
 
-    resumed = await resume_agent.run_snapshot(
-        ResumeInput(
-            snapshot=restored_snapshot,
-            append_messages=[user_text("job-1 completed successfully")],
-            expected_pause=PauseSelector(
-                source="tool",
-                wait_id="job-1",
-                metadata={"example": "pause_resume_trace"},
-            ),
-        )
+    resumed = await agent.resume(
+        restored_snapshot,
+        "job-1 completed successfully",
+        expected_pause=PauseSelector(
+            source="tool",
+            wait_id="job-1",
+            metadata={"example": "pause_resume_trace"},
+        ),
     )
     if resumed.trace is None:
         raise RuntimeError("expected resume trace")

@@ -16,7 +16,7 @@ namespace. Do not treat it as two kernels.
 | `prompting` | `import prompting` | Message and prompt construction conveniences built on kernel message types. | Runtime state, scheduling, model/provider clients. |
 | `modelkit` | `import modelkit` | Model adapter helper facade re-exporting kernel stream accumulation and capability helper functions. | Runtime loop, tool execution, prompt helpers, independent copies of kernel model helper logic. |
 | `diagnostics` | `import diagnostics` | Public trace objects, trace-from-events helpers, deterministic replay validation, and diagnostics-only error types. | Running agents, invoking tools, provider adapters, persistence backends. |
-| `harness` | `import harness` | Thin controlled kernel scenario assembly and event/timeline observation helpers. | Model drivers, runtime port fakes, tool fixtures, message fixtures, behavior assertions, kernel runtime semantics, portable conformance contracts, schema validation rules, diagnostics replay implementation, provider adapters, or app infrastructure. |
+| `harness` | `import harness` | Open agent workflow facades, controlled kernel scenario assembly, and event/timeline observation helpers. | Model drivers, runtime port fakes, tool fixtures, message fixtures, behavior assertions, kernel runtime semantics, portable conformance contracts, schema validation rules, diagnostics replay implementation, provider adapters, concrete tool packs, production stores, UI, deployment runtime, or app infrastructure. |
 | `support` | `import support` | Controlled runtime support components: model drivers, runtime port fakes, tool fixtures and registry doubles, message fixtures, and behavior assertions. | Kernel runtime semantics, portable conformance contracts, scenario assembly ownership, schema validation rules, diagnostics replay implementation, provider adapters, production stores, or app infrastructure. |
 | `conformance` | `uv run conformance ...` | Cross-SDK fixture runner and JSON Schema validation around `contracts/v0`. | Kernel internals or package-private APIs. |
 
@@ -29,7 +29,7 @@ namespace. Do not treat it as two kernels.
 | `prompting` | `kernel` | Import only `kernel` package root. |
 | `modelkit` | `kernel` | Import only `kernel` package root. |
 | `diagnostics` | `kernel` | Import only `kernel` package root. |
-| `harness` | `kernel` | Import public package roots only; runtime source packages must not import `harness`. |
+| `harness` | `kernel`, `toolkit`, `prompting`, `diagnostics` | Import public package roots only; runtime source packages must not import `harness`. |
 | `support` | `kernel`, `toolkit`, `prompting`, `diagnostics`, `harness` | Import public package roots only; runtime source packages must not import `support`. |
 | `conformance` | `kernel`, `toolkit`, `prompting`, `diagnostics`, `support` | Use public package roots only. |
 
@@ -53,7 +53,7 @@ tests should prefer only that package's declared runtime dependencies.
 | Does it define canonical stream accumulation or inspect optional model capabilities used by the runtime? | `kernel` |
 | Does it expose adapter-friendly imports for kernel model helpers without adding behavior? | `modelkit` |
 | Does it inspect, replay, summarize, or validate traces after a run? | `diagnostics` |
-| Does it assemble existing `kernel` inputs into repeatable scenarios or collect/timeline runtime events? | `harness` |
+| Does it provide reusable provider-neutral agent workflows, assemble existing `kernel` inputs into repeatable scenarios, normalize common host inputs, wire trace replay, or collect/timeline runtime events? | `harness` |
 | Does it provide controlled model drivers, tool fixtures, message fixtures, runtime port fakes, registry doubles, or behavior assertions for tests, examples, or conformance runners? | `support` |
 | Is it portable behavior that every SDK should satisfy? | `contracts/v0` and `conformance/cases` |
 

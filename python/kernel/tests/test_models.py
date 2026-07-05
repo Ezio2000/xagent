@@ -208,7 +208,7 @@ def test_model_stream_accumulator_accumulates_complete_response() -> None:
 
     assert result is not None
     assert result.finish_reason == "end_turn"
-    assert accumulator.response().to_dict() == {
+    expected: dict[str, object] = {
         "parts": [
             {"type": "text", "text": "A"},
             {"type": "custom", "text": "B"},
@@ -222,10 +222,109 @@ def test_model_stream_accumulator_accumulates_complete_response() -> None:
             }
         ],
         "finish_reason": "end_turn",
-        "usage": {"total_tokens": 5},
+        "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
         "model": "test-model",
         "response_id": "resp-1",
     }
+    assert result.to_dict() == expected
+    assert accumulator.response().to_dict() == expected
+
+
+def test_model_stream_accumulator_uses_completed_response_as_fallback() -> None:
+    accumulator = ModelStreamAccumulator()
+
+    result = accumulator.apply(
+        ModelStreamCompleted(
+            ModelResponse(
+                parts=[ContentPart.text_part("done")],
+                tool_calls=[
+                    ToolCall(id="call-1", name="search", arguments={"q": "x"}),
+                ],
+                finish_reason="tool_calls",
+                usage=ModelUsage(total_tokens=5),
+                model="test-model",
+                response_id="resp-1",
+                metadata={"provider": "test"},
+            )
+        )
+    )
+
+    assert result is not None
+    expected: dict[str, object] = {
+        "parts": [{"type": "text", "text": "done"}],
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "name": "search",
+                "mode": "execute",
+                "arguments": {"q": "x"},
+            }
+        ],
+        "finish_reason": "tool_calls",
+        "usage": {"total_tokens": 5},
+        "model": "test-model",
+        "response_id": "resp-1",
+        "metadata": {"provider": "test"},
+    }
+    assert result.to_dict() == expected
+    assert accumulator.response().to_dict() == expected
+
+
+def test_model_stream_accumulator_completed_response_does_not_clear_deltas() -> None:
+    accumulator = ModelStreamAccumulator()
+    accumulator.apply(ModelContentDelta(index=0, text_delta="hel"))
+    accumulator.apply(ModelContentDelta(index=0, text_delta="lo"))
+    accumulator.apply(ModelUsageDelta(usage=ModelUsage(input_tokens=1, total_tokens=3)))
+    result = accumulator.apply(
+        ModelStreamCompleted(
+            ModelResponse(
+                finish_reason="end_turn",
+                model="test-model",
+                response_id="resp-1",
+                metadata={"provider": "test"},
+            )
+        )
+    )
+
+    expected = {
+        "parts": [{"type": "text", "text": "hello"}],
+        "tool_calls": [],
+        "finish_reason": "end_turn",
+        "usage": {"input_tokens": 1, "total_tokens": 3},
+        "model": "test-model",
+        "response_id": "resp-1",
+        "metadata": {"provider": "test"},
+    }
+    assert result is not None
+    assert result.to_dict() == expected
+    assert accumulator.response().to_dict() == expected
+
+
+def test_model_stream_accumulator_merges_sparse_usage_snapshots() -> None:
+    accumulator = ModelStreamAccumulator()
+    accumulator.apply(ModelUsageDelta(usage=ModelUsage(input_tokens=1)))
+    accumulator.apply(ModelUsageDelta(usage=ModelUsage(output_tokens=2, total_tokens=3)))
+    result = accumulator.apply(
+        ModelStreamCompleted(
+            ModelResponse(
+                usage=ModelUsage(reasoning_tokens=1),
+            )
+        )
+    )
+
+    expected: dict[str, object] = {
+        "parts": [],
+        "tool_calls": [],
+        "usage": {
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "total_tokens": 3,
+            "reasoning_tokens": 1,
+        },
+    }
+    assert result is not None
+    assert result.to_dict() == expected
+    assert accumulator.response().to_dict() == expected
 
 
 def test_model_request_response_constructors_reject_invalid_nested_items() -> None:

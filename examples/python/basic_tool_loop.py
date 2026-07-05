@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+from harness import AgentHarness
 from kernel import (
-    AgentLoop,
     ModelRequest,
     ModelResponse,
     RuntimeContext,
@@ -13,8 +13,7 @@ from kernel import (
     ToolObservation,
     ToolSpec,
 )
-from prompting import user_text
-from toolkit import ToolExecutionContext, ToolInvocation, ToolRegistry
+from toolkit import ToolExecutionContext, ToolInvocation
 
 
 class EchoTool:
@@ -50,8 +49,8 @@ class DemoModel:
 
 
 async def main() -> None:
-    agent = AgentLoop(model=DemoModel(), tools=ToolRegistry([EchoTool()]))
-    async for event in agent.run_events([user_text("Say hello through a tool")]):
+    agent = AgentHarness(model=DemoModel(), tools=[EchoTool()])
+    async for event in agent.stream_events("Say hello through a tool"):
         print(event.to_dict())
 
 

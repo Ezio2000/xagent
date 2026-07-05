@@ -54,6 +54,11 @@ within that batch, but they must not reorder committed pending calls, execute
 calls outside the selected batch, execute a call before starting it, execute a
 call more than once, complete a call before starting it, or replace the
 runtime-owned tool result returned by the supplied execution function.
+Custom schedulers remain subject to the same parallel eligibility,
+`max_parallel_tool_calls`, and `stop_on_tool_error` constraints as the default
+scheduler. Scheduler batch metadata emitted through runtime events must conform
+to the event schema: `batch_id` is a non-empty string and `parallel` is a
+boolean.
 
 If approval is configured, runtimes may resolve approval decisions before
 starting a scheduled batch. Denied calls are committed as mode-appropriate tool

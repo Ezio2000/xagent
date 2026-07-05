@@ -124,6 +124,10 @@ open; `lifecycle` is the runtime-owned `started`, `updated`, or `completed`
 classification used to choose the emitted event. The host owns workers, durable
 job state, retries, callbacks, later worker updates, and any eventual resume or
 conversation insertion.
+SDK DTO constructors may default `kind`, `lifecycle`, or `metadata` for host
+construction convenience. Portable wire validation still belongs to the JSON
+Schemas under `contracts/v0`; do not treat Python `from_dict(...)` helpers as a
+replacement for schema validation of external payloads.
 
 Message content can reference host-owned artifacts through
 `ContentPart(type="artifact", ref=..., data={"artifact": ...})`. Core preserves
@@ -167,7 +171,11 @@ protocol: `next_batch(calls)` chooses the next non-empty prefix batch and
 calling the supplied `execute` function for that call, must call `execute`
 exactly once for each completed batch call, and must not replace the returned
 result. Implementations do not need to inherit from the default `ToolScheduler`
-class. When an approval policy is configured, the Python reference runtime
+class. The runtime still enforces core parallel eligibility, max-active, and
+`stop_on_tool_error` constraints around custom scheduler output, and rejects
+batch metadata that would violate the event schema, such as an empty
+`batch_id` or non-boolean `parallel` flag. When an approval policy is
+configured, the Python reference runtime
 conservatively resolves and executes at most one scheduled tool call at a time
 so approval pauses cannot leave a partially approved batch visible.
 

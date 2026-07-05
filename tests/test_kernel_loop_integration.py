@@ -34,12 +34,15 @@ from kernel import (
     LoopLimits,
     Message,
     ModelCapabilities,
+    ModelContentDelta,
     ModelErrorDecision,
     ModelErrorInfo,
     ModelOptions,
     ModelRequest,
     ModelResponse,
+    ModelStreamCompleted,
     ModelUsage,
+    ModelUsageDelta,
     PauseRequest,
     PauseSelector,
     PauseState,
@@ -70,6 +73,7 @@ from support import (
     CancellationSwallowingThenFailingModel,
     CloseTrackingStreamingModel,
     ContextInspectingModel,
+    ControlledStreamingModelDriver,
     CustomHandoffTool,
     ExternallyCancelledModel,
     FailingAcceptTool,
@@ -717,6 +721,44 @@ class NonPrefixScheduler(StandaloneSerialScheduler):
         return ToolBatch(f"non-prefix-{self.batch_count}", (calls[1],), parallel=False)
 
 
+class UnsafeParallelScheduler(StandaloneSerialScheduler):
+    def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
+        if len(calls) < 2:
+            return super().next_batch(calls)
+        self.batch_count += 1
+        return ToolBatch(f"unsafe-parallel-{self.batch_count}", calls[:2], parallel=True)
+
+
+class MultiCallSerialScheduler(StandaloneSerialScheduler):
+    def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
+        if len(calls) < 2:
+            return super().next_batch(calls)
+        self.batch_count += 1
+        return ToolBatch(f"multi-serial-{self.batch_count}", calls[:2], parallel=False)
+
+
+class MalformedBatchMetadataScheduler(StandaloneSerialScheduler):
+    def __init__(
+        self,
+        *,
+        batch_id: object = "malformed-1",
+        parallel: object = False,
+    ) -> None:
+        super().__init__()
+        self.batch_id = batch_id
+        self.parallel = parallel
+
+    def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
+        if not calls:
+            return None
+        self.batch_count += 1
+        return ToolBatch(
+            cast(str, self.batch_id),
+            (calls[0],),
+            parallel=cast(bool, self.parallel),
+        )
+
+
 class MutatingNextBatchScheduler(StandaloneSerialScheduler):
     def next_batch(self, calls: tuple[ToolCall, ...]) -> ToolBatch | None:
         if not calls:
@@ -758,6 +800,19 @@ class FakeCompletionScheduler(StandaloneSerialScheduler):
             call=call,
             result=ToolObservation.text("fake"),
         )
+
+
+class ConcurrentStartScheduler(MultiCallSerialScheduler):
+    async def run_batch(
+        self,
+        batch: ToolBatch,
+        execute: Callable[[ToolCall], Awaitable[ToolOutput]],
+        *,
+        stop_on_error: bool = False,
+    ) -> AsyncIterator[ToolStarted | ToolCompleted]:
+        _ = execute, stop_on_error
+        yield ToolStarted(batch=batch, index=0, call=batch.calls[0])
+        yield ToolStarted(batch=batch, index=1, call=batch.calls[1])
 
 
 class ExecuteBeforeStartScheduler(StandaloneSerialScheduler):
@@ -962,6 +1017,44 @@ async def test_stream_timeout_discards_partial_assistant_message() -> None:
     assert checkpoints[-1].state.status is AgentStatus.LIMIT_EXCEEDED
     assert checkpoints[-1].state.error == "timeout_seconds"
     assert [message.role for message in checkpoints[-1].state.messages] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_stream_completed_preserves_accumulated_deltas() -> None:
+    model = ControlledStreamingModelDriver(
+        [],
+        [
+            [
+                ModelContentDelta(index=0, text_delta="hel"),
+                ModelContentDelta(index=0, text_delta="lo"),
+                ModelUsageDelta(usage=ModelUsage(input_tokens=1)),
+                ModelUsageDelta(usage=ModelUsage(output_tokens=2, total_tokens=3)),
+                ModelStreamCompleted(
+                    ModelResponse(
+                        finish_reason="end_turn",
+                        usage=ModelUsage(reasoning_tokens=1),
+                        model="stream-model",
+                        response_id="resp-1",
+                    )
+                ),
+            ]
+        ],
+    )
+
+    result = await AgentLoop(model=model).run([user_text("stream")], stream=True)
+
+    assert result.status is AgentStatus.COMPLETED
+    assert parts_text(result.final_parts) == "hello"
+    assert result.total_usage is not None
+    assert result.total_usage.to_dict() == {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "total_tokens": 3,
+        "reasoning_tokens": 1,
+    }
+    assert result.messages[-1].metadata["finish_reason"] == "end_turn"
+    assert result.messages[-1].metadata["model"] == "stream-model"
+    assert result.messages[-1].metadata["response_id"] == "resp-1"
 
 
 @pytest.mark.asyncio
@@ -1380,6 +1473,129 @@ async def test_custom_tool_scheduler_must_return_non_empty_prefix_batch() -> Non
         "call-1",
         "call-2",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scheduler", "expected_error"),
+    [
+        (
+            MalformedBatchMetadataScheduler(batch_id=""),
+            "tool scheduler batch id must be a non-empty string",
+        ),
+        (
+            MalformedBatchMetadataScheduler(batch_id=123),
+            "tool scheduler batch id must be a non-empty string",
+        ),
+        (
+            MalformedBatchMetadataScheduler(parallel="yes"),
+            "tool scheduler batch parallel flag must be a boolean",
+        ),
+    ],
+)
+async def test_custom_tool_scheduler_batch_metadata_is_validated(
+    scheduler: StandaloneSerialScheduler,
+    expected_error: str,
+) -> None:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> StandaloneSerialScheduler:
+        _ = tools, runtime_limits
+        return scheduler
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [ModelResponse(tool_calls=[ToolCall(id="call-1", name="echo", arguments={})])]
+        ),
+        tools=FixtureToolRegistry("echo"),
+        tool_scheduler_factory=factory,
+    ).run([user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == expected_error
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_cannot_parallelize_unsafe_tools() -> None:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> UnsafeParallelScheduler:
+        _ = tools, runtime_limits
+        return UnsafeParallelScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="call-1", name="echo", arguments={"text": "first"}),
+                        ToolCall(id="call-2", name="echo", arguments={"text": "second"}),
+                    ]
+                )
+            ]
+        ),
+        tools=FixtureToolRegistry("echo"),
+        limits=LoopLimits(max_parallel_tool_calls=2),
+        tool_scheduler_factory=factory,
+    ).run([user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error is not None
+    assert "non-parallel-safe" in result.error
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_uses_single_call_batches_for_stop_on_tool_error() -> None:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> MultiCallSerialScheduler:
+        _ = tools, runtime_limits
+        return MultiCallSerialScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="call-1", name="echo", arguments={"text": "first"}),
+                        ToolCall(id="call-2", name="echo", arguments={"text": "second"}),
+                    ]
+                )
+            ]
+        ),
+        tools=FixtureToolRegistry("echo"),
+        limits=LoopLimits(stop_on_tool_error=True),
+        tool_scheduler_factory=factory,
+    ).run([user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert (
+        result.error
+        == "tool scheduler must use single-call batches when stop_on_tool_error is enabled"
+    )
+    assert result.total_tool_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_custom_tool_scheduler_cannot_start_concurrent_calls_in_serial_batch() -> None:
+    def factory(tools: ToolCatalog, runtime_limits: LoopLimits) -> ConcurrentStartScheduler:
+        _ = tools, runtime_limits
+        return ConcurrentStartScheduler()
+
+    result = await AgentLoop(
+        model=ScriptedModel(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(id="call-1", name="echo", arguments={"text": "first"}),
+                        ToolCall(id="call-2", name="echo", arguments={"text": "second"}),
+                    ]
+                )
+            ]
+        ),
+        tools=FixtureToolRegistry("echo"),
+        tool_scheduler_factory=factory,
+    ).run([user_text("tool")])
+
+    assert result.status is AgentStatus.FAILED
+    assert result.error == "tool scheduler exceeded max active tool calls"
+    assert result.total_tool_calls == 0
 
 
 @pytest.mark.asyncio

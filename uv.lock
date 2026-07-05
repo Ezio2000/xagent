@@ -74,11 +74,19 @@ name = "harness"
 version = "0.1.0"
 source = { editable = "python/harness" }
 dependencies = [
+    { name = "diagnostics" },
     { name = "kernel" },
+    { name = "prompting" },
+    { name = "toolkit" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "kernel", editable = "python/kernel" }]
+requires-dist = [
+    { name = "diagnostics", editable = "python/diagnostics" },
+    { name = "kernel", editable = "python/kernel" },
+    { name = "prompting", editable = "python/prompting" },
+    { name = "toolkit", editable = "python/toolkit" },
+]
 
 [[package]]
 name = "iniconfig"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from kernel import ToolCall
 from prompting import assistant_text, external_text, system_text, tool_text, user_text
 
@@ -33,3 +34,11 @@ def test_external_text_sets_insert_metadata() -> None:
     assert message.metadata["insert_id"] == "insert-1"
     assert message.metadata["source"] == "webhook"
     assert message.metadata["correlation_id"] == "corr-1"
+
+
+def test_external_text_rejects_empty_insert_metadata() -> None:
+    with pytest.raises(ValueError, match="insert_id"):
+        external_text("callback", insert_id="", source="webhook")
+
+    with pytest.raises(ValueError, match="source"):
+        external_text("callback", insert_id="insert-1", source="")
