@@ -1,0 +1,110 @@
+{
+  "schema_version": "v0",
+  "name": "continue_planning_checkpoint",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "continue",
+        "source": "seed"
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "continued",
+                  "metadata": {}
+                }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 5,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "final_text": "continued",
+        "model_request_roles": [
+          [
+            "user"
+          ]
+        ],
+        "fact_kinds": [
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ],
+  "seed_checkpoint": {
+    "schema_version": "v0",
+    "id": "seed-checkpoint",
+    "snapshot": {
+      "revision": 4,
+      "context": {
+        "run_id": "seed-run",
+        "started_at": 1,
+        "deadline": null,
+        "parent_run_id": null,
+        "parent_tool_call_id": null,
+        "run_kind": null,
+        "metadata": {}
+      },
+      "history": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "continue me",
+              "metadata": {}
+            }
+          ],
+          "metadata": {}
+        }
+      ],
+      "metrics": {
+        "planning_steps": 0,
+        "tool_calls": 0,
+        "usage": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "total_tokens": null,
+          "reasoning_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      },
+      "state": {
+        "kind": "planning"
+      }
+    },
+    "fact": {
+      "kind": "history_rewrite",
+      "at": 1,
+      "data": {
+        "before_count": 1,
+        "after_roles": [
+          "user"
+        ],
+        "reason": "fixture_seed",
+        "metadata_keys": []
+      }
+    }
+  }
+}

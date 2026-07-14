@@ -1,0 +1,12 @@
+{
+  "schema_version": "v0",
+  "name": "tools_pending_requires_calls",
+  "kind": "validation",
+  "target": "state",
+  "value": {
+    "kind": "tools_pending",
+    "pending": []
+  },
+  "expected_valid": false,
+  "expected_error_code": "schema_validation"
+}

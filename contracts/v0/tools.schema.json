@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/tools.schema.json",
+  "title": "Kernel v0 Tool Specification",
+  "$ref": "#/$defs/tool_spec",
+  "$defs": {
+    "tool_spec": {
+      "type": "object",
+      "required": ["name", "description", "input_schema", "output_schema", "execution", "risk"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "input_schema": { "type": ["object", "boolean"] },
+        "output_schema": { "type": ["object", "boolean", "null"] },
+        "execution": { "$ref": "#/$defs/tool_execution" },
+        "risk": { "$ref": "#/$defs/tool_risk" }
+      },
+      "additionalProperties": false
+    },
+    "tool_execution": {
+      "type": "object",
+      "required": ["concurrency", "read_only", "idempotent"],
+      "properties": {
+        "concurrency": { "enum": ["serial", "parallel"] },
+        "read_only": { "type": "boolean" },
+        "idempotent": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "concurrency": { "const": "parallel" } },
+            "required": ["concurrency"]
+          },
+          "then": {
+            "properties": {
+              "read_only": { "const": true },
+              "idempotent": { "const": true }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "tool_risk": {
+      "type": "object",
+      "properties": {
+        "filesystem": { "type": "string", "minLength": 1 },
+        "network": { "type": "string", "minLength": 1 },
+        "subprocess": { "type": "boolean" },
+        "destructive": { "type": "boolean" },
+        "requires_approval": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

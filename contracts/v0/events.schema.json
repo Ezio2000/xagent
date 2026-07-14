@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/events.schema.json",
+  "title": "Kernel v0 Invocation Event",
+  "type": "object",
+  "required": ["schema_version", "run_id", "invocation_id", "sequence", "kind", "created_at", "data"],
+  "properties": {
+    "schema_version": { "const": "v0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "invocation_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "kind": { "$ref": "#/$defs/event_kind" },
+    "created_at": { "type": "number", "minimum": 0 },
+    "data": { "type": "object" }
+  },
+  "allOf": [
+    { "$ref": "#/$defs/event_constraints" }
+  ],
+  "$defs": {
+    "event_kind": {
+      "enum": [
+        "invocation_started",
+        "model_started",
+        "model_delta",
+        "model_finished",
+        "approval_requested",
+        "approval_decided",
+        "tool_started",
+        "tool_progress",
+        "tool_finished",
+        "tool_cancel_requested",
+        "checkpoint_committed",
+        "invocation_stopped"
+      ]
+    },
+    "trace_entry": {
+      "type": "object",
+      "required": ["sequence", "kind", "created_at", "data"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "kind": { "$ref": "#/$defs/event_kind" },
+        "created_at": { "type": "number", "minimum": 0 },
+        "data": { "type": "object" }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/event_constraints" }
+      ],
+      "additionalProperties": false
+    },
+    "event_constraints": {
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "invocation_started" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/invocation_started_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "model_started" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/model_started_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "model_delta" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/model_delta_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "model_finished" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/model_finished_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "approval_requested" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "approval.schema.json#/$defs/approval_request" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "approval_decided" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "approval.schema.json#/$defs/approval_decision" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_started" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/tool_started_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_progress" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/tool_progress_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_finished" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/tool_finished_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_cancel_requested" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/tool_cancel_requested_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "checkpoint_committed" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/checkpoint_committed_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "invocation_stopped" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/invocation_stopped_data" } } }
+        }
+      ]
+    },
+    "invocation_started_data": {
+      "type": "object",
+      "required": ["request_kind", "starting_checkpoint_id", "starting"],
+      "properties": {
+        "request_kind": { "enum": ["start", "continue", "resume"] },
+        "starting_checkpoint_id": { "type": ["string", "null"] },
+        "starting": {
+          "oneOf": [
+            { "$ref": "checkpoint.schema.json#/$defs/run_view" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "$comment": "start uses null checkpoint/view; continue and resume identify the supplied recovery checkpoint and view.",
+      "additionalProperties": false
+    },
+    "model_started_data": {
+      "type": "object",
+      "required": ["planning_step"],
+      "properties": {
+        "planning_step": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "model_delta_data": {
+      "oneOf": [
+        { "$ref": "#/$defs/content_delta" },
+        { "$ref": "#/$defs/tool_call_delta" },
+        { "$ref": "#/$defs/reasoning_delta" },
+        { "$ref": "#/$defs/usage_delta" }
+      ]
+    },
+    "content_delta": {
+      "type": "object",
+      "required": ["kind", "index", "part_type", "text_delta", "data"],
+      "properties": {
+        "kind": { "const": "content" },
+        "index": { "type": "integer", "minimum": 0 },
+        "part_type": { "type": "string", "minLength": 1 },
+        "text_delta": { "type": "string" },
+        "data": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "tool_call_delta": {
+      "type": "object",
+      "required": ["kind", "index", "id", "name", "arguments_delta"],
+      "properties": {
+        "kind": { "const": "tool_call" },
+        "index": { "type": "integer", "minimum": 0 },
+        "id": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "arguments_delta": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "reasoning_delta": {
+      "type": "object",
+      "required": ["kind", "index", "text_delta"],
+      "properties": {
+        "kind": { "const": "reasoning" },
+        "index": { "type": "integer", "minimum": 0 },
+        "text_delta": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "usage_delta": {
+      "type": "object",
+      "required": ["kind", "usage"],
+      "properties": {
+        "kind": { "const": "usage" },
+        "usage": { "$ref": "model-response.schema.json#/$defs/model_usage" }
+      },
+      "additionalProperties": false
+    },
+    "model_finished_data": {
+      "type": "object",
+      "required": ["finish_reason", "tool_call_count", "usage"],
+      "properties": {
+        "finish_reason": { "type": ["string", "null"] },
+        "tool_call_count": { "type": "integer", "minimum": 0 },
+        "usage": {
+          "oneOf": [
+            { "$ref": "model-response.schema.json#/$defs/model_usage" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "tool_started_data": {
+      "type": "object",
+      "required": ["batch_id", "index", "call", "parallel"],
+      "properties": {
+        "batch_id": { "type": "string", "minLength": 1 },
+        "index": { "type": "integer", "minimum": 0 },
+        "call": { "$ref": "messages.schema.json#/$defs/tool_call" },
+        "parallel": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "tool_progress_data": {
+      "type": "object",
+      "required": ["tool_call_id", "progress"],
+      "properties": {
+        "tool_call_id": { "type": "string", "minLength": 1 },
+        "progress": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "tool_finished_data": {
+      "type": "object",
+      "required": ["batch_id", "index", "tool_call_id", "outcome_kind"],
+      "properties": {
+        "batch_id": { "type": "string", "minLength": 1 },
+        "index": { "type": "integer", "minimum": 0 },
+        "tool_call_id": { "type": "string", "minLength": 1 },
+        "outcome_kind": { "enum": ["success", "failure", "accepted", "waiting"] }
+      },
+      "additionalProperties": false
+    },
+    "tool_cancel_requested_data": {
+      "type": "object",
+      "required": ["tool_call_id"],
+      "properties": {
+        "tool_call_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "checkpoint_committed_data": {
+      "type": "object",
+      "required": ["checkpoint_id", "fact", "after"],
+      "properties": {
+        "checkpoint_id": { "type": "string", "minLength": 1 },
+        "fact": { "$ref": "checkpoint.schema.json#/$defs/fact" },
+        "after": { "$ref": "checkpoint.schema.json#/$defs/run_view" }
+      },
+      "additionalProperties": false
+    },
+    "invocation_stopped_data": {
+      "type": "object",
+      "required": ["reason", "last_checkpoint_id"],
+      "properties": {
+        "reason": { "enum": ["terminal", "suspended", "cancelled", "consumer_closed", "repository_error"] },
+        "last_checkpoint_id": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

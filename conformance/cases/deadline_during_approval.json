@@ -1,0 +1,85 @@
+{
+  "schema_version": "v0",
+  "name": "deadline_during_approval",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "slow approval",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "late"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "limits": {
+        "timeout_seconds": 0.03,
+        "max_tool_concurrency": 1,
+        "max_tool_batch_size": 1
+      },
+      "approval_decisions": {
+        "call-1": {
+          "call_id": "call-1",
+          "kind": "allow"
+        }
+      },
+      "approval_delay_seconds": 0.1,
+      "expected": {
+        "status": "limited",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "limit_reason": "deadline",
+        "event_counts": {
+          "approval_requested": 1,
+          "approval_decided": 0
+        },
+        "forbidden_event_kinds": [
+          "tool_started",
+          "tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/tool-result.schema.json",
+  "title": "Kernel v0 Tool Result",
+  "$ref": "#/$defs/tool_result",
+  "$defs": {
+    "tool_result": {
+      "oneOf": [
+        { "$ref": "#/$defs/settled_result" },
+        { "$ref": "#/$defs/waiting_result" }
+      ]
+    },
+    "settled_result": {
+      "type": "object",
+      "required": ["outcome"],
+      "properties": {
+        "outcome": {
+          "oneOf": [
+            { "$ref": "messages.schema.json#/$defs/tool_success" },
+            { "$ref": "messages.schema.json#/$defs/tool_failure" },
+            { "$ref": "messages.schema.json#/$defs/tool_accepted" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "waiting_result": {
+      "type": "object",
+      "required": ["outcome", "suspension"],
+      "properties": {
+        "outcome": { "$ref": "messages.schema.json#/$defs/tool_waiting" },
+        "suspension": { "$ref": "state.schema.json#/$defs/suspension" }
+      },
+      "$comment": "suspension is host-only control input. The runtime stores it in Suspended state and writes only outcome to ToolMessage.",
+      "additionalProperties": false
+    }
+  }
+}

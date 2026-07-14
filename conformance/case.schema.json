@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/conformance/case.schema.json",
+  "title": "Kernel v0 Conformance Case",
+  "oneOf": [
+    { "$ref": "#/$defs/scenario_case" },
+    { "$ref": "#/$defs/validation_case" }
+  ],
+  "$defs": {
+    "scenario_case": {
+      "type": "object",
+      "required": ["schema_version", "name", "kind", "invocations"],
+      "properties": {
+        "schema_version": { "const": "v0" },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "const": "scenario" },
+        "seed_checkpoint": {
+          "$ref": "https://jharness.invalid/spec/v0/checkpoint.schema.json"
+        },
+        "invocations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/invocation" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "validation_case": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "name",
+        "kind",
+        "target",
+        "value",
+        "expected_valid",
+        "expected_error_code"
+      ],
+      "properties": {
+        "schema_version": { "const": "v0" },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "const": "validation" },
+        "target": {
+          "enum": [
+            "message",
+            "model_response",
+            "tool_spec",
+            "tool_result",
+            "state",
+            "snapshot",
+            "request",
+            "checkpoint",
+            "event",
+            "trace"
+          ]
+        },
+        "value": true,
+        "expected_valid": { "type": "boolean" },
+        "expected_error_code": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "invocation": {
+      "type": "object",
+      "required": ["request", "model_steps", "expected"],
+      "properties": {
+        "request": { "$ref": "#/$defs/fixture_request" },
+        "model_steps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/model_step" }
+        },
+        "limits": { "$ref": "#/$defs/limit_overrides" },
+        "approval_decisions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "https://jharness.invalid/spec/v0/approval.schema.json#/$defs/approval_decision"
+          }
+        },
+        "approval_delay_seconds": { "type": "number", "minimum": 0 },
+        "actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/action" }
+        },
+        "history_rewrite": { "$ref": "#/$defs/history_rewrite" },
+        "repository_failure": { "$ref": "#/$defs/repository_failure" },
+        "repository_delay": { "$ref": "#/$defs/repository_delay" },
+        "batch_policy": {
+          "enum": [
+            "empty",
+            "skip_prefix",
+            "serial_multiple",
+            "unsafe_parallel",
+            "oversized"
+          ]
+        },
+        "expected": { "$ref": "#/$defs/expected" }
+      },
+      "additionalProperties": false
+    },
+    "limit_overrides": {
+      "type": "object",
+      "properties": {
+        "max_planning_steps": {
+          "$ref": "https://jharness.invalid/spec/v0/limits.schema.json#/properties/max_planning_steps"
+        },
+        "max_tool_calls": {
+          "$ref": "https://jharness.invalid/spec/v0/limits.schema.json#/properties/max_tool_calls"
+        },
+        "max_total_tokens": {
+          "$ref": "https://jharness.invalid/spec/v0/limits.schema.json#/properties/max_total_tokens"
+        },
+        "timeout_seconds": {
+          "$ref": "https://jharness.invalid/spec/v0/limits.schema.json#/properties/timeout_seconds"
+        },
+        "max_tool_concurrency": {
+          "$ref": "https://jharness.invalid/spec/v0/limits.schema.json#/properties/max_tool_concurrency"
+        },
+        "max_tool_batch_size": {
+          "$ref": "https://jharness.invalid/spec/v0/limits.schema.json#/properties/max_tool_batch_size"
+        },
+        "max_buffered_progress": {
+          "$ref": "https://jharness.invalid/spec/v0/limits.schema.json#/properties/max_buffered_progress"
+        }
+      },
+      "additionalProperties": false
+    },
+    "fixture_request": {
+      "oneOf": [
+        { "$ref": "#/$defs/start_fixture" },
+        { "$ref": "#/$defs/continue_fixture" },
+        { "$ref": "#/$defs/resume_fixture" }
+      ]
+    },
+    "start_fixture": {
+      "type": "object",
+      "required": ["kind", "messages"],
+      "properties": {
+        "kind": { "const": "start" },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "https://jharness.invalid/spec/v0/messages.schema.json" }
+        },
+        "context": { "$ref": "https://jharness.invalid/spec/v0/run-context.schema.json" }
+      },
+      "additionalProperties": false
+    },
+    "continue_fixture": {
+      "type": "object",
+      "required": ["kind", "source"],
+      "properties": {
+        "kind": { "const": "continue" },
+        "source": { "enum": ["seed", "previous"] }
+      },
+      "additionalProperties": false
+    },
+    "resume_fixture": {
+      "type": "object",
+      "required": ["kind", "source"],
+      "properties": {
+        "kind": { "const": "resume" },
+        "source": { "enum": ["seed", "previous"] },
+        "selector": {
+          "$ref": "https://jharness.invalid/spec/v0/run-request.schema.json#/$defs/suspension_selector"
+        },
+        "append_messages": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jharness.invalid/spec/v0/run-request.schema.json#/$defs/resume_message"
+          }
+        },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "model_step": {
+      "type": "object",
+      "required": ["outcome"],
+      "properties": {
+        "delay_seconds": { "type": "number", "minimum": 0 },
+        "deltas": {
+          "type": "array",
+          "items": {
+            "$ref": "https://jharness.invalid/spec/v0/events.schema.json#/$defs/model_delta_data"
+          }
+        },
+        "outcome": {
+          "oneOf": [
+            { "$ref": "#/$defs/model_response_outcome" },
+            { "$ref": "#/$defs/model_error_outcome" },
+            { "$ref": "#/$defs/model_block_outcome" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "model_response_outcome": {
+      "type": "object",
+      "required": ["kind", "response"],
+      "properties": {
+        "kind": { "const": "response" },
+        "response": { "$ref": "https://jharness.invalid/spec/v0/model-response.schema.json" }
+      },
+      "additionalProperties": false
+    },
+    "model_error_outcome": {
+      "type": "object",
+      "required": ["kind", "error"],
+      "properties": {
+        "kind": { "const": "error" },
+        "error": { "$ref": "https://jharness.invalid/spec/v0/model-error.schema.json" }
+      },
+      "additionalProperties": false
+    },
+    "model_block_outcome": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "const": "block" }
+      },
+      "additionalProperties": false
+    },
+    "action": {
+      "type": "object",
+      "required": ["when", "command"],
+      "properties": {
+        "when": { "$ref": "#/$defs/action_trigger" },
+        "command": { "$ref": "#/$defs/control_command" }
+      },
+      "additionalProperties": false
+    },
+    "action_trigger": {
+      "type": "object",
+      "required": ["event_kind", "occurrence"],
+      "properties": {
+        "event_kind": {
+          "$ref": "https://jharness.invalid/spec/v0/events.schema.json#/$defs/event_kind"
+        },
+        "occurrence": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "control_command": {
+      "oneOf": [
+        { "$ref": "#/$defs/pause_command" },
+        { "$ref": "#/$defs/insert_command" },
+        { "$ref": "#/$defs/cancel_tool_command" }
+      ]
+    },
+    "pause_command": {
+      "type": "object",
+      "required": ["kind", "suspension"],
+      "properties": {
+        "kind": { "const": "pause" },
+        "suspension": {
+          "$ref": "https://jharness.invalid/spec/v0/state.schema.json#/$defs/suspension"
+        }
+      },
+      "additionalProperties": false
+    },
+    "insert_command": {
+      "type": "object",
+      "required": ["kind", "message"],
+      "properties": {
+        "kind": { "const": "insert" },
+        "message": {
+          "allOf": [
+            {
+              "$ref": "https://jharness.invalid/spec/v0/messages.schema.json#/$defs/regular_message"
+            },
+            { "properties": { "role": { "const": "external" } } }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "cancel_tool_command": {
+      "type": "object",
+      "required": ["kind", "tool_call_id"],
+      "properties": {
+        "kind": { "const": "cancel_tool" },
+        "tool_call_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "history_rewrite": {
+      "type": "object",
+      "required": ["trigger_history_count", "messages", "reason", "metadata"],
+      "properties": {
+        "trigger_history_count": { "type": "integer", "minimum": 1 },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "https://jharness.invalid/spec/v0/messages.schema.json" }
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" },
+        "delay_seconds": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "repository_failure": {
+      "type": "object",
+      "required": ["revision", "message"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "message": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "repository_delay": {
+      "type": "object",
+      "required": ["fact_kind", "delay_seconds"],
+      "properties": {
+        "fact_kind": { "$ref": "#/$defs/fact_kind" },
+        "delay_seconds": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "expected": {
+      "type": "object",
+      "required": [
+        "status",
+        "revision",
+        "fact_kinds",
+        "message_roles",
+        "planning_steps",
+        "tool_calls"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "planning",
+            "tools_pending",
+            "suspended",
+            "completed",
+            "failed",
+            "limited"
+          ]
+        },
+        "revision": { "type": "integer", "minimum": 0 },
+        "fact_kinds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fact_kind" }
+        },
+        "message_roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "https://jharness.invalid/spec/v0/checkpoint.schema.json#/$defs/message_role"
+          }
+        },
+        "planning_steps": { "type": "integer", "minimum": 0 },
+        "tool_calls": { "type": "integer", "minimum": 0 },
+        "pending_call_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "tool_outcome_kinds": {
+          "type": "array",
+          "items": { "enum": ["success", "failure", "accepted", "waiting"] }
+        },
+        "usage": {
+          "$ref": "https://jharness.invalid/spec/v0/model-response.schema.json#/$defs/model_usage"
+        },
+        "final_text": { "type": "string" },
+        "final_part_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "final_parts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "https://jharness.invalid/spec/v0/messages.schema.json#/$defs/content_part"
+          }
+        },
+        "suspension": {
+          "$ref": "https://jharness.invalid/spec/v0/state.schema.json#/$defs/suspension"
+        },
+        "error_code": { "type": "string", "minLength": 1 },
+        "limit_reason": {
+          "$ref": "https://jharness.invalid/spec/v0/state.schema.json#/$defs/limit_reason"
+        },
+        "repository_error": { "type": "string", "minLength": 1 },
+        "repository_idempotent": { "type": "boolean" },
+        "request_error": { "type": "string", "minLength": 1 },
+        "event_counts": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "forbidden_event_kinds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "https://jharness.invalid/spec/v0/events.schema.json#/$defs/event_kind"
+          }
+        },
+        "model_request_roles": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "https://jharness.invalid/spec/v0/checkpoint.schema.json#/$defs/message_role"
+            }
+          }
+        },
+        "approval_call_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "progress": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "tool_activity": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "tool_call_id"],
+            "properties": {
+              "kind": { "enum": ["tool_started", "tool_finished"] },
+              "tool_call_id": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "max_active_tools": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "fact_kind": {
+      "enum": [
+        "started",
+        "resumed",
+        "model_turn",
+        "tool_batch",
+        "conversation_insert",
+        "history_rewrite",
+        "control"
+      ]
+    }
+  }
+}

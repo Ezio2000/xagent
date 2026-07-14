@@ -1,0 +1,100 @@
+{
+  "schema_version": "v0",
+  "name": "conversation_insert_during_model",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "original",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "block"
+          }
+        },
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "after insert",
+                  "metadata": {}
+                }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "actions": [
+        {
+          "when": {
+            "event_kind": "model_started",
+            "occurrence": 1
+          },
+          "command": {
+            "kind": "insert",
+            "message": {
+              "role": "external",
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "new information",
+                  "metadata": {}
+                }
+              ],
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "final_text": "after insert",
+        "model_request_roles": [
+          [
+            "user"
+          ],
+          [
+            "user",
+            "external"
+          ]
+        ],
+        "fact_kinds": [
+          "started",
+          "conversation_insert",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "external",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

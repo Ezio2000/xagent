@@ -1,0 +1,25 @@
+{
+  "schema_version": "v0",
+  "name": "duplicate_tool_call_id_invalid",
+  "kind": "validation",
+  "target": "message",
+  "value": {
+    "role": "assistant",
+    "parts": [],
+    "tool_calls": [
+      {
+        "id": "duplicate",
+        "name": "echo",
+        "arguments": {}
+      },
+      {
+        "id": "duplicate",
+        "name": "echo",
+        "arguments": {}
+      }
+    ],
+    "metadata": {}
+  },
+  "expected_valid": false,
+  "expected_error_code": "duplicate_tool_call_id"
+}

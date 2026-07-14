@@ -1,0 +1,64 @@
+{
+  "schema_version": "v0",
+  "name": "repository_commit_failure",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "commit fail",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "not durable",
+                  "metadata": {}
+                }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "repository_failure": {
+        "revision": 1,
+        "message": "commit failed"
+      },
+      "expected": {
+        "status": "planning",
+        "revision": 0,
+        "planning_steps": 0,
+        "tool_calls": 0,
+        "repository_error": "commit failed",
+        "fact_kinds": [
+          "started"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

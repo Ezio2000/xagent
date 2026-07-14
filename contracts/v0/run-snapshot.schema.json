@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/run-snapshot.schema.json",
+  "title": "Kernel v0 Run Snapshot",
+  "type": "object",
+  "required": ["revision", "context", "history", "metrics", "state"],
+  "properties": {
+    "revision": { "type": "integer", "minimum": 0 },
+    "context": { "$ref": "run-context.schema.json" },
+    "history": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "messages.schema.json#/$defs/message" }
+    },
+    "metrics": { "$ref": "state.schema.json#/$defs/run_metrics" },
+    "state": { "$ref": "state.schema.json#/$defs/run_state" }
+  },
+  "additionalProperties": false
+}

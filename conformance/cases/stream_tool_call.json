@@ -1,0 +1,119 @@
+{
+  "schema_version": "v0",
+  "name": "stream_tool_call",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "stream a tool",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "deltas": [
+            {
+              "kind": "tool_call",
+              "index": 0,
+              "id": "call-1",
+              "name": "echo",
+              "arguments_delta": "{\"text\":\""
+            },
+            {
+              "kind": "tool_call",
+              "index": 0,
+              "id": null,
+              "name": null,
+              "arguments_delta": "streamed\"}"
+            }
+          ],
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "streamed"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        },
+        {
+          "deltas": [
+            {
+              "kind": "content",
+              "index": 0,
+              "text_delta": "done",
+              "part_type": "text",
+              "data": {}
+            }
+          ],
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "done",
+                  "metadata": {}
+                }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 3,
+        "planning_steps": 2,
+        "tool_calls": 1,
+        "final_text": "done",
+        "event_counts": {
+          "model_delta": 3
+        },
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "tool_batch",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant",
+          "tool",
+          "assistant"
+        ],
+        "tool_outcome_kinds": [
+          "success"
+        ]
+      }
+    }
+  ]
+}

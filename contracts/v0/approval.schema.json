@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/approval.schema.json",
+  "title": "Kernel v0 Approval Request",
+  "$ref": "#/$defs/approval_request",
+  "$defs": {
+    "approval_request": {
+      "type": "object",
+      "required": ["batch_id", "index", "call", "risk"],
+      "properties": {
+        "batch_id": { "type": "string", "minLength": 1 },
+        "index": { "type": "integer", "minimum": 0 },
+        "call": { "$ref": "messages.schema.json#/$defs/tool_call" },
+        "risk": { "$ref": "tools.schema.json#/$defs/tool_risk" }
+      },
+      "additionalProperties": false
+    },
+    "approval_decision": {
+      "oneOf": [
+        { "$ref": "#/$defs/allow" },
+        { "$ref": "#/$defs/deny" },
+        { "$ref": "#/$defs/suspend" }
+      ]
+    },
+    "allow": {
+      "type": "object",
+      "required": ["call_id", "kind"],
+      "properties": {
+        "call_id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "allow" }
+      },
+      "additionalProperties": false
+    },
+    "deny": {
+      "type": "object",
+      "required": ["call_id", "kind", "reason"],
+      "properties": {
+        "call_id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "deny" },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "suspend": {
+      "type": "object",
+      "required": ["call_id", "kind", "suspension"],
+      "properties": {
+        "call_id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "suspend" },
+        "suspension": { "$ref": "state.schema.json#/$defs/suspension" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

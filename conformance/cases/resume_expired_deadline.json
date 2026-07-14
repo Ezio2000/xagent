@@ -1,0 +1,92 @@
+{
+  "schema_version": "v0",
+  "name": "resume_expired_deadline",
+  "kind": "scenario",
+  "seed_checkpoint": {
+    "schema_version": "v0",
+    "id": "expired-suspended-checkpoint",
+    "snapshot": {
+      "revision": 1,
+      "context": {
+        "run_id": "expired-resume-run",
+        "started_at": 1,
+        "deadline": 1,
+        "parent_run_id": null,
+        "parent_tool_call_id": null,
+        "run_kind": null,
+        "metadata": {}
+      },
+      "history": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "resume after the hard deadline",
+              "metadata": {}
+            }
+          ],
+          "metadata": {}
+        }
+      ],
+      "metrics": {
+        "planning_steps": 0,
+        "tool_calls": 0,
+        "usage": {
+          "input_tokens": null,
+          "output_tokens": null,
+          "total_tokens": null,
+          "reasoning_tokens": null,
+          "cache_read_tokens": null,
+          "cache_write_tokens": null
+        }
+      },
+      "state": {
+        "kind": "suspended",
+        "resume_to": {
+          "kind": "planning"
+        },
+        "suspension": {
+          "reason": "host_pause",
+          "source": "host",
+          "wait_id": null,
+          "metadata": {}
+        }
+      }
+    },
+    "fact": {
+      "kind": "control",
+      "at": 1,
+      "data": {
+        "action": "suspended",
+        "reason": "host_pause",
+        "source": "host",
+        "wait_id": null,
+        "metadata_keys": []
+      }
+    }
+  },
+  "invocations": [
+    {
+      "request": {
+        "kind": "resume",
+        "source": "seed"
+      },
+      "model_steps": [],
+      "expected": {
+        "status": "limited",
+        "revision": 2,
+        "planning_steps": 0,
+        "tool_calls": 0,
+        "limit_reason": "deadline",
+        "repository_idempotent": true,
+        "fact_kinds": [
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+{
+  "schema_version": "v0",
+  "name": "resume_selector_mismatch",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "start wait",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "wait",
+                  "arguments": {
+                    "wait_id": "job-1"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "suspended",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 1,
+        "suspension": {
+          "reason": "external_wait",
+          "source": "tool",
+          "wait_id": "job-1",
+          "metadata": {}
+        },
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "tool_batch"
+        ],
+        "message_roles": [
+          "user",
+          "assistant",
+          "tool"
+        ],
+        "tool_outcome_kinds": [
+          "waiting"
+        ]
+      }
+    },
+    {
+      "request": {
+        "kind": "resume",
+        "source": "previous",
+        "selector": {
+          "wait_id": "wrong"
+        }
+      },
+      "model_steps": [],
+      "expected": {
+        "status": "suspended",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 1,
+        "suspension": {
+          "reason": "external_wait",
+          "source": "tool",
+          "wait_id": "job-1",
+          "metadata": {}
+        },
+        "request_error": "suspension_mismatch",
+        "fact_kinds": [],
+        "message_roles": [
+          "user",
+          "assistant",
+          "tool"
+        ],
+        "tool_outcome_kinds": [
+          "waiting"
+        ]
+      }
+    },
+    {
+      "request": {
+        "kind": "resume",
+        "source": "previous",
+        "selector": {
+          "metadata": {
+            "missing": null
+          }
+        }
+      },
+      "model_steps": [],
+      "expected": {
+        "status": "suspended",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 1,
+        "suspension": {
+          "reason": "external_wait",
+          "source": "tool",
+          "wait_id": "job-1",
+          "metadata": {}
+        },
+        "request_error": "suspension_mismatch",
+        "fact_kinds": [],
+        "message_roles": [
+          "user",
+          "assistant",
+          "tool"
+        ],
+        "tool_outcome_kinds": [
+          "waiting"
+        ]
+      }
+    }
+  ]
+}

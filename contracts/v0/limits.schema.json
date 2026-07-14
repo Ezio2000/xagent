@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/limits.schema.json",
+  "title": "Kernel v0 Run Limits",
+  "type": "object",
+  "required": [
+    "max_planning_steps",
+    "max_tool_calls",
+    "max_total_tokens",
+    "timeout_seconds",
+    "max_tool_concurrency",
+    "max_tool_batch_size",
+    "max_buffered_progress"
+  ],
+  "properties": {
+    "max_planning_steps": { "type": "integer", "minimum": 1 },
+    "max_tool_calls": { "type": "integer", "minimum": 0 },
+    "max_total_tokens": { "type": ["integer", "null"], "minimum": 1 },
+    "timeout_seconds": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "max_tool_concurrency": { "type": "integer", "minimum": 1 },
+    "max_tool_batch_size": { "type": "integer", "minimum": 1 },
+    "max_buffered_progress": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

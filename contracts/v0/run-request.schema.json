@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/run-request.schema.json",
+  "title": "Kernel v0 Run Request",
+  "oneOf": [
+    { "$ref": "#/$defs/start_request" },
+    { "$ref": "#/$defs/continue_request" },
+    { "$ref": "#/$defs/resume_request" }
+  ],
+  "$defs": {
+    "start_request": {
+      "type": "object",
+      "required": ["kind", "messages", "context"],
+      "properties": {
+        "kind": { "const": "start" },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "$comment": "SDK semantic validation requires the complete start history to be valid in Planning before invocation creation.",
+          "items": { "$ref": "messages.schema.json#/$defs/message" }
+        },
+        "context": {
+          "oneOf": [
+            { "$ref": "run-context.schema.json" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "continue_request": {
+      "type": "object",
+      "required": ["kind", "checkpoint"],
+      "properties": {
+        "kind": { "const": "continue" },
+        "checkpoint": { "$ref": "#/$defs/active_checkpoint" }
+      },
+      "additionalProperties": false
+    },
+    "resume_request": {
+      "type": "object",
+      "required": ["kind", "checkpoint", "selector", "append_messages", "metadata"],
+      "properties": {
+        "kind": { "const": "resume" },
+        "checkpoint": { "$ref": "#/$defs/suspended_checkpoint" },
+        "selector": {
+          "oneOf": [
+            { "$ref": "#/$defs/suspension_selector" },
+            { "type": "null" }
+          ]
+        },
+        "append_messages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/resume_message" }
+        },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "active_checkpoint": {
+      "allOf": [
+        { "$ref": "checkpoint.schema.json#/$defs/checkpoint" },
+        {
+          "type": "object",
+          "required": ["snapshot"],
+          "properties": {
+            "snapshot": {
+              "allOf": [
+                { "$ref": "run-snapshot.schema.json" },
+                {
+                  "type": "object",
+                  "required": ["state"],
+                  "properties": {
+                    "state": { "$ref": "state.schema.json#/$defs/active_state" }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "suspended_checkpoint": {
+      "allOf": [
+        { "$ref": "checkpoint.schema.json#/$defs/checkpoint" },
+        {
+          "type": "object",
+          "required": ["snapshot"],
+          "properties": {
+            "snapshot": {
+              "allOf": [
+                { "$ref": "run-snapshot.schema.json" },
+                {
+                  "type": "object",
+                  "required": ["state"],
+                  "properties": {
+                    "state": { "$ref": "state.schema.json#/$defs/suspended" }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "suspension_selector": {
+      "type": "object",
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "anyOf": [
+        { "required": ["reason"] },
+        { "required": ["source"] },
+        { "required": ["wait_id"] },
+        {
+          "required": ["metadata"],
+          "properties": { "metadata": { "minProperties": 1 } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "resume_message": {
+      "allOf": [
+        { "$ref": "messages.schema.json#/$defs/regular_message" },
+        {
+          "type": "object",
+          "properties": {
+            "role": { "enum": ["system", "user", "external"] }
+          }
+        }
+      ]
+    }
+  }
+}

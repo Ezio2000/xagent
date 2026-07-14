@@ -1,0 +1,92 @@
+{
+  "schema_version": "v0",
+  "name": "accepted_result_then_final",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "accept work",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "accept",
+                  "arguments": {
+                    "text": "queued",
+                    "correlation_id": "job-1"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        },
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "accepted",
+                  "metadata": {}
+                }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 3,
+        "planning_steps": 2,
+        "tool_calls": 1,
+        "final_text": "accepted",
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "tool_batch",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant",
+          "tool",
+          "assistant"
+        ],
+        "tool_outcome_kinds": [
+          "accepted"
+        ]
+      }
+    }
+  ]
+}

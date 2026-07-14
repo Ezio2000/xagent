@@ -1,0 +1,113 @@
+{
+  "schema_version": "v0",
+  "name": "resume_tools_with_messages_invalid",
+  "kind": "validation",
+  "target": "request",
+  "value": {
+    "kind": "resume",
+    "selector": null,
+    "append_messages": [
+      {
+        "role": "external",
+        "parts": [
+          {
+            "type": "text",
+            "text": "not legal",
+            "metadata": {}
+          }
+        ],
+        "metadata": {}
+      }
+    ],
+    "metadata": {},
+    "checkpoint": {
+      "schema_version": "v0",
+      "id": "resume_tools_with_messages_invalid-checkpoint",
+      "snapshot": {
+        "revision": 2,
+        "context": {
+          "run_id": "run-1",
+          "started_at": 1,
+          "deadline": null,
+          "parent_run_id": null,
+          "parent_tool_call_id": null,
+          "run_kind": null,
+          "metadata": {}
+        },
+        "history": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "hello",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          },
+          {
+            "role": "assistant",
+            "parts": [],
+            "tool_calls": [
+              {
+                "id": "call-1",
+                "name": "echo",
+                "arguments": {
+                  "text": "later"
+                }
+              }
+            ],
+            "metadata": {}
+          }
+        ],
+        "metrics": {
+          "planning_steps": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": null,
+            "output_tokens": null,
+            "total_tokens": null,
+            "reasoning_tokens": null,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        },
+        "state": {
+          "kind": "suspended",
+          "resume_to": {
+            "kind": "tools_pending",
+            "pending": [
+              {
+                "id": "call-1",
+                "name": "echo",
+                "arguments": {
+                  "text": "later"
+                }
+              }
+            ]
+          },
+          "suspension": {
+            "reason": "approval",
+            "source": "host",
+            "wait_id": "call-1",
+            "metadata": {}
+          }
+        }
+      },
+      "fact": {
+        "kind": "control",
+        "at": 1,
+        "data": {
+          "action": "suspended",
+          "reason": "approval",
+          "source": "host",
+          "wait_id": "call-1",
+          "metadata_keys": []
+        }
+      }
+    }
+  },
+  "expected_valid": false,
+  "expected_error_code": "messages_require_planning"
+}

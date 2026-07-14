@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/run-trace.schema.json",
+  "title": "Kernel v0 Run Trace",
+  "type": "object",
+  "required": ["schema_version", "header", "entries"],
+  "properties": {
+    "schema_version": { "const": "v0" },
+    "header": { "$ref": "#/$defs/trace_header" },
+    "entries": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "events.schema.json#/$defs/trace_entry" }
+    }
+  },
+  "$defs": {
+    "trace_header": {
+      "type": "object",
+      "required": ["run_id", "invocation_id", "request_kind", "metadata_keys"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "invocation_id": { "type": "string", "minLength": 1 },
+        "request_kind": { "enum": ["start", "continue", "resume"] },
+        "metadata_keys": { "$ref": "checkpoint.schema.json#/$defs/metadata_keys" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$comment": "entries omit the repeated wire version, run id, and invocation id. Sequence is the entry identity, and the last checkpoint entry determines the terminal durable view.",
+  "additionalProperties": false
+}

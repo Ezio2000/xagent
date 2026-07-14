@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/state.schema.json",
+  "title": "Kernel v0 Run State",
+  "$ref": "#/$defs/run_state",
+  "$defs": {
+    "run_state": {
+      "oneOf": [
+        { "$ref": "#/$defs/planning" },
+        { "$ref": "#/$defs/tools_pending" },
+        { "$ref": "#/$defs/suspended" },
+        { "$ref": "#/$defs/completed" },
+        { "$ref": "#/$defs/failed" },
+        { "$ref": "#/$defs/limited" }
+      ]
+    },
+    "active_state": {
+      "oneOf": [
+        { "$ref": "#/$defs/planning" },
+        { "$ref": "#/$defs/tools_pending" }
+      ]
+    },
+    "planning": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "const": "planning" }
+      },
+      "additionalProperties": false
+    },
+    "tools_pending": {
+      "type": "object",
+      "required": ["kind", "pending"],
+      "properties": {
+        "kind": { "const": "tools_pending" },
+        "pending": {
+          "type": "array",
+          "minItems": 1,
+          "$comment": "Pending call ids must be unique and preserve assistant call order.",
+          "items": { "$ref": "messages.schema.json#/$defs/tool_call" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "suspension": {
+      "type": "object",
+      "required": ["reason", "source", "wait_id", "metadata"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "suspended": {
+      "type": "object",
+      "required": ["kind", "resume_to", "suspension"],
+      "properties": {
+        "kind": { "const": "suspended" },
+        "resume_to": { "$ref": "#/$defs/active_state" },
+        "suspension": { "$ref": "#/$defs/suspension" }
+      },
+      "additionalProperties": false
+    },
+    "completed": {
+      "type": "object",
+      "required": ["kind", "parts"],
+      "properties": {
+        "kind": { "const": "completed" },
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "messages.schema.json#/$defs/content_part" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "failed": {
+      "type": "object",
+      "required": ["kind", "error"],
+      "properties": {
+        "kind": { "const": "failed" },
+        "error": { "$ref": "messages.schema.json#/$defs/error_info" }
+      },
+      "additionalProperties": false
+    },
+    "limited": {
+      "type": "object",
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": { "const": "limited" },
+        "reason": { "$ref": "#/$defs/limit_reason" }
+      },
+      "additionalProperties": false
+    },
+    "limit_reason": {
+      "enum": ["max_planning_steps", "max_tool_calls", "max_total_tokens", "deadline"]
+    },
+    "run_metrics": {
+      "type": "object",
+      "required": ["planning_steps", "tool_calls", "usage"],
+      "properties": {
+        "planning_steps": { "type": "integer", "minimum": 0 },
+        "tool_calls": { "type": "integer", "minimum": 0 },
+        "usage": { "$ref": "model-response.schema.json#/$defs/model_usage" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

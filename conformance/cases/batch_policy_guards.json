@@ -1,0 +1,354 @@
+{
+  "schema_version": "v0",
+  "name": "batch_policy_guards",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "empty batch",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "empty-1",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "one"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "batch_policy": "empty",
+      "expected": {
+        "status": "failed",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "error_code": "tool_protocol_error",
+        "forbidden_event_kinds": [
+          "tool_started",
+          "tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    },
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "skip prefix",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "skip-1",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "one"
+                  }
+                },
+                {
+                  "id": "skip-2",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "two"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "batch_policy": "skip_prefix",
+      "expected": {
+        "status": "failed",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "error_code": "tool_protocol_error",
+        "forbidden_event_kinds": [
+          "tool_started",
+          "tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    },
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "serial multiple",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "serial-1",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "one"
+                  }
+                },
+                {
+                  "id": "serial-2",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "two"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "batch_policy": "serial_multiple",
+      "expected": {
+        "status": "failed",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "error_code": "tool_protocol_error",
+        "forbidden_event_kinds": [
+          "tool_started",
+          "tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    },
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "unsafe parallel",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "unsafe-1",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "one"
+                  }
+                },
+                {
+                  "id": "unsafe-2",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "two"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "batch_policy": "unsafe_parallel",
+      "expected": {
+        "status": "failed",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "error_code": "tool_protocol_error",
+        "forbidden_event_kinds": [
+          "tool_started",
+          "tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    },
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "oversized batch",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "large-1",
+                  "name": "delayed_echo",
+                  "arguments": {
+                    "text": "one"
+                  }
+                },
+                {
+                  "id": "large-2",
+                  "name": "delayed_echo",
+                  "arguments": {
+                    "text": "two"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "limits": {
+        "max_tool_concurrency": 1,
+        "max_tool_batch_size": 1
+      },
+      "batch_policy": "oversized",
+      "expected": {
+        "status": "failed",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "error_code": "tool_protocol_error",
+        "forbidden_event_kinds": [
+          "tool_started",
+          "tool_finished"
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

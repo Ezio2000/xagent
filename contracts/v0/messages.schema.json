@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/messages.schema.json",
+  "title": "Kernel v0 Message",
+  "$ref": "#/$defs/message",
+  "$defs": {
+    "message": {
+      "oneOf": [
+        { "$ref": "#/$defs/regular_message" },
+        { "$ref": "#/$defs/assistant_message" },
+        { "$ref": "#/$defs/tool_message" }
+      ]
+    },
+    "regular_message": {
+      "type": "object",
+      "required": ["role", "parts", "metadata"],
+      "properties": {
+        "role": { "enum": ["system", "user", "external"] },
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/content_part" }
+        },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "assistant_message": {
+      "type": "object",
+      "required": ["role", "parts", "tool_calls", "metadata"],
+      "properties": {
+        "role": { "const": "assistant" },
+        "parts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/content_part" }
+        },
+        "tool_calls": {
+          "type": "array",
+          "$comment": "Tool call ids must be unique. SDK semantic validation enforces uniqueness by id.",
+          "items": { "$ref": "#/$defs/tool_call" }
+        },
+        "metadata": { "type": "object" }
+      },
+      "anyOf": [
+        { "properties": { "parts": { "minItems": 1 } } },
+        { "properties": { "tool_calls": { "minItems": 1 } } }
+      ],
+      "additionalProperties": false
+    },
+    "tool_message": {
+      "type": "object",
+      "required": ["role", "tool_call_id", "outcome", "metadata"],
+      "properties": {
+        "role": { "const": "tool" },
+        "tool_call_id": { "type": "string", "minLength": 1 },
+        "outcome": { "$ref": "#/$defs/tool_outcome" },
+        "metadata": { "type": "object" }
+      },
+      "$comment": "The outcome is the single model-visible tool result. Host suspension data is never copied into a message.",
+      "additionalProperties": false
+    },
+    "tool_call": {
+      "type": "object",
+      "required": ["id", "name", "arguments"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "tool_outcome": {
+      "oneOf": [
+        { "$ref": "#/$defs/tool_success" },
+        { "$ref": "#/$defs/tool_failure" },
+        { "$ref": "#/$defs/tool_accepted" },
+        { "$ref": "#/$defs/tool_waiting" }
+      ]
+    },
+    "tool_success": {
+      "type": "object",
+      "required": ["kind", "parts", "structured_content"],
+      "properties": {
+        "kind": { "const": "success" },
+        "parts": { "$ref": "#/$defs/non_empty_parts" },
+        "structured_content": true
+      },
+      "additionalProperties": false
+    },
+    "tool_failure": {
+      "type": "object",
+      "required": ["kind", "parts", "error", "structured_content"],
+      "properties": {
+        "kind": { "const": "failure" },
+        "parts": { "$ref": "#/$defs/non_empty_parts" },
+        "error": { "$ref": "#/$defs/error_info" },
+        "structured_content": true
+      },
+      "additionalProperties": false
+    },
+    "tool_accepted": {
+      "type": "object",
+      "required": ["kind", "parts", "correlation_id", "task", "structured_content"],
+      "properties": {
+        "kind": { "const": "accepted" },
+        "parts": { "$ref": "#/$defs/non_empty_parts" },
+        "correlation_id": { "type": "string", "minLength": 1 },
+        "task": { "$ref": "#/$defs/nullable_task_ref" },
+        "structured_content": true
+      },
+      "additionalProperties": false
+    },
+    "tool_waiting": {
+      "type": "object",
+      "required": ["kind", "parts", "task", "structured_content"],
+      "properties": {
+        "kind": { "const": "waiting" },
+        "parts": { "$ref": "#/$defs/non_empty_parts" },
+        "task": { "$ref": "#/$defs/nullable_task_ref" },
+        "structured_content": true
+      },
+      "$comment": "Waiting is model-visible, but its host suspension is carried only by ToolResult and Suspended state.",
+      "additionalProperties": false
+    },
+    "non_empty_parts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/content_part" }
+    },
+    "error_info": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "nullable_task_ref": {
+      "oneOf": [
+        { "$ref": "#/$defs/task_ref" },
+        { "type": "null" }
+      ]
+    },
+    "task_ref": {
+      "type": "object",
+      "required": ["id", "status", "metadata"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "content_part": {
+      "oneOf": [
+        { "$ref": "#/$defs/text_part" },
+        { "$ref": "#/$defs/artifact_part" },
+        { "$ref": "#/$defs/opaque_part" }
+      ]
+    },
+    "text_part": {
+      "type": "object",
+      "required": ["type", "text", "metadata"],
+      "properties": {
+        "type": { "const": "text" },
+        "text": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "artifact_part": {
+      "type": "object",
+      "required": ["type", "artifact", "metadata"],
+      "properties": {
+        "type": { "const": "artifact" },
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "metadata": { "type": "object" }
+      },
+      "$comment": "artifact is the single authoritative artifact payload.",
+      "additionalProperties": false
+    },
+    "opaque_part": {
+      "type": "object",
+      "required": ["type", "metadata"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "not": { "enum": ["text", "artifact"] }
+        },
+        "text": { "type": "string" },
+        "uri": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "data": { "type": "object" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["ref", "metadata"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

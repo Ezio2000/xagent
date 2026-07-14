@@ -1,0 +1,37 @@
+{
+  "schema_version": "v0",
+  "name": "start_history_requires_planning",
+  "kind": "validation",
+  "target": "request",
+  "value": {
+    "kind": "start",
+    "messages": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "type": "text",
+            "text": "search",
+            "metadata": {}
+          }
+        ],
+        "metadata": {}
+      },
+      {
+        "role": "assistant",
+        "parts": [],
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "name": "lookup",
+            "arguments": {}
+          }
+        ],
+        "metadata": {}
+      }
+    ],
+    "context": null
+  },
+  "expected_valid": false,
+  "expected_error_code": "schema_validation"
+}

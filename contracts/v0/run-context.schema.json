@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/run-context.schema.json",
+  "title": "Kernel v0 Run Context",
+  "type": "object",
+  "required": [
+    "run_id",
+    "started_at",
+    "deadline",
+    "parent_run_id",
+    "parent_tool_call_id",
+    "run_kind",
+    "metadata"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "started_at": { "type": "number", "minimum": 0 },
+    "deadline": { "type": ["number", "null"], "minimum": 0 },
+    "parent_run_id": { "type": ["string", "null"] },
+    "parent_tool_call_id": { "type": ["string", "null"] },
+    "run_kind": { "type": ["string", "null"] },
+    "metadata": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "parent_run_id": { "type": "null" } },
+        "required": ["parent_run_id"]
+      },
+      "then": {
+        "properties": {
+          "parent_tool_call_id": { "type": "null" },
+          "run_kind": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "parent_run_id": { "type": "string" } },
+        "required": ["parent_run_id"]
+      },
+      "then": {
+        "properties": {
+          "parent_run_id": { "minLength": 1 },
+          "parent_tool_call_id": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              { "type": "null" }
+            ]
+          },
+          "run_kind": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,31 @@
+[project]
+name = "jharness-spec-workspace"
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+  "jsonschema>=4.23.0",
+  "pyright>=1.1.407",
+  "referencing>=0.35.0",
+  "ruff>=0.14.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C90", "A", "PERF", "RUF"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.pyright]
+include = ["scripts"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"

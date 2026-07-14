@@ -1,0 +1,85 @@
+{
+  "schema_version": "v0",
+  "name": "artifact_final",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "return artifact",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                {
+                  "type": "artifact",
+                  "artifact": {
+                    "ref": "artifact-1",
+                    "media_type": "text/csv",
+                    "name": "data.csv",
+                    "size_bytes": 12,
+                    "sha256": "abc",
+                    "metadata": {}
+                  },
+                  "metadata": {}
+                }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 1,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "final_part_types": [
+          "artifact"
+        ],
+        "final_parts": [
+          {
+            "type": "artifact",
+            "artifact": {
+              "ref": "artifact-1",
+              "media_type": "text/csv",
+              "name": "data.csv",
+              "size_bytes": 12,
+              "sha256": "abc",
+              "metadata": {}
+            },
+            "metadata": {}
+          }
+        ],
+        "fact_kinds": [
+          "started",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

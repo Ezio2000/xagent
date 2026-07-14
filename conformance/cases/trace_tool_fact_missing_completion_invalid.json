@@ -1,0 +1,121 @@
+{
+  "schema_version": "v0",
+  "name": "trace_tool_fact_missing_completion_invalid",
+  "kind": "validation",
+  "target": "trace",
+  "value": {
+    "schema_version": "v0",
+    "header": {
+      "run_id": "run-1",
+      "invocation_id": "inv-1",
+      "request_kind": "continue",
+      "metadata_keys": []
+    },
+    "entries": [
+      {
+        "sequence": 1,
+        "kind": "invocation_started",
+        "created_at": 1,
+        "data": {
+          "request_kind": "continue",
+          "starting_checkpoint_id": "checkpoint-2",
+          "starting": {
+            "revision": 2,
+            "history_count": 2,
+            "metrics": {
+              "planning_steps": 1,
+              "tool_calls": 0,
+              "usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "total_tokens": null,
+                "reasoning_tokens": null,
+                "cache_read_tokens": null,
+                "cache_write_tokens": null
+              }
+            },
+            "state": {
+              "kind": "tools_pending",
+              "call_ids": ["call-1", "call-2"]
+            }
+          }
+        }
+      },
+      {
+        "sequence": 2,
+        "kind": "tool_started",
+        "created_at": 2,
+        "data": {
+          "batch_id": "batch-1",
+          "index": 0,
+          "call": {
+            "id": "call-1",
+            "name": "one",
+            "arguments": {}
+          },
+          "parallel": true
+        }
+      },
+      {
+        "sequence": 5,
+        "kind": "tool_finished",
+        "created_at": 5,
+        "data": {
+          "batch_id": "batch-1",
+          "index": 0,
+          "tool_call_id": "call-1",
+          "outcome_kind": "success"
+        }
+      },
+      {
+        "sequence": 6,
+        "kind": "checkpoint_committed",
+        "created_at": 6,
+        "data": {
+          "checkpoint_id": "checkpoint-3",
+          "fact": {
+            "kind": "tool_batch",
+            "at": 5,
+            "data": {
+              "batch_id": "batch-1",
+              "call_ids": ["call-1", "call-2"],
+              "parallel": true,
+              "outcome_kinds": ["success", "success"],
+              "suspension": null
+            }
+          },
+          "after": {
+            "revision": 3,
+            "history_count": 4,
+            "metrics": {
+              "planning_steps": 1,
+              "tool_calls": 2,
+              "usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "total_tokens": null,
+                "reasoning_tokens": null,
+                "cache_read_tokens": null,
+                "cache_write_tokens": null
+              }
+            },
+            "state": {
+              "kind": "planning"
+            }
+          }
+        }
+      },
+      {
+        "sequence": 7,
+        "kind": "invocation_stopped",
+        "created_at": 7,
+        "data": {
+          "reason": "consumer_closed",
+          "last_checkpoint_id": "checkpoint-3"
+        }
+      }
+    ]
+  },
+  "expected_valid": false,
+  "expected_error_code": "tool_fact_mismatch"
+}

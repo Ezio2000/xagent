@@ -1,0 +1,42 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local AI assistant/workspace state
+.codex/
+.claude/
+.gemini/
+.aider*
+
+# Python
+__pycache__/
+*.py[cod]
+.python-version
+.venv/
+venv/
+ENV/
+
+# Python tooling caches
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Packaging/build artifacts
+dist/
+build/
+*.egg-info/
+
+# Node/TypeScript SDK artifacts
+node_modules/
+coverage/
+.turbo/
+.next/
+*.tsbuildinfo
+
+# Logs
+*.log

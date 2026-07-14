@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/checkpoint.schema.json",
+  "title": "Kernel v0 Checkpoint",
+  "$ref": "#/$defs/checkpoint",
+  "$defs": {
+    "checkpoint": {
+      "type": "object",
+      "required": ["schema_version", "id", "snapshot", "fact"],
+      "properties": {
+        "schema_version": { "const": "v0" },
+        "id": { "type": "string", "minLength": 1 },
+        "snapshot": { "$ref": "run-snapshot.schema.json" },
+        "fact": { "$ref": "#/$defs/fact" }
+      },
+      "$comment": "id is the idempotency key. Run identity and revision exist only in snapshot, never as fact mirrors.",
+      "additionalProperties": false
+    },
+    "fact": {
+      "type": "object",
+      "required": ["kind", "at", "data"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "started",
+            "resumed",
+            "model_turn",
+            "tool_batch",
+            "conversation_insert",
+            "history_rewrite",
+            "control"
+          ]
+        },
+        "at": { "type": "number", "minimum": 0 },
+        "data": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "started" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/started_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "resumed" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/resumed_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "model_turn" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/model_turn_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_batch" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/tool_batch_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "conversation_insert" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/conversation_insert_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "history_rewrite" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/history_rewrite_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "control" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/control_data" } } }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "started_data": {
+      "type": "object",
+      "required": ["history_roles"],
+      "properties": {
+        "history_roles": { "$ref": "#/$defs/non_empty_message_roles" }
+      },
+      "additionalProperties": false
+    },
+    "resumed_data": {
+      "type": "object",
+      "required": ["appended_roles", "metadata_keys"],
+      "properties": {
+        "appended_roles": { "$ref": "#/$defs/message_roles" },
+        "metadata_keys": { "$ref": "#/$defs/metadata_keys" }
+      },
+      "additionalProperties": false
+    },
+    "model_turn_data": {
+      "type": "object",
+      "required": ["result", "part_count", "tool_call_ids", "finish_reason", "usage", "limit_reason"],
+      "properties": {
+        "result": { "enum": ["completed", "tools_pending", "limited"] },
+        "part_count": { "type": "integer", "minimum": 0 },
+        "tool_call_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "finish_reason": { "type": ["string", "null"] },
+        "usage": {
+          "oneOf": [
+            { "$ref": "model-response.schema.json#/$defs/model_usage" },
+            { "type": "null" }
+          ]
+        },
+        "limit_reason": {
+          "oneOf": [
+            { "$ref": "state.schema.json#/$defs/limit_reason" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "result": { "const": "completed" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "part_count": { "minimum": 1 },
+              "tool_call_ids": { "maxItems": 0 },
+              "limit_reason": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "tools_pending" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "tool_call_ids": { "minItems": 1 },
+              "limit_reason": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "limited" } }, "required": ["result"] },
+          "then": {
+            "properties": {
+              "limit_reason": { "const": "max_total_tokens" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "tool_batch_data": {
+      "type": "object",
+      "required": ["batch_id", "call_ids", "parallel", "outcome_kinds", "suspension"],
+      "properties": {
+        "batch_id": { "type": "string", "minLength": 1 },
+        "call_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "parallel": { "type": "boolean" },
+        "outcome_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["success", "failure", "accepted", "waiting"] }
+        },
+        "suspension": {
+          "oneOf": [
+            { "$ref": "#/$defs/suspension_view" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "$comment": "call_ids and outcome_kinds have equal length and preserve model call order. A non-null suspension means the batch boundary produced Suspended state.",
+      "additionalProperties": false
+    },
+    "conversation_insert_data": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 }
+      },
+      "$comment": "A conversation insert appends exactly one external message.",
+      "additionalProperties": false
+    },
+    "history_rewrite_data": {
+      "type": "object",
+      "required": ["before_count", "after_roles", "reason", "metadata_keys"],
+      "properties": {
+        "before_count": { "type": "integer", "minimum": 1 },
+        "after_roles": { "$ref": "#/$defs/non_empty_message_roles" },
+        "reason": { "type": "string", "minLength": 1 },
+        "metadata_keys": { "$ref": "#/$defs/metadata_keys" }
+      },
+      "$comment": "after_roles length must not exceed before_count.",
+      "additionalProperties": false
+    },
+    "control_data": {
+      "oneOf": [
+        { "$ref": "#/$defs/suspended_control" },
+        { "$ref": "#/$defs/failed_control" },
+        { "$ref": "#/$defs/limited_control" }
+      ]
+    },
+    "suspended_control": {
+      "type": "object",
+      "required": ["action", "reason", "source", "wait_id", "metadata_keys"],
+      "properties": {
+        "action": { "const": "suspended" },
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata_keys": { "$ref": "#/$defs/metadata_keys" }
+      },
+      "additionalProperties": false
+    },
+    "failed_control": {
+      "type": "object",
+      "required": ["action", "code"],
+      "properties": {
+        "action": { "const": "failed" },
+        "code": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "limited_control": {
+      "type": "object",
+      "required": ["action", "reason"],
+      "properties": {
+        "action": { "const": "limited" },
+        "reason": { "$ref": "state.schema.json#/$defs/limit_reason" }
+      },
+      "additionalProperties": false
+    },
+    "run_view": {
+      "type": "object",
+      "required": ["revision", "history_count", "metrics", "state"],
+      "properties": {
+        "revision": { "type": "integer", "minimum": 0 },
+        "history_count": { "type": "integer", "minimum": 1 },
+        "metrics": { "$ref": "state.schema.json#/$defs/run_metrics" },
+        "state": { "$ref": "#/$defs/state_view" }
+      },
+      "additionalProperties": false
+    },
+    "state_view": {
+      "oneOf": [
+        { "$ref": "#/$defs/planning_view" },
+        { "$ref": "#/$defs/tools_pending_view" },
+        { "$ref": "#/$defs/suspended_view" },
+        { "$ref": "#/$defs/completed_view" },
+        { "$ref": "#/$defs/failed_view" },
+        { "$ref": "#/$defs/limited_view" }
+      ]
+    },
+    "active_state_view": {
+      "oneOf": [
+        { "$ref": "#/$defs/planning_view" },
+        { "$ref": "#/$defs/tools_pending_view" }
+      ]
+    },
+    "planning_view": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": { "kind": { "const": "planning" } },
+      "additionalProperties": false
+    },
+    "tools_pending_view": {
+      "type": "object",
+      "required": ["kind", "call_ids"],
+      "properties": {
+        "kind": { "const": "tools_pending" },
+        "call_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "suspended_view": {
+      "type": "object",
+      "required": ["kind", "resume_to", "suspension"],
+      "properties": {
+        "kind": { "const": "suspended" },
+        "resume_to": { "$ref": "#/$defs/active_state_view" },
+        "suspension": { "$ref": "#/$defs/suspension_view" }
+      },
+      "additionalProperties": false
+    },
+    "completed_view": {
+      "type": "object",
+      "required": ["kind", "part_count"],
+      "properties": {
+        "kind": { "const": "completed" },
+        "part_count": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "failed_view": {
+      "type": "object",
+      "required": ["kind", "code"],
+      "properties": {
+        "kind": { "const": "failed" },
+        "code": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "limited_view": {
+      "type": "object",
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": { "const": "limited" },
+        "reason": { "$ref": "state.schema.json#/$defs/limit_reason" }
+      },
+      "additionalProperties": false
+    },
+    "suspension_view": {
+      "type": "object",
+      "required": ["reason", "source", "wait_id", "metadata_keys"],
+      "properties": {
+        "reason": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "wait_id": { "type": ["string", "null"] },
+        "metadata_keys": { "$ref": "#/$defs/metadata_keys" }
+      },
+      "additionalProperties": false
+    },
+    "message_roles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/message_role" }
+    },
+    "non_empty_message_roles": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/message_role" }
+    },
+    "message_role": {
+      "enum": ["system", "user", "assistant", "tool", "external"]
+    },
+    "metadata_keys": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string" }
+    }
+  }
+}

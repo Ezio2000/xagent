@@ -1,0 +1,81 @@
+{
+  "schema_version": "v0",
+  "name": "stream_final",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "stream",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "deltas": [
+            {
+              "kind": "content",
+              "index": 0,
+              "text_delta": "he",
+              "part_type": "text",
+              "data": {}
+            },
+            {
+              "kind": "content",
+              "index": 0,
+              "text_delta": "llo",
+              "part_type": "text",
+              "data": {}
+            }
+          ],
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                {
+                  "type": "text",
+                  "text": "hello",
+                  "metadata": {}
+                }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 1,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "final_text": "hello",
+        "event_counts": {
+          "model_delta": 2
+        },
+        "fact_kinds": [
+          "started",
+          "model_turn"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

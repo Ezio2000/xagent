@@ -1,0 +1,22 @@
+{
+  "schema_version": "v0",
+  "name": "artifact_ref_invalid",
+  "kind": "validation",
+  "target": "message",
+  "value": {
+    "role": "user",
+    "parts": [
+      {
+        "type": "artifact",
+        "artifact": {
+          "ref": "",
+          "metadata": {}
+        },
+        "metadata": {}
+      }
+    ],
+    "metadata": {}
+  },
+  "expected_valid": false,
+  "expected_error_code": "schema_validation"
+}

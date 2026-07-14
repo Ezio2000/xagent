@@ -1,0 +1,79 @@
+{
+  "schema_version": "v0",
+  "name": "parallel_timeout_atomicity",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "timeout batch",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "delayed_echo",
+                  "arguments": {
+                    "delay": 0.2,
+                    "text": "one"
+                  }
+                },
+                {
+                  "id": "call-2",
+                  "name": "delayed_echo",
+                  "arguments": {
+                    "delay": 0.2,
+                    "text": "two"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "limits": {
+        "timeout_seconds": 0.03,
+        "max_tool_concurrency": 2,
+        "max_tool_batch_size": 2
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "limit_reason": "deadline",
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

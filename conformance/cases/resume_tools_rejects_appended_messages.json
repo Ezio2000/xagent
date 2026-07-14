@@ -1,0 +1,129 @@
+{
+  "schema_version": "v0",
+  "name": "resume_tools_rejects_appended_messages",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "wait then echo",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "wait",
+                  "arguments": {
+                    "wait_id": "job-1"
+                  }
+                },
+                {
+                  "id": "call-2",
+                  "name": "echo",
+                  "arguments": {
+                    "text": "later"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "suspended",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 1,
+        "pending_call_ids": [
+          "call-2"
+        ],
+        "suspension": {
+          "reason": "external_wait",
+          "source": "tool",
+          "wait_id": "job-1",
+          "metadata": {}
+        },
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "tool_batch"
+        ],
+        "message_roles": [
+          "user",
+          "assistant",
+          "tool"
+        ],
+        "tool_outcome_kinds": [
+          "waiting"
+        ]
+      }
+    },
+    {
+      "request": {
+        "kind": "resume",
+        "source": "previous",
+        "append_messages": [
+          {
+            "role": "external",
+            "parts": [
+              {
+                "type": "text",
+                "text": "too early",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [],
+      "expected": {
+        "status": "suspended",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 1,
+        "pending_call_ids": [
+          "call-2"
+        ],
+        "suspension": {
+          "reason": "external_wait",
+          "source": "tool",
+          "wait_id": "job-1",
+          "metadata": {}
+        },
+        "request_error": "messages_require_planning",
+        "fact_kinds": [],
+        "message_roles": [
+          "user",
+          "assistant",
+          "tool"
+        ],
+        "tool_outcome_kinds": [
+          "waiting"
+        ]
+      }
+    }
+  ]
+}

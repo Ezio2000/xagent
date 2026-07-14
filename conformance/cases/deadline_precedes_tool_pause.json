@@ -1,0 +1,92 @@
+{
+  "schema_version": "v0",
+  "name": "deadline_precedes_tool_pause",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "deadline wins",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [],
+              "tool_calls": [
+                {
+                  "id": "call-1",
+                  "name": "delayed_echo",
+                  "arguments": {
+                    "delay": 0.1,
+                    "text": "too late"
+                  }
+                }
+              ],
+              "finish_reason": "tool_calls",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "limits": {
+        "timeout_seconds": 0.03,
+        "max_tool_concurrency": 1,
+        "max_tool_batch_size": 1
+      },
+      "actions": [
+        {
+          "when": {
+            "event_kind": "tool_started",
+            "occurrence": 1
+          },
+          "command": {
+            "kind": "pause",
+            "suspension": {
+              "reason": "host_pause",
+              "source": "host",
+              "wait_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "limited",
+        "revision": 2,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "limit_reason": "deadline",
+        "event_counts": {
+          "tool_started": 1,
+          "tool_finished": 0
+        },
+        "fact_kinds": [
+          "started",
+          "model_turn",
+          "control"
+        ],
+        "message_roles": [
+          "user",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

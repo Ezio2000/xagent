@@ -1,0 +1,74 @@
+{
+  "schema_version": "v0",
+  "name": "continue_terminal_rejected",
+  "kind": "validation",
+  "target": "request",
+  "value": {
+    "kind": "continue",
+    "checkpoint": {
+      "schema_version": "v0",
+      "id": "continue_terminal_rejected-checkpoint",
+      "snapshot": {
+        "revision": 1,
+        "context": {
+          "run_id": "run-1",
+          "started_at": 1,
+          "deadline": null,
+          "parent_run_id": null,
+          "parent_tool_call_id": null,
+          "run_kind": null,
+          "metadata": {}
+        },
+        "history": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "hello",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ],
+        "metrics": {
+          "planning_steps": 0,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": null,
+            "output_tokens": null,
+            "total_tokens": null,
+            "reasoning_tokens": null,
+            "cache_read_tokens": null,
+            "cache_write_tokens": null
+          }
+        },
+        "state": {
+          "kind": "completed",
+          "parts": [
+            {
+              "type": "text",
+              "text": "done",
+              "metadata": {}
+            }
+          ]
+        }
+      },
+      "fact": {
+      "kind": "model_turn",
+      "at": 1,
+      "data": {
+        "result": "completed",
+        "part_count": 1,
+        "tool_call_ids": [],
+        "finish_reason": "end_turn",
+        "usage": null,
+        "limit_reason": null
+      }
+      }
+    }
+  },
+  "expected_valid": false,
+  "expected_error_code": "schema_validation"
+}

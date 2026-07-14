@@ -1,0 +1,64 @@
+{
+  "schema_version": "v0",
+  "name": "deadline_during_history_rewrite",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "slow history",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [],
+      "limits": {
+        "timeout_seconds": 0.03,
+        "max_tool_concurrency": 1,
+        "max_tool_batch_size": 1
+      },
+      "history_rewrite": {
+        "trigger_history_count": 1,
+        "messages": [
+          {
+            "role": "system",
+            "parts": [
+              {
+                "type": "text",
+                "text": "summary",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ],
+        "reason": "slow compact",
+        "metadata": {},
+        "delay_seconds": 0.1
+      },
+      "expected": {
+        "status": "limited",
+        "revision": 1,
+        "planning_steps": 0,
+        "tool_calls": 0,
+        "limit_reason": "deadline",
+        "fact_kinds": [
+          "started",
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/conformance/tools.contract.schema.json",
+  "title": "Kernel v0 Standard Tool Contract",
+  "type": "object",
+  "required": ["schema_version", "tools"],
+  "properties": {
+    "schema_version": { "const": "v0" },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tool_contract" }
+    }
+  },
+  "$defs": {
+    "tool_contract": {
+      "type": "object",
+      "required": ["spec", "behavior", "defaults", "required_arguments", "cancellation", "covered_by"],
+      "properties": {
+        "spec": { "$ref": "https://jharness.invalid/spec/v0/tools.schema.json" },
+        "behavior": {
+          "enum": ["success", "exception", "accepted", "waiting", "progress", "strict", "invalid_output"]
+        },
+        "defaults": { "type": "object" },
+        "required_arguments": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cancellation": { "enum": ["none", "cooperative"] },
+        "covered_by": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

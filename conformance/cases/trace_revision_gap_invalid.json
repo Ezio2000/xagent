@@ -1,0 +1,96 @@
+{
+  "schema_version": "v0",
+  "name": "trace_revision_gap_invalid",
+  "kind": "validation",
+  "target": "trace",
+  "value": {
+    "schema_version": "v0",
+    "header": {
+      "run_id": "run-1",
+      "invocation_id": "inv-1",
+      "request_kind": "continue",
+      "metadata_keys": []
+    },
+    "entries": [
+      {
+        "sequence": 1,
+        "kind": "invocation_started",
+        "created_at": 1,
+        "data": {
+          "request_kind": "continue",
+          "starting_checkpoint_id": "checkpoint-0",
+          "starting": {
+            "revision": 0,
+            "history_count": 1,
+            "metrics": {
+              "planning_steps": 0,
+              "tool_calls": 0,
+              "usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "total_tokens": null,
+                "reasoning_tokens": null,
+                "cache_read_tokens": null,
+                "cache_write_tokens": null
+              }
+            },
+            "state": {
+              "kind": "planning"
+            }
+          }
+        }
+      },
+      {
+        "sequence": 2,
+        "kind": "checkpoint_committed",
+        "created_at": 2,
+        "data": {
+          "checkpoint_id": "checkpoint-2",
+          "fact": {
+            "kind": "model_turn",
+            "at": 2,
+            "data": {
+              "result": "completed",
+              "part_count": 1,
+              "tool_call_ids": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "limit_reason": null
+            }
+          },
+          "after": {
+            "revision": 2,
+            "history_count": 2,
+            "metrics": {
+              "planning_steps": 1,
+              "tool_calls": 0,
+              "usage": {
+                "input_tokens": null,
+                "output_tokens": null,
+                "total_tokens": null,
+                "reasoning_tokens": null,
+                "cache_read_tokens": null,
+                "cache_write_tokens": null
+              }
+            },
+            "state": {
+              "kind": "completed",
+              "part_count": 1
+            }
+          }
+        }
+      },
+      {
+        "sequence": 3,
+        "kind": "invocation_stopped",
+        "created_at": 3,
+        "data": {
+          "reason": "terminal",
+          "last_checkpoint_id": "checkpoint-2"
+        }
+      }
+    ]
+  },
+  "expected_valid": false,
+  "expected_error_code": "revision_gap"
+}

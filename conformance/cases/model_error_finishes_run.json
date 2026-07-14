@@ -1,0 +1,55 @@
+{
+  "schema_version": "v0",
+  "name": "model_error_finishes_run",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "text": "model error",
+                "metadata": {}
+              }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "error",
+            "error": {
+              "code": "provider_error",
+              "message": "model failed",
+              "provider": "fixture",
+              "status_code": 500,
+              "retryable": true,
+              "request_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "failed",
+        "revision": 1,
+        "planning_steps": 0,
+        "tool_calls": 0,
+        "error_code": "model_provider_error",
+        "fact_kinds": [
+          "started",
+          "control"
+        ],
+        "message_roles": [
+          "user"
+        ]
+      }
+    }
+  ]
+}

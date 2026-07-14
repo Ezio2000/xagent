@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jharness.invalid/spec/v0/model-error.schema.json",
+  "title": "Kernel v0 Model Error",
+  "type": "object",
+  "required": ["code", "message", "provider", "status_code", "retryable", "request_id", "metadata"],
+  "properties": {
+    "code": { "type": "string", "minLength": 1 },
+    "message": { "type": "string", "minLength": 1 },
+    "provider": { "type": ["string", "null"] },
+    "status_code": { "type": ["integer", "null"] },
+    "retryable": { "type": "boolean" },
+    "request_id": { "type": ["string", "null"] },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false
+}
