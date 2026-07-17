@@ -83,8 +83,8 @@ One monotonic work deadline bounds model, tool, approval, history, and ordinary
 repository work. It never commits partial model output or a partial parallel
 batch.
 
-After expiry, an SDK may use a small fixed cleanup deadline only to cancel
-runtime-owned tasks and attempt a terminal `Limited(deadline)` checkpoint. That
+After expiry, runtime may use a small fixed cleanup deadline only to cancel owned tasks
+and attempt a terminal `Limited(deadline)` checkpoint. That
 grace cannot start external work or extend the run deadline. If the terminal
 commit fails, the last committed checkpoint remains authoritative.
 

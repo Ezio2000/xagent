@@ -2,44 +2,79 @@
 
 ## Scope
 
-This repository is the language-neutral JHarness specification. Normative wire
-contracts live in `contracts/v0`, portable behavior fixtures live in
-`conformance/cases`, and architecture documentation lives in `docs`.
+This repository is the complete JHarness Python project. It owns four coordinated,
+independently installable distributions:
 
-Runtime implementations do not live here. The Python implementation is maintained
-in `Ezio2000/jharness-python`; the planned Go implementation is maintained in
-`Ezio2000/jharness-go`.
+- `jharness-kernel`, providing `jharness.kernel`;
+- `jharness-toolkit`, providing `jharness.toolkit`;
+- `jharness-models`, providing `jharness.models`;
+- `jharness-tools`, providing `jharness.tools`.
 
-## Specification Rules
+Contracts, conformance, examples, benchmarks, tests, documentation, and release
+automation live in this repository and use one coordinated version and release tag.
 
+## Design Rules
+
+- Prefer high cohesion, low coupling, and reusable components with one clear owner.
 - Keep one flat lifecycle: `Planning`, `ToolsPending`, `Suspended`, `Completed`,
   `Failed`, and `Limited`.
 - Keep one runtime/invocation execution, one model invocation operation, one tool
   invocation operation, and one atomic checkpoint boundary.
-- Keep schemas explicit and portable; never derive them from a language runtime.
-- Do not add language-specific package layouts, provider clients, test doubles, or
-  alternate protocol representations to this repository.
-- A portable behavior change updates normative documentation, schemas, coverage,
-  and matching conformance cases in the same change.
-- Replace protocol shapes directly within an unreleased contract family. Released
-  specification tags are immutable.
+- Keep public values immutable, extension ports narrow and async, policies pure,
+  concurrency bounded, and deadlines monotonic.
+- Keep schemas and wire codecs explicit. Do not derive persisted shapes through
+  reflection or make external API payloads the durable representation.
+- Do not add compatibility distributions, obsolete import forwarding, duplicate
+  lifecycle implementations, service locators, or programmable schedulers.
+- Do not retain generated build, coverage, synchronization, or migration artifacts.
+
+## Dependency Direction
+
+`jharness.kernel` is the foundation and must not import another JHarness package.
+Toolkit, models, and tools may import the public kernel API but must not depend on one
+another.
+
+| Distribution | Direct runtime dependencies |
+| --- | --- |
+| `jharness-kernel` | None |
+| `jharness-toolkit` | exact matching `jharness-kernel`, `jsonschema`, `referencing` |
+| `jharness-models` | exact matching `jharness-kernel`, `httpx` |
+| `jharness-tools` | exact matching `jharness-kernel`, `regex` |
+
+Every distribution owns only its `jharness.<component>` namespace portion and nested
+`py.typed` marker. No wheel owns `jharness/__init__.py`.
+
+## Contract Ownership
+
+- Python domain values and runtime behavior live under `packages/jharness-kernel`.
+- Portable top-level JSON shapes live under `contracts/v0` and are encoded explicitly
+  by `jharness.kernel.wire`.
+- External model HTTP/SSE shapes stay in `jharness.models`; tool argument and
+  structured-result validation stay in `jharness.toolkit`.
+- Any observable durable behavior change updates code, schemas, normative Markdown,
+  conformance cases, `conformance/coverage.md`, and focused tests together.
+- Replace obsolete shapes and package names directly; do not preserve old paths.
 
 ## Development
 
-Python is used only for repository validation and must be managed with `uv`; never
-use `pip`.
+Python is managed exclusively with `uv`:
 
 ```bash
 uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
+uv run pytest -q -p no:cacheprovider
 uv run python scripts/validate_spec.py
+uv run python -m conformance.cli conformance/cases --spec-dir contracts/v0 --quiet
+uv run python benchmarks/runtime_smoke.py
+uv build --all-packages --out-dir dist
+uv run python scripts/verify_distribution.py dist
 ```
 
 ## Completion Standard
 
-Do not claim a specification change complete until all schemas resolve without
-network access, every JSON document validates, every case is represented in the
-coverage matrix, local links resolve, and at least one implementation has an
-explicit follow-up path for the new specification release.
+Do not claim a change complete until relevant tests, formatting, lint, strict types,
+offline schema resolution, conformance, all four package builds, isolated artifact
+imports, and the performance smoke benchmark pass. Keep the worktree free of
+intermediate artifacts and report the modified directory list after every code change.

@@ -11,14 +11,13 @@ weight and obscure cross-field invariants.
 
 ## Decision
 
-Place explicit top-level portable codecs in the implementation's kernel wire
-component. Nested codecs are private. Domain values have no generic reflective
-serialization methods.
+Place explicit top-level portable codecs in `jharness.kernel.wire`. Nested codecs are
+private. Domain values have no generic reflective serialization methods.
 
 Decode validates the complete untrusted aggregate once. Internal frozen values
 are reused directly. Schema version belongs to top-level wire documents, not
-domain objects. Provider codecs and tool JSON Schema validation stay in their
-owning implementation layers.
+domain objects. Provider codecs and tool JSON Schema validation stay in their owning
+`jharness.models` and `jharness.toolkit` packages.
 
 ## Consequences
 

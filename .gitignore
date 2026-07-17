@@ -4,7 +4,7 @@ Thumbs.db
 *.swp
 *.swo
 
-# Local AI assistant/workspace state
+# Local assistant state
 .codex/
 .claude/
 .gemini/
@@ -18,25 +18,19 @@ __pycache__/
 venv/
 ENV/
 
-# Python tooling caches
+# Python tooling caches and reports
 .pytest_cache/
 .ruff_cache/
 .pyright/
 .mypy_cache/
 .coverage
+coverage/
 htmlcov/
 
 # Packaging/build artifacts
 dist/
 build/
 *.egg-info/
-
-# Node/TypeScript SDK artifacts
-node_modules/
-coverage/
-.turbo/
-.next/
-*.tsbuildinfo
 
 # Logs
 *.log

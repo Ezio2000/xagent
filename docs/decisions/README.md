@@ -13,8 +13,8 @@ inputs for contracts and code.
 | [0006](0006-single-model-invoke.md) | Use one complete/streaming model operation. |
 | [0007](0007-explicit-wire-codecs.md) | Separate domain values from explicit portable codecs. |
 | [0008](0008-trace-verification.md) | Verify traces with shared pure durable rules. |
+| [0009](0009-python-single-project.md) | Maintain one Python project and publish one `jharness` distribution. |
 
 Changing an accepted decision requires a replacement ADR plus an atomic update
-to documentation, portable contracts, and conformance cases. Implementations then
-adopt the released specification through their pinned revision. The repository keeps
-only one active protocol shape within a contract family.
+to code, documentation, portable contracts, focused tests, and conformance cases. The
+repository keeps only one active protocol shape within a contract family.

@@ -1,4 +1,4 @@
-name: Specification CI
+name: CI
 
 on:
   push:
@@ -8,14 +8,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: spec-ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate schemas, cases, and documentation
+  quality:
+    name: Quality, contracts, and distributions
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
 
     steps:
       - name: Check out repository
@@ -27,16 +27,19 @@ jobs:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Install locked validation dependencies
+      - name: Install locked workspace
         run: uv sync --locked
 
-      - name: Check release metadata
+      - name: Verify release metadata
         run: uv run python scripts/verify_release.py
+
+      - name: Validate contracts, cases, and documentation
+        run: uv run python scripts/validate_spec.py
 
       - name: Lint
         run: uv run ruff check .
@@ -47,5 +50,84 @@ jobs:
       - name: Type-check
         run: uv run pyright
 
-      - name: Validate specification
-        run: uv run python scripts/validate_spec.py
+      - name: Test with branch coverage
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage
+        run: >-
+          uv run pytest
+          -q
+          -p no:cacheprovider
+          --cov
+          --cov-report=term-missing:skip-covered
+
+      - name: Preserve tools coverage gate
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage-tools
+        run: >-
+          uv run pytest
+          -q
+          -p no:cacheprovider
+          tests/tools
+          --cov=jharness.tools
+          --cov-report=term-missing:skip-covered
+          --cov-fail-under=100
+
+      - name: Run runtime smoke benchmark
+        run: uv run python benchmarks/runtime_smoke.py
+
+      - name: Build all distributions
+        run: uv build --all-packages --out-dir "${{ runner.temp }}/dist"
+
+      - name: Verify distribution set and isolated imports
+        shell: bash
+        run: |
+          uv run twine check "${RUNNER_TEMP}"/dist/*
+          uv run python scripts/verify_distribution.py "${RUNNER_TEMP}/dist"
+          uv venv "${RUNNER_TEMP}/smoke"
+          uv pip install --python "${RUNNER_TEMP}/smoke/bin/python" "${RUNNER_TEMP}"/dist/*.whl
+          "${RUNNER_TEMP}/smoke/bin/python" -I -c "from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool; assert Runtime and OpenAIChatCompletionsModel and ToolRegistry and ReadTool"
+
+  runtime:
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest
+            python-version: "3.11"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked workspace
+        run: uv sync --locked
+
+      - name: Prefer Git Bash on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
+
+      - name: Verify Bash prerequisite
+        run: uv run python -c "import shutil; assert shutil.which('bash') is not None"
+
+      - name: Test complete runtime
+        run: uv run pytest -q -p no:cacheprovider
+
+      - name: Run runtime smoke benchmark
+        run: uv run python benchmarks/runtime_smoke.py

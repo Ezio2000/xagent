@@ -21,7 +21,7 @@ SCHEMA_BASE = "https://jharness.invalid/spec/v0"
 
 
 def _object(path: Path) -> dict[str, Any]:
-    value: object = json.loads(path.read_text())
+    value: object = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object")
     return cast(dict[str, Any], value)
@@ -104,7 +104,7 @@ def _validate_documents(schemas: Mapping[str, Schema], registry: SchemaRegistry)
             raise ValueError(f"duplicate case name: {name}")
         names.add(name)
 
-    coverage = (CONFORMANCE / "coverage.md").read_text()
+    coverage = (CONFORMANCE / "coverage.md").read_text(encoding="utf-8")
     missing = sorted(name for name in names if f"`{name}`" not in coverage)
     if missing:
         raise ValueError(f"cases missing from conformance/coverage.md: {missing}")
@@ -119,7 +119,7 @@ def _validate_links() -> int:
     pattern = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
     broken: list[str] = []
     for path in markdown_paths:
-        for target in pattern.findall(path.read_text()):
+        for target in pattern.findall(path.read_text(encoding="utf-8")):
             if target.startswith(("http://", "https://", "mailto:", "#")):
                 continue
             relative = target.split("#", 1)[0]

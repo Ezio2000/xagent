@@ -43,10 +43,10 @@ leases, and fencing tokens belong to deployment infrastructure.
 ## Idempotency
 
 Repeating the same checkpoint content with the same id is a successful no-op.
-Reusing an id for different checkpoint content is a conflict. SDKs reuse the id
-when settling one attempted boundary; they generate a new id for a new semantic
-change. This closes the ordinary lost-response ambiguity without a receipt or a
-second semantic revision.
+Reusing an id for different checkpoint content is a conflict. Runtime reuses the id
+when settling one attempted boundary and generates a new id for a new semantic change.
+This closes the ordinary lost-response ambiguity without a receipt or a second
+semantic revision.
 
 ## Cancellation and Timeout
 

@@ -12,9 +12,9 @@ and verification to drift.
 
 ## Decision
 
-Expose opt-in `build_trace` and `verify_trace` in the implementation's diagnostics
-component. A
-trace stores one header and ordered event entries. A `checkpoint_committed`
+Expose opt-in `build_trace` and `verify_trace` in
+`jharness.kernel.diagnostics`. A trace stores one header and ordered event entries. A
+`checkpoint_committed`
 entry carries its fact and compact after view. Derived step ids, before views,
 and final summaries are not stored.
 

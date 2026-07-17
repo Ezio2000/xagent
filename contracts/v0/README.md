@@ -1,7 +1,8 @@
 # JHarness v0 Contract Map
 
-`contracts/v0` is the cross-language source of truth for portable wire shapes
-and runtime semantics. Each portable value has one authoritative representation.
+`contracts/v0` is the project source of truth for portable persistence and transport
+shapes. Each portable value has one authoritative representation independent of
+provider payloads and Python object layout.
 
 Schema identifiers use the non-resolving publication namespace:
 
@@ -9,7 +10,7 @@ Schema identifiers use the non-resolving publication namespace:
 https://jharness.invalid/spec/v0/<file>.schema.json
 ```
 
-Implementations resolve every id from their bundled contract directory. They
+Project validators and conformance code resolve every id from this directory. They
 must not fetch schemas over the network.
 
 ## Normative Documents
@@ -94,8 +95,8 @@ schema is unique and matches its file name.
 
 ## Schema and Semantic Validation
 
-JSON Schema owns structural validity. SDK boundary codecs and conformance
-runners additionally enforce semantic rules such as:
+JSON Schema owns structural validity. Kernel boundary codecs and the conformance runner
+additionally enforce semantic rules such as:
 
 - unique tool-call ids in one assistant message;
 - tool messages linked to the immediately preceding unresolved calls;
