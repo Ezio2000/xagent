@@ -1,7 +1,8 @@
 # Kernel v0 Conformance Cases
 
-`conformance/cases` contains portable JSON fixtures for every SDK. The format is
-defined by `case.schema.json`; unknown fields are invalid.
+`conformance/cases` contains portable JSON fixtures for the JHarness runtime. The
+repository-local Python runner executes them against the same source tree. The format
+is defined by `case.schema.json`; unknown fields are invalid.
 
 The normative behavior-to-fixture map is maintained in
 [`coverage.md`](coverage.md).
@@ -16,7 +17,7 @@ The v0 case directory is deliberately flat. Runners load only direct
 `conformance/cases/*.json` children in sorted filename order; nested category
 directories are not part of the runner contract. Behavioral grouping belongs
 in [`coverage.md`](coverage.md), so one fixture keeps one stable portable path
-without coupling readers to a language-specific directory taxonomy.
+without coupling readers to an implementation directory taxonomy.
 
 ## Case Kinds
 
@@ -87,8 +88,8 @@ filters live tool start/finish events into an exact ordered sequence of
 asserts concurrency limits without constraining legal physical completion
 order. Completion-order freedom is asserted by omitting `tool_activity`.
 
-`batch_policy` is an optional conformance-only fault injection. It lets every
-SDK prove that a host strategy cannot select an empty/non-prefix batch, combine
+`batch_policy` is an optional conformance-only fault injection. It proves that a host
+strategy cannot select an empty/non-prefix batch, combine
 serial calls, parallelize unsafe tools, or exceed the batch limit. It is not a
 runtime wire field.
 
@@ -103,8 +104,13 @@ The machine-readable standard catalog is
 [`tools.contract.schema.json`](tools.contract.schema.json). Human behavior notes
 are in [`tools.md`](tools.md). Support-package fixtures are not normative.
 
-## Implementation Runners
+## Python Runner
 
-Each implementation repository owns its runner and documents its local command. A
-runner consumes this directory and `contracts/v0` from the same immutable
-specification release; it must not maintain a modified fixture copy.
+Run the local suite from the repository root:
+
+```bash
+uv run python -m conformance.cli conformance/cases --spec-dir contracts/v0
+```
+
+The runner consumes the canonical cases and contracts directly from this repository.
+It must not create or maintain a synchronized fixture copy.

@@ -1,0 +1,11 @@
+* @Ezio2000
+
+# Keep release, contracts, and dependency policy explicitly owned.
+/.github/workflows/** @Ezio2000
+/.github/dependabot.yml @Ezio2000
+/pyproject.toml @Ezio2000
+/packages/**/pyproject.toml @Ezio2000
+/uv.lock @Ezio2000
+/scripts/** @Ezio2000
+/contracts/** @Ezio2000
+/conformance/** @Ezio2000

@@ -1,9 +1,9 @@
 # Portable Behavior Coverage
 
-This matrix maps every normative v0 behavior family to at least one portable
-fixture. It is the completion evidence for the requirement that contracts,
-SDKs, and observable behavior remain in lockstep. Focused implementation tests may
-add implementation detail, but they do not replace the cases listed here.
+This matrix maps every normative v0 behavior family to at least one portable fixture.
+It is completion evidence that contracts, Python runtime behavior, and observable
+results remain in lockstep. Focused unit tests may add implementation detail, but they
+do not replace the cases listed here.
 
 ## State Machine and Requests
 
@@ -80,5 +80,5 @@ add implementation detail, but they do not replace the cases listed here.
 | Revision gaps in checkpoint transitions are rejected | `trace_revision_gap_invalid` |
 | Tool-batch facts reject missing live completion evidence | `trace_tool_fact_missing_completion_invalid` |
 
-The inventory count is asserted by `tests/test_contracts.py`; fixture names are
-unique and every fixture is schema-validated before execution.
+The inventory count is asserted by `tests/conformance/test_contracts.py`; fixture names
+are unique and every fixture is schema-validated before execution.

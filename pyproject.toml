@@ -1,18 +1,45 @@
 [project]
-name = "jharness-spec-workspace"
-version = "0.0.0"
+name = "jharness-workspace"
+version = "0"
+description = "Development workspace for the coordinated JHarness distributions"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "jharness-kernel==0.2.0",
+  "jharness-models==0.2.0",
+  "jharness-toolkit==0.2.0",
+  "jharness-tools==0.2.0",
+]
 
 [tool.uv]
 package = false
 
+[tool.uv.workspace]
+members = [
+  "packages/jharness-kernel",
+  "packages/jharness-models",
+  "packages/jharness-toolkit",
+  "packages/jharness-tools",
+]
+
+[tool.uv.sources]
+jharness-kernel = { workspace = true }
+jharness-models = { workspace = true }
+jharness-toolkit = { workspace = true }
+jharness-tools = { workspace = true }
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
 [dependency-groups]
 dev = [
-  "jsonschema>=4.23.0",
   "pyright>=1.1.407",
-  "referencing>=0.35.0",
-  "ruff>=0.14.0",
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.2.0",
+  "pytest-cov>=6.0.0",
+  "ruff>=0.15.21",
+  "twine>=6.2.0",
 ]
 
 [tool.ruff]
@@ -25,7 +52,25 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C90", "A", "PERF", "RUF"]
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
+[tool.ruff.lint.isort]
+known-first-party = ["conformance", "jharness"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["jharness"]
+
+[tool.coverage.report]
+fail_under = 85
+precision = 1
+show_missing = true
+skip_covered = true
+
 [tool.pyright]
-include = ["scripts"]
+include = ["packages", "conformance", "benchmarks", "examples", "scripts", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"

@@ -43,23 +43,25 @@ recovery value that pairs a snapshot with its semantic fact and id. Effects
 produce values; only the pure reducer constructs the next checkpoint. No
 extension port can mutate runtime state or redefine a durable boundary.
 
-## Implementation Boundaries
+## Python Package Boundaries
 
-Every language implementation exposes three conceptual layers:
+Four coordinated distributions expose four public namespace packages:
 
-| Layer | Owns |
+| Package | Owns |
 | --- | --- |
-| Kernel | State, runtime/invocation, model and tool ports, control, limits, events, codecs, policies, atomic repository, and optional diagnostics. |
-| Toolkit | Concrete tool registration, JSON Schema validation, language-native adapters, retry, and circuit-breaking decorators. |
-| Providers | Provider clients, profiles, transport lifecycle, error normalization, and provider-local codecs. |
+| `jharness.kernel` | State, runtime/invocation, model and tool ports, control, limits, events, portable codecs, policies, atomic repository, and diagnostics. |
+| `jharness.toolkit` | Concrete tool registration, JSON Schema validation, Python function adapters, retry, and circuit-breaking decorators. |
+| `jharness.models` | Model clients, profiles, transport lifecycle, error normalization, and endpoint-local codecs. |
+| `jharness.tools` | Ready-to-use filesystem, shell, structured interaction, and child-agent tools. |
 
-Packaging is language-specific and is documented by each implementation. The
-kernel layer may not depend on an implementation's toolkit or providers.
-Applications assemble implementations from the outside.
+Kernel is the dependency foundation. Toolkit, models, and tools may import its
+public API but may not import one another. Applications compose these packages from the
+outside. Detailed ownership and build gates are documented in
+[`python-package-boundaries.md`](python-package-boundaries.md).
 
-Conformance runners own fixture interpretation, schema validation, deterministic
-doubles, and portable behavior execution. A runner is development tooling, not a
-runtime product.
+The repository-local conformance runner owns fixture interpretation, schema
+validation, deterministic doubles, and portable behavior execution. It is development
+tooling and is excluded from all published distributions.
 
 ## Runtime and Invocation
 
@@ -162,13 +164,13 @@ infrastructure.
 
 ## Wire Boundary
 
-Domain values do not serialize themselves. Each implementation owns explicit codecs
+Domain values do not serialize themselves. `jharness.kernel.wire` owns explicit codecs
 for portable top-level documents and private codecs for their nested values.
 Decoding validates unknown keys, discriminators, finite JSON numbers, and
 cross-field invariants once at the trust boundary. Internal immutable values
 are then reused directly.
 
-Provider request/response codecs remain in the provider layer; tool JSON Schema
+Model request/response codecs remain in the models layer; tool JSON Schema
 validation remains in the toolkit layer. There is no reflection-driven serializer
 or schema framework inside the kernel.
 
@@ -178,12 +180,11 @@ Live events describe in-flight work and may be lossy. A committed event names
 the successfully stored checkpoint fact and a compact run view; it is never a
 persistence substitute. Event consumers are read-only.
 
-An implementation's optional diagnostics component constructs a trace from invocation
-events. A trace stores each entry once; `checkpoint_committed` entries carry the fact and
-compact after view. `verify_trace` checks ordering, event rules, and each durable
-change through the same pure verification rules used by runtime code. It does
-not claim to re-execute models or tools and does not implement a second
-lifecycle machine.
+`jharness.kernel.diagnostics` constructs a trace from invocation events. A trace stores
+each entry once; `checkpoint_committed` entries carry the fact and compact after view.
+`verify_trace` checks ordering, event rules, and each durable change through the same
+pure verification rules used by runtime code. It does not claim to re-execute models or
+tools and does not implement a second lifecycle machine.
 
 ## Concurrency and Deadlines
 
