@@ -486,7 +486,7 @@ def test_runtime_bash_root_exit_cleans_up_background_descendant(tmp_path: Path) 
 def test_runtime_deadline_cleans_up_bash_descendants_before_return(tmp_path: Path) -> None:
     started = tmp_path / "deadline-child.pid"
     leaked = tmp_path / "deadline-leaked.txt"
-    delay = 1.5
+    delay = 4.0 if os.name == "nt" else 1.5
 
     def respond(turn: int, request: ModelRequest) -> ModelResponse:
         if turn == 0:
