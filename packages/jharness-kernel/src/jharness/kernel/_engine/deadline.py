@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from time import time
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from jharness.kernel.control import CancelTool, Control, ControlInbox, Insert
 
@@ -101,8 +102,20 @@ def _consume_non_interrupting(
 
 
 async def _settle(task: asyncio.Future[Any]) -> None:
-    try:
-        async with asyncio.timeout(0.1):
-            await cast(Awaitable[object], task)
-    except (asyncio.CancelledError, Exception):
-        pass
+    done, _ = await asyncio.wait({task}, timeout=0.1)
+    if task in done:
+        _consume(task)
+        return
+    task.cancel()
+    asyncio.get_running_loop().call_exception_handler(
+        {
+            "message": "JHarness abandoned a port task that ignored cancellation",
+            "future": task,
+        }
+    )
+    task.add_done_callback(_consume)
+
+
+def _consume(task: asyncio.Future[Any]) -> None:
+    with suppress(asyncio.CancelledError, Exception):
+        task.exception()

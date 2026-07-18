@@ -8,6 +8,7 @@ from weakref import ref
 import pytest
 
 from jharness.kernel import (
+    MAX_JSON_NESTING_DEPTH,
     ApprovalAllow,
     ApprovalDeny,
     ApprovalSuspend,
@@ -533,3 +534,14 @@ def test_json_and_public_values_are_deeply_immutable() -> None:
         frozen["new"] = 1  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         context().run_id = "other"  # type: ignore[misc]
+
+
+def test_json_values_have_one_portable_nesting_limit() -> None:
+    accepted: object = None
+    for _ in range(MAX_JSON_NESTING_DEPTH):
+        accepted = [accepted]
+    assert thaw_json_value(freeze_json_value(accepted)) == accepted
+
+    rejected: object = [accepted]
+    with pytest.raises(ValueError, match="maximum JSON nesting depth"):
+        freeze_json_value(rejected)

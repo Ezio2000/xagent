@@ -460,6 +460,12 @@ async def _cancel_and_settle(tasks: set[asyncio.Task[Any]]) -> None:
     _, pending = await asyncio.wait(tasks, timeout=0.1)
     for task in pending:
         task.cancel()
+        asyncio.get_running_loop().call_exception_handler(
+            {
+                "message": "JHarness abandoned a tool task that ignored cancellation",
+                "task": task,
+            }
+        )
         task.add_done_callback(_consume)
 
 

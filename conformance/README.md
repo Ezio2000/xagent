@@ -7,10 +7,6 @@ is defined by `case.schema.json`; unknown fields are invalid.
 The normative behavior-to-fixture map is maintained in
 [`coverage.md`](coverage.md).
 
-The v0 rewrite deliberately replaces the former case format. Runners do not
-support old case types, tool modes, hooks, separate store/journal expectations,
-or programmable scheduler fixtures.
-
 ## Case Layout
 
 The v0 case directory is deliberately flat. Runners load only direct

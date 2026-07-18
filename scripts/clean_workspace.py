@@ -16,7 +16,7 @@ _CACHE_DIRECTORY_NAMES = frozenset(
 )
 _GENERATED_FILE_NAMES = frozenset({".coverage", ".DS_Store"})
 _GENERATED_FILE_SUFFIXES = frozenset({".pyc", ".pyo"})
-_PROTECTED_PATHS = tuple(Path(name) for name in (".git", ".venv", "venv", "ENV"))
+_PROTECTED_DIRECTORY_NAMES = frozenset({".git", ".venv", "venv", "ENV"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,10 +35,11 @@ def _is_within(path: Path, parent: Path) -> bool:
 
 
 def _is_protected(path: Path, root: Path) -> bool:
-    return any(
-        path == (protected := root / relative) or _is_within(path, protected)
-        for relative in _PROTECTED_PATHS
-    )
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    return any(part in _PROTECTED_DIRECTORY_NAMES for part in relative.parts)
 
 
 def _minimal_targets(paths: set[Path], root: Path) -> tuple[Path, ...]:

@@ -83,11 +83,17 @@ def decode_message_value(value: object) -> Message:
             "assistant message",
             {"role", "parts", "tool_calls", "metadata"},
         )
+        calls = tuple(
+            decode_tool_call_value(item) for item in array(fields["tool_calls"], "tool calls")
+        )
+        if len({call.id for call in calls}) != len(calls):
+            raise ProtocolError(
+                "assistant tool call ids must be unique",
+                code="duplicate_tool_call_id",
+            )
         return Message.assistant(
             _decode_parts(fields["parts"], "assistant parts"),
-            tool_calls=tuple(
-                decode_tool_call_value(item) for item in array(fields["tool_calls"], "tool calls")
-            ),
+            tool_calls=calls,
             metadata=json_object(fields["metadata"], "message metadata"),
         )
     if role == "tool":
@@ -170,6 +176,11 @@ def decode_content_part_value(value: object) -> ContentPart:
         {"type", "metadata"},
         {"text", "uri", "media_type", "name", "data"},
     )
+    opaque_data: Mapping[str, Any] = (
+        {} if "data" not in fields else json_object(fields["data"], "opaque part data")
+    )
+    if "data" in fields and not opaque_data:
+        raise ProtocolError("opaque part data must not be empty when present")
     return ContentPart(
         type=part_type,
         text=_present_string(fields, "text", "opaque part text"),
@@ -181,7 +192,7 @@ def decode_content_part_value(value: object) -> ContentPart:
             non_empty=True,
         ),
         name=_present_string(fields, "name", "opaque part name", non_empty=True),
-        data=({} if "data" not in fields else json_object(fields["data"], "opaque part data")),
+        data=opaque_data,
         metadata=json_object(fields["metadata"], "content metadata"),
     )
 

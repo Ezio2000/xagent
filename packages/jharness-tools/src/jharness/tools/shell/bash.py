@@ -45,6 +45,22 @@ _TIMEOUT_SECONDS = 120
 _MAX_STDOUT_BYTES = 128 * 1024
 _MAX_STDERR_BYTES = 128 * 1024
 _TERMINATE_GRACE_SECONDS = 1
+_MINIMAL_ENVIRONMENT_NAMES = (
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "TMPDIR",
+)
+_WINDOWS_ENVIRONMENT_NAMES = (
+    "COMSPEC",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "WINDIR",
+)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -53,7 +69,8 @@ class BashTool:
 
     workspace: Workspace
     bash_path: str
-    environment: Mapping[str, str] | None
+    environment: Mapping[str, str]
+    inherit_environment: bool
     max_command_chars: int
     timeout_seconds: float
     max_stdout_bytes: int
@@ -67,6 +84,7 @@ class BashTool:
         *,
         bash_path: PathInput | None = None,
         environment: Mapping[str, str] | None = None,
+        inherit_environment: bool = False,
         max_command_chars: int = _MAX_COMMAND_CHARS,
         timeout_seconds: float = _TIMEOUT_SECONDS,
         max_stdout_bytes: int = _MAX_STDOUT_BYTES,
@@ -81,11 +99,13 @@ class BashTool:
             terminate_grace_seconds,
             "terminate_grace_seconds",
         )
+        inherit_environment = _inherit_environment(inherit_environment)
         selected_bash = _bash_path(bash_path)
-        selected_environment = _environment(environment)
+        selected_environment = _environment(environment, inherit_environment)
         object.__setattr__(self, "workspace", Workspace.create(root))
         object.__setattr__(self, "bash_path", selected_bash)
         object.__setattr__(self, "environment", selected_environment)
+        object.__setattr__(self, "inherit_environment", inherit_environment)
         object.__setattr__(self, "max_command_chars", max_command_chars)
         object.__setattr__(self, "timeout_seconds", timeout_seconds)
         object.__setattr__(self, "max_stdout_bytes", max_stdout_bytes)
@@ -180,19 +200,35 @@ def _bash_path(value: PathInput | None) -> str:
     return path
 
 
-def _environment(value: object) -> Mapping[str, str] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
+def _environment(value: object, inherit_environment: bool) -> Mapping[str, str]:
+    if value is not None and not isinstance(value, Mapping):
         raise TypeError("environment must be a string mapping or None")
-    copied: dict[str, str] = {}
-    for key, item in cast(Mapping[object, object], value).items():
+    if inherit_environment:
+        copied = dict(os.environ)
+    else:
+        names = (
+            (*_MINIMAL_ENVIRONMENT_NAMES, *_WINDOWS_ENVIRONMENT_NAMES)
+            if os.name == "nt"
+            else _MINIMAL_ENVIRONMENT_NAMES
+        )
+        copied = {key: os.environ[key] for key in names if key in os.environ}
+    if value is None:
+        overlay: Mapping[object, object] = {}
+    else:
+        overlay = cast(Mapping[object, object], value)
+    for key, item in overlay.items():
         if not isinstance(key, str) or not isinstance(item, str):
             raise TypeError("environment keys and values must be strings")
         if not key or "=" in key or "\x00" in key or "\x00" in item:
             raise ValueError("environment contains an invalid key or value")
         copied[key] = item
     return MappingProxyType(copied)
+
+
+def _inherit_environment(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError("inherit_environment must be a bool")
+    return value
 
 
 def _structured(outcome: CommandOutcome) -> dict[str, object]:
@@ -264,9 +300,10 @@ def _spec(max_command_chars: int) -> ToolSpec:
         name="Bash",
         description=(
             "Run one non-interactive foreground Bash command from a directory inside the "
-            "Host-configured workspace. Output and duration are Host-bounded. The workspace "
-            "directory is not a sandbox; commands may access files and networks allowed by "
-            "the Host."
+            "Host-configured workspace with a minimal process environment by default. Output "
+            "and duration are Host-bounded. The workspace directory is not a sandbox; commands "
+            "may access files and networks allowed by the Host. Full Host-environment inheritance "
+            "is an explicit credential-exposure decision."
         ),
         input_schema={
             "type": "object",

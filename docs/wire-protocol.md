@@ -28,12 +28,16 @@ Every decoder:
 3. dispatches a union by its explicit discriminator;
 4. validates scalar types without language-specific coercion;
 5. rejects non-finite numbers and cyclic host input;
-6. validates cross-field invariants;
-7. constructs frozen domain values once.
+6. rejects JSON containers nested more than 128 levels;
+7. validates cross-field invariants;
+8. constructs frozen domain values once.
 
 JSON boolean is not accepted where an integer or number is required. Empty
 identifiers, duplicate tool-call ids, impossible state payloads, invalid
 revision relationships, and mismatched checkpoint facts are protocol errors.
+
+The interoperable integer, number, depth, and opaque-data acceptance rules are defined
+once in [`contracts/v0`](../contracts/v0/README.md#boundary-rules).
 
 Schema version is a property of the top-level wire document. It is not stored
 on every domain event, snapshot, state, or value.
@@ -80,6 +84,10 @@ For every portable top-level document, tests prove:
 Adding or changing a portable field requires one atomic update to normative
 documentation, schema, conformance fixtures, codec, implementation, and tests.
 There is one reader and one writer for the active contract.
+
+Decoding a trace establishes structural and domain validity only. A caller that treats
+the trace as diagnostic evidence must call `verify_trace` after `decode_trace`; decode
+success is not a verification result.
 
 ## Non-Goals
 

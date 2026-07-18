@@ -5,6 +5,7 @@ description = "Ready-to-use filesystem, shell, interaction, and agent tools for 
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "JHarness contributors" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -34,4 +35,4 @@ build-backend = "hatchling.build"
 packages = ["src/jharness"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/jharness/tools", "README.md", "pyproject.toml"]
+include = ["src/jharness/tools", "LICENSE", "README.md", "pyproject.toml"]

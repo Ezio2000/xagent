@@ -165,6 +165,11 @@ Kernel owns the absolute invocation deadline, not per-tool retry or
 circuit-breaker state. Toolkit decorators provide those policies around one logical
 tool invocation. Decorator attempts do not increment committed tool counters.
 
+`RetryingTool` retries only the configured exception classes and only for an
+idempotent tool; model-visible settled failures are not retried. Concrete retry,
+backoff, exhaustion, and circuit-recovery behavior belongs to the
+[`jharness-toolkit` README](../packages/jharness-toolkit/README.md).
+
 Progress is live-only and bounded by `RunLimits.max_buffered_progress`. A tool
 that exceeds its bound receives a tool-level error from its context.
 

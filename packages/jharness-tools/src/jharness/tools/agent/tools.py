@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -45,6 +46,7 @@ from jharness.tools.agent.backend import AgentBackend
 from jharness.tools.agent.models import AgentBackendError, AgentRequest, AgentSnapshot
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +164,7 @@ class AgentTool:
         except AgentBackendError as exc:
             return _failure(exc.code, exc.message)
         except Exception:
-            return _backend_failure()
+            return _backend_failure("start_or_get")
         invalid_snapshot = _invalid_start_snapshot(snapshot, request)
         if invalid_snapshot is not None:
             return invalid_snapshot
@@ -236,7 +238,7 @@ class AgentGetTool:
         except AgentBackendError as exc:
             return _failure(exc.code, exc.message)
         except Exception:
-            return _backend_failure()
+            return _backend_failure("get")
         return _validated_snapshot_success(snapshot, agent_id, self._limits)
 
 
@@ -289,7 +291,7 @@ class AgentWaitTool:
         except AgentBackendError as exc:
             return _failure(exc.code, exc.message)
         except Exception:
-            return _backend_failure()
+            return _backend_failure("wait_or_get")
         if not isinstance(cast(object, snapshot), AgentSnapshot):
             return _invalid_snapshot_type()
         if snapshot.agent_id != agent_id:
@@ -362,7 +364,7 @@ class AgentCancelTool:
         except AgentBackendError as exc:
             return _failure(exc.code, exc.message)
         except Exception:
-            return _backend_failure()
+            return _backend_failure("cancel")
         if not isinstance(cast(object, snapshot), AgentSnapshot):
             return _invalid_snapshot_type()
         if snapshot.agent_id != agent_id:
@@ -516,7 +518,8 @@ def _invalid_snapshot_type() -> SettledResult:
     )
 
 
-def _backend_failure() -> SettledResult:
+def _backend_failure(operation: str) -> SettledResult:
+    _LOGGER.exception("Unexpected Agent backend failure during %s", operation)
     return _failure(
         "agent_backend_error",
         "The Host Agent backend failed while processing the request.",
@@ -538,7 +541,10 @@ def _agent_spec(limits: _OutputLimits, *, max_prompt_chars: int) -> ToolSpec:
         ),
         output_schema=limits.output_schema(),
         execution=ToolExecution(concurrency="serial", read_only=False, idempotent=False),
-        risk=ToolRisk(extra={"delegates_child_run": True}),
+        risk=ToolRisk(
+            requires_approval=True,
+            extra={"delegates_child_run": True},
+        ),
     )
 
 

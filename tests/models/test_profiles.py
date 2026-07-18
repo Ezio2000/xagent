@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import httpx
 import pytest
 
+from jharness.models._http import model_client_config
 from jharness.models.anthropic import AnthropicModel, AnthropicProfile
 from jharness.models.deepseek import deepseek_anthropic_profile, deepseek_openai_chat_profile
 from jharness.models.openai import OpenAIChatCompletionsModel, OpenAIChatCompletionsProfile
@@ -32,6 +34,48 @@ def test_model_clients_share_constructor_validation(model_type: type[object]) ->
         model="model",
     )
     assert configured.base_url == "https://provider.test"
+    assert not hasattr(configured, "api_key")
+    assert configured._api_key == "secret"
+    assert isinstance(configured._timeout, httpx.Timeout)
+    assert configured._timeout.connect == 10.0
+    assert configured._timeout.read == 60.0
+
+    without_transport_timeout = constructor(
+        base_url="https://provider.test",
+        api_key="secret",
+        model="model",
+        timeout=None,
+    )
+    assert without_transport_timeout._timeout is None
+
+    for keywords, pattern in (
+        ({"max_sse_line_bytes": 0}, "max_sse_line_bytes"),
+        (
+            {"max_sse_line_bytes": 20, "max_sse_event_bytes": 10},
+            "max_sse_event_bytes",
+        ),
+    ):
+        with pytest.raises(ValueError, match=pattern):
+            constructor(
+                base_url="https://provider.test",
+                api_key="secret",
+                model="model",
+                **keywords,
+            )
+
+
+def test_shared_transport_config_repr_redacts_api_key() -> None:
+    config = model_client_config(
+        base_url="https://provider.test",
+        api_key="repr-secret",
+        model="model",
+        options={},
+        default_profile=object(),
+        constructor_name="test",
+    )
+
+    assert config.api_key == "repr-secret"
+    assert "repr-secret" not in repr(config)
 
 
 def test_deepseek_profiles_drive_capabilities_without_runtime_special_cases() -> None:

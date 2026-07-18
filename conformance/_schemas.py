@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validators
 from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.protocols import Validator
 from referencing import Registry
@@ -37,6 +38,23 @@ class SchemaValidationError(ValueError):
     pass
 
 
+def _is_lexical_integer(_checker: object, value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+_extend_validator = cast(
+    Callable[..., type[Draft202012Validator]],
+    validators.extend,  # pyright: ignore[reportUnknownMemberType]
+)
+StrictDraft202012Validator: type[Draft202012Validator] = _extend_validator(
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+        "integer",
+        _is_lexical_integer,
+    ),
+)
+
+
 class SchemaSuite:
     """All portable schemas in one retrieval-disabled registry."""
 
@@ -58,11 +76,11 @@ class SchemaSuite:
             raise ValueError(f"missing contract schemas: {', '.join(sorted(missing))}")
         registry: SchemaRegistry = Registry[Schema]().with_resources(resources).crawl()
         self._validators: dict[str, Validator] = {
-            name: Draft202012Validator(schema, registry=registry)
+            name: StrictDraft202012Validator(schema, registry=registry)
             for name, schema in schemas.items()
         }
         self._registry = registry
-        self._case_validator: Validator = Draft202012Validator(
+        self._case_validator: Validator = StrictDraft202012Validator(
             _schema(case_schema_path),
             registry=registry,
         )
@@ -78,14 +96,14 @@ class SchemaSuite:
         _validate(validator, value, schema_name)
 
     def validate_ref(self, reference: str, value: object) -> None:
-        validator: Validator = Draft202012Validator(
+        validator: Validator = StrictDraft202012Validator(
             cast(Schema, {"$ref": reference}),
             registry=self._registry,
         )
         _validate(validator, value, reference)
 
     def validate_document(self, schema_path: Path, value: object) -> None:
-        validator: Validator = Draft202012Validator(
+        validator: Validator = StrictDraft202012Validator(
             _schema(schema_path),
             registry=self._registry,
         )

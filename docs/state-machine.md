@@ -27,26 +27,11 @@ have no outgoing transition. Display status is derived from the variant.
 
 ## Legal Transitions
 
-| From | To | Cause |
-| --- | --- | --- |
-| creation | `Planning` | Start checkpoint. |
-| `Planning` | `Planning` | Valid history rewrite or conversation insertion. |
-| `Planning` | `ToolsPending` | Complete model response requests tools. |
-| `Planning` | `Suspended(Planning)` | Pause interrupts model work or stops at a planning boundary. |
-| `Planning` | `Completed` | Complete model response is final. |
-| `Planning` | `Failed` | Model, protocol, or infrastructure failure. |
-| `Planning` | `Limited` | Deadline, planning, or usage limit. |
-| `ToolsPending` | `ToolsPending` | A committed prefix leaves pending calls. |
-| `ToolsPending` | `Planning` | The final pending batch commits. |
-| `ToolsPending` | `Suspended(ToolsPending)` | Approval or boundary pause preserves remaining calls. |
-| `ToolsPending` | `Suspended(Planning)` | A final committed waiting result resumes at planning. |
-| `ToolsPending` | `Failed` | Protocol or infrastructure failure. |
-| `ToolsPending` | `Limited` | Deadline, tool-call, or usage limit. |
-| `Suspended(C)` | `C` | Valid resume checkpoint. |
-
-A waiting result that leaves calls behind suspends with
-`resume_to=ToolsPending(remaining)`. If it completes the pending list, it
-suspends with `resume_to=Planning`.
+Planning either continues planning, requests tools, suspends, or terminates. Tool work
+either leaves a pending suffix, returns to planning, suspends with its exact
+continuation, or terminates. Resume restores the continuation saved by `Suspended`.
+The complete transition table is normative in
+[`contracts/v0/state-machine.md`](../contracts/v0/state-machine.md).
 
 ## Durable Boundaries
 
@@ -68,24 +53,13 @@ revision, metrics, and current state remain authoritative in its snapshot.
 
 ## Start, Continue, and Resume
 
-- `Runtime.start(...)` synchronously validates the supplied history against
-  `Planning` before creating an invocation. Invalid history emits no event and
-  commits nothing. A valid start creates `Planning` and commits revision `0`
-  before model work begins.
-- `Runtime.continue_from(checkpoint)` accepts a checkpoint whose snapshot is
-  `Planning` or `ToolsPending`. It performs no synthetic state change and
-  assumes the previous owner has relinquished execution.
-- `Runtime.resume(checkpoint, ...)` accepts a checkpoint whose snapshot is
-  `Suspended`, validates an optional selector, restores the exact `resume_to`
-  state, applies permitted appended messages, and commits that acknowledgement
-  before work resumes. If the inherited hard deadline is already expired, it
-  commits `Limited(deadline)` directly instead; cleanup grace cannot be used for
-  the acknowledgement or new external work.
-- Appended resume messages are valid only when `resume_to` is `Planning`.
-- `Completed`, `Failed`, and `Limited` reject continuation and resume.
+Start creates revision `0` in `Planning`; continue re-enters a nonterminal active
+checkpoint without a synthetic transition; resume first persists restoration of a
+saved suspension. Terminal checkpoints reject both recovery operations. Recovery
+restarts from durable semantics, never an in-flight language-runtime task.
 
-Resume never restores a language-runtime task or in-flight provider/tool attempt. It
-restarts from the durable semantic state.
+Request validation, selectors, appended messages, and inherited-deadline behavior are
+defined in [`contracts/v0/run-control.md`](../contracts/v0/run-control.md).
 
 ## Control Boundaries
 
@@ -110,10 +84,7 @@ the uncommitted input is not durable and the host must resubmit it.
 Cooperative tool cancellation affects only the named active call. Unknown,
 stale, and completed call ids are no-ops. It does not create a lifecycle state.
 
-Controls may be submitted before invocation execution starts. When that
-execution settles, its control channel closes and discards any uncommitted
-controls. Later pause, insertion, and tool-cancellation submissions are
-ignored; they cannot accumulate for a nonexistent future execution.
+Controls are invocation-scoped and cannot accumulate for a later execution.
 
 ## Boundary Precedence
 
@@ -147,10 +118,7 @@ only settle owned work and commit `Limited(deadline)`.
 
 ## History Reduction
 
-A `HistoryReducer` may propose a valid history only at `Planning`. A proposal
-must contain no more messages; equal count is allowed when message content is
-summarized. A successful rewrite is its own checkpoint before model work.
-
-The reducer cannot change context, metrics, state, or revision. The host owns
-the summary algorithm; kernel owns its legal boundary, validation, and atomic
-commit.
+A `HistoryReducer` may propose a non-growing history only at `Planning`. Each accepted
+rewrite is its own checkpoint before the next model attempt. The host owns the summary
+algorithm; kernel validates and commits the proposal without letting it change state,
+context, metrics, or revision.

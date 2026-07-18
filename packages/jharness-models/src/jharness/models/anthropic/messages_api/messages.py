@@ -396,9 +396,9 @@ def _parse_data_url(uri: str) -> tuple[str, str]:
     if separator != "," or not header.startswith("data:"):
         raise AnthropicError("data URL input must contain media type and base64 data")
     metadata = header.removeprefix("data:")
-    values = [item for item in metadata.split(";") if item]
-    media_type = values[0] if values else "application/octet-stream"
-    if "base64" not in values:
+    values = metadata.split(";")
+    media_type = values[0] or "application/octet-stream"
+    if "base64" not in values[1:]:
         raise AnthropicError("data URL input must use base64 encoding")
     if not data:
         raise AnthropicError("data URL input requires base64 data")

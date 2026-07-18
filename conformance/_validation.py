@@ -7,6 +7,7 @@ from typing import Any
 
 from conformance._schemas import SchemaSuite, SchemaValidationError
 from conformance._values import boolean, string
+from jharness.kernel import ProtocolError, RequestError
 from jharness.kernel.diagnostics import TraceError, verify_trace
 from jharness.kernel.wire import (
     decode_checkpoint,
@@ -43,7 +44,7 @@ def run_validation_case(case: Mapping[str, Any], schemas: SchemaSuite) -> None:
     try:
         schemas.validate(_SCHEMAS[target], value)
         _semantic_validator(target)(value)
-    except Exception as exc:
+    except (ProtocolError, RequestError, SchemaValidationError, TraceError) as exc:
         if expected_valid:
             raise AssertionError(f"expected valid {target}, got {exc}") from exc
         code = _validation_error_code(exc)
@@ -81,11 +82,8 @@ def _validation_error_code(exc: Exception) -> str:
         return "schema_validation"
     if isinstance(exc, TraceError):
         return exc.code
-    message = str(exc)
-    if "messages require a planning" in message or "messages_require_planning" in message:
-        return "messages_require_planning"
-    if "tool call ids must be unique" in message or (
-        "tool call id" in message and "unique" in message
-    ):
-        return "duplicate_tool_call_id"
-    return "schema_validation"
+    if isinstance(exc, RequestError):
+        return exc.code
+    if isinstance(exc, ProtocolError):
+        return "schema_validation" if exc.code == "protocol_error" else exc.code
+    raise TypeError(f"unexpected validation exception: {type(exc).__name__}")

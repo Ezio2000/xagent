@@ -306,6 +306,30 @@ async def test_anthropic_client_uses_http_transport_and_maps_errors() -> None:
     assert caught.value.info.retryable is True
 
 
+async def test_anthropic_stream_overload_keeps_semantic_status_and_retryability() -> None:
+    body = (
+        "event: error\n"
+        'data: {"type":"error","error":'
+        '{"type":"overloaded_error","message":"busy"}}\n\n'
+    )
+
+    def handler(raw: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body, request=raw)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ModelError) as caught:
+            await http_model(client).invoke(
+                ModelRequest((Message.user("hello"),)),
+                RunContext("run-1", 1.0),
+                stream=True,
+                emit_delta=None,
+            )
+
+    assert caught.value.info.code == "overloaded_error"
+    assert caught.value.info.status_code is None
+    assert caught.value.info.retryable is True
+
+
 def test_anthropic_codec_rejects_invalid_envelope() -> None:
     with pytest.raises(AnthropicError, match="type='message'"):
         AnthropicCodec(model="claude-test").decode_response({"type": "error"})

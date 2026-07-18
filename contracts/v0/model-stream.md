@@ -34,5 +34,16 @@ invocation closes the provider stream before control returns. Pause,
 conversation insertion, provider failure, iterator failure, or deadline before
 return preserves the last committed checkpoint and discards partial deltas.
 
+The delta sink is host code. Its exception propagates unchanged after provider
+resources are closed; it is not normalized as a provider `ModelError`. Transport,
+provider payload, iterator, and stream-protocol failures are normalized.
+
+An adapter applies a finite default HTTP timeout unless a caller explicitly disables
+that transport timeout; the run deadline remains authoritative in either case. SSE
+input is strictly UTF-8, recognizes only CR/LF line endings, and is bounded per line
+and per event before accumulation. Provider `Retry-After` values remain available as
+error metadata, and semantic stream errors preserve their payload status and code
+even when delivered under HTTP 2xx.
+
 Kernel does not retry a partially observed stream. Retry decorators must not
 expose deltas from a failed attempt before retrying it.

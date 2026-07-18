@@ -57,6 +57,24 @@ class OperationCancelled(Exception):
     """Internal cooperative-cancellation signal."""
 
 
+def is_reserved_temporary_name(name: str) -> bool:
+    """Return whether a filename belongs to the atomic-write private namespace."""
+
+    prefix, marker, remainder = name.rpartition(".jharness-")
+    if not marker or not prefix.startswith(".") or not remainder.endswith(".tmp"):
+        return False
+    token = remainder[: -len(".tmp")]
+    return len(token) == 16 and all(item in "0123456789abcdefABCDEF" for item in token)
+
+
+def reject_reserved_relative_path(relative: Path, value: str) -> None:
+    if any(is_reserved_temporary_name(part) for part in relative.parts):
+        raise FilesystemFailure(
+            "reserved_path",
+            f"Path uses a Host-reserved atomic-write name: {value}",
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class DirectoryEntry:
     """The directory-entry facts needed by the preset walkers."""
@@ -166,6 +184,7 @@ class Workspace:
                 "path_outside_workspace",
                 f"Path is outside the configured workspace: {value}",
             )
+        reject_reserved_relative_path(resolved.relative_to(self.root), value)
         return resolved
 
     def file(self, value: str) -> Path:
@@ -190,6 +209,9 @@ class Workspace:
         except OSError:
             return None
         if not resolved.is_file() or not resolved.is_relative_to(self.root):
+            return None
+        relative = resolved.relative_to(self.root)
+        if any(is_reserved_temporary_name(part) for part in relative.parts):
             return None
         return resolved, path.relative_to(self.root).as_posix()
 

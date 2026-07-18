@@ -24,9 +24,10 @@ def json_object(path: Path) -> dict[str, Any]:
 def references(value: object) -> Iterator[str]:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        ref = mapping.get("$ref")
-        if isinstance(ref, str):
-            yield ref
+        for keyword in ("$ref", "$dynamicRef"):
+            ref = mapping.get(keyword)
+            if isinstance(ref, str):
+                yield ref
         for item in mapping.values():
             yield from references(item)
     elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
@@ -64,7 +65,7 @@ def test_tool_manifest_and_all_cases_validate() -> None:
         CONFORMANCE_DIR / "tools.contract.schema.json",
         manifest,
     )
-    assert len(runner.load_cases()) == 66
+    assert len(runner.load_cases()) == 71
 
 
 def test_conformance_cases_use_the_flat_portable_layout() -> None:

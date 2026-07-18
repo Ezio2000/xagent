@@ -45,6 +45,11 @@ def test_workspace_cleaner_previews_then_removes_only_generated_targets(
 ) -> None:
     workspace = _workspace(tmp_path)
     root_environment = workspace / ".venv" / "marker"
+    nested_dot_environment = (
+        workspace / "packages" / "jharness-kernel" / ".venv" / "lib" / "__pycache__" / "x.pyc"
+    )
+    nested_named_environment = workspace / "examples" / "venv" / ".coverage"
+    nested_upper_environment = workspace / "tools" / "ENV" / "generated.pyc"
     nested_cache = (
         workspace
         / "packages"
@@ -60,6 +65,9 @@ def test_workspace_cleaner_previews_then_removes_only_generated_targets(
     retained_source = workspace / "src" / "application.py"
     for path in (
         root_environment,
+        nested_dot_environment,
+        nested_named_environment,
+        nested_upper_environment,
         nested_cache,
         ordinary_cache,
         coverage_report,
@@ -71,11 +79,16 @@ def test_workspace_cleaner_previews_then_removes_only_generated_targets(
 
     assert preview.returncode == 0, preview.stderr
     assert ".venv" not in preview.stdout
+    assert "examples/venv" not in preview.stdout
+    assert "tools/ENV" not in preview.stdout
     assert "would remove packages/jharness-kernel/src/jharness/kernel/__pycache__" in preview.stdout
     assert all(
         path.exists()
         for path in (
             root_environment,
+            nested_dot_environment,
+            nested_named_environment,
+            nested_upper_environment,
             nested_cache,
             ordinary_cache,
             coverage_report,
@@ -87,6 +100,9 @@ def test_workspace_cleaner_previews_then_removes_only_generated_targets(
 
     assert applied.returncode == 0, applied.stderr
     assert root_environment.exists()
+    assert nested_dot_environment.exists()
+    assert nested_named_environment.exists()
+    assert nested_upper_environment.exists()
     assert not nested_cache.exists()
     assert not ordinary_cache.exists()
     assert not coverage_report.exists()

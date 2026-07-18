@@ -4,16 +4,37 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from contextlib import aclosing, asynccontextmanager
+from dataclasses import dataclass, field
+from time import time
 from typing import Any, Generic, TypeVar, cast
 
 import httpx
 
-from jharness.kernel import DeltaSink, ModelDelta, ModelError, ModelErrorInfo, ModelResponse
+from jharness.kernel import (
+    DeltaSink,
+    ModelDelta,
+    ModelError,
+    ModelErrorInfo,
+    ModelResponse,
+    RunContext,
+)
 
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504})
-_CLIENT_OPTION_NAMES = frozenset({"client", "headers", "profile", "timeout"})
+_CLIENT_OPTION_NAMES = frozenset(
+    {
+        "client",
+        "headers",
+        "max_sse_event_bytes",
+        "max_sse_line_bytes",
+        "profile",
+        "timeout",
+    }
+)
+_DEFAULT_HTTP_TIMEOUT_SECONDS = 60.0
+_DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
+_DEFAULT_MAX_SSE_LINE_BYTES = 256 * 1024
+_DEFAULT_MAX_SSE_EVENT_BYTES = 1024 * 1024
 
 ProfileT = TypeVar("ProfileT")
 
@@ -28,10 +49,12 @@ class ModelClientConfig(Generic[ProfileT]):
     """Validated transport configuration shared by concrete provider clients."""
 
     base_url: str
-    api_key: str
+    api_key: str = field(repr=False)
     model: str
     profile: ProfileT
     timeout: float | httpx.Timeout | None
+    max_sse_line_bytes: int
+    max_sse_event_bytes: int
     headers: Mapping[str, str]
     client: httpx.AsyncClient | None
 
@@ -58,15 +81,44 @@ def model_client_config(
     if not model:
         raise ValueError("model must not be empty")
     profile = cast(ProfileT | None, options.get("profile")) or default_profile
+    timeout = cast(
+        float | httpx.Timeout | None,
+        (
+            options["timeout"]
+            if "timeout" in options
+            else httpx.Timeout(
+                _DEFAULT_HTTP_TIMEOUT_SECONDS,
+                connect=_DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            )
+        ),
+    )
+    max_sse_line_bytes = _positive_int_option(
+        options.get("max_sse_line_bytes", _DEFAULT_MAX_SSE_LINE_BYTES),
+        "max_sse_line_bytes",
+    )
+    max_sse_event_bytes = _positive_int_option(
+        options.get("max_sse_event_bytes", _DEFAULT_MAX_SSE_EVENT_BYTES),
+        "max_sse_event_bytes",
+    )
+    if max_sse_event_bytes < max_sse_line_bytes:
+        raise ValueError("max_sse_event_bytes must be >= max_sse_line_bytes")
     return ModelClientConfig(
         base_url.rstrip("/"),
         api_key,
         model,
         profile,
-        cast(float | httpx.Timeout | None, options.get("timeout")),
+        timeout,
+        max_sse_line_bytes,
+        max_sse_event_bytes,
         dict(cast(Mapping[str, str] | None, options.get("headers")) or {}),
         cast(httpx.AsyncClient | None, options.get("client")),
     )
+
+
+def _positive_int_option(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +130,7 @@ class ModelErrorPolicy:
     request_id_headers: tuple[str, ...]
     error_code_keys: tuple[str, ...]
     additional_retryable_status_codes: frozenset[int] = frozenset()
+    retryable_error_codes: frozenset[str] = frozenset()
     body_request_id_key: str | None = None
 
 
@@ -93,6 +146,7 @@ async def invoke_json_model(
     *,
     client: httpx.AsyncClient | None,
     timeout: float | httpx.Timeout | None,
+    context: RunContext,
     url: str,
     payload: PayloadFactory,
     headers: HeadersFactory,
@@ -106,7 +160,12 @@ async def invoke_json_model(
     try:
         body = payload()
         async with managed_async_client(client, timeout) as http:
-            response = await http.post(url, headers=headers(body), json=body)
+            response = await http.post(
+                url,
+                headers=headers(body),
+                json=body,
+                timeout=_effective_timeout(timeout, context),
+            )
             await ensure_success_response(response, errors)
             value: object = response.json()
             if not isinstance(value, Mapping):
@@ -132,6 +191,7 @@ async def invoke_sse_model(
     *,
     client: httpx.AsyncClient | None,
     timeout: float | httpx.Timeout | None,
+    context: RunContext,
     url: str,
     payload: PayloadFactory,
     headers: HeadersFactory,
@@ -140,29 +200,78 @@ async def invoke_sse_model(
     emit_delta: DeltaSink | None,
     errors: ModelErrorPolicy,
     incomplete_error: str,
+    max_sse_line_bytes: int = _DEFAULT_MAX_SSE_LINE_BYTES,
+    max_sse_event_bytes: int = _DEFAULT_MAX_SSE_EVENT_BYTES,
 ) -> ModelResponse:
     """Execute one SSE model request and return its provider-assembled response."""
+
+    steps = _decoded_sse_steps(
+        client=client,
+        timeout=timeout,
+        context=context,
+        url=url,
+        payload=payload,
+        headers=headers,
+        decode_frame=decode_frame,
+        completed_response=completed_response,
+        errors=errors,
+        incomplete_error=incomplete_error,
+        max_sse_line_bytes=max_sse_line_bytes,
+        max_sse_event_bytes=max_sse_event_bytes,
+    )
+    async with aclosing(steps):
+        async for deltas, completed in steps:
+            if emit_delta is not None:
+                for delta in deltas:
+                    await emit_delta(delta)
+            if completed is not None:
+                return completed
+    raise RuntimeError("provider stream ended without a result")
+
+
+async def _decoded_sse_steps(
+    *,
+    client: httpx.AsyncClient | None,
+    timeout: float | httpx.Timeout | None,
+    context: RunContext,
+    url: str,
+    payload: PayloadFactory,
+    headers: HeadersFactory,
+    decode_frame: FrameDecoder,
+    completed_response: Callable[[], ModelResponse],
+    errors: ModelErrorPolicy,
+    incomplete_error: str,
+    max_sse_line_bytes: int,
+    max_sse_event_bytes: int,
+) -> AsyncGenerator[tuple[Sequence[ModelDelta], ModelResponse | None]]:
+    """Own provider resources while yielding outside the host sink boundary."""
 
     response: httpx.Response | None = None
     try:
         body = payload()
-        saw_done = False
         async with (
             managed_async_client(client, timeout) as http,
-            http.stream("POST", url, headers=headers(body), json=body) as response,
+            http.stream(
+                "POST",
+                url,
+                headers=headers(body),
+                json=body,
+                timeout=_effective_timeout(timeout, context),
+            ) as response,
         ):
             await ensure_success_response(response, errors)
-            async for frame in iter_server_sent_events(response):
+            async for frame in iter_server_sent_events(
+                response,
+                max_line_bytes=max_sse_line_bytes,
+                max_event_bytes=max_sse_event_bytes,
+                error=errors.codec_error,
+            ):
                 done, deltas = decode_frame(frame.event, frame.data)
-                if emit_delta is not None:
-                    for delta in deltas:
-                        await emit_delta(delta)
+                completed = completed_response() if done else None
+                yield deltas, completed
                 if done:
-                    saw_done = True
-                    break
-        if not saw_done:
+                    return
             raise errors.codec_error(incomplete_error)
-        return completed_response()
     except (ModelError, httpx.HTTPError, ValueError) as exc:
         raise _model_error(exc, response, errors) from exc
 
@@ -179,6 +288,32 @@ async def managed_async_client(
         return
     async with httpx.AsyncClient(timeout=timeout) as owned_client:
         yield owned_client
+
+
+def _effective_timeout(
+    configured: float | httpx.Timeout | None,
+    context: RunContext,
+) -> float | httpx.Timeout | None:
+    deadline = context.deadline
+    if deadline is None:
+        return configured
+    remaining = deadline - time()
+    if remaining <= 0:
+        raise httpx.ReadTimeout("run deadline expired before provider request")
+    if configured is None:
+        return remaining
+    if isinstance(configured, httpx.Timeout):
+        return httpx.Timeout(
+            connect=_clamp_timeout_phase(configured.connect, remaining),
+            read=_clamp_timeout_phase(configured.read, remaining),
+            write=_clamp_timeout_phase(configured.write, remaining),
+            pool=_clamp_timeout_phase(configured.pool, remaining),
+        )
+    return min(float(configured), remaining)
+
+
+def _clamp_timeout_phase(value: float | None, remaining: float) -> float:
+    return remaining if value is None else min(value, remaining)
 
 
 async def ensure_success_response(
@@ -209,18 +344,33 @@ async def ensure_success_response(
     )
 
 
-async def iter_server_sent_events(response: httpx.Response) -> AsyncIterator[ServerSentEvent]:
+async def iter_server_sent_events(
+    response: httpx.Response,
+    *,
+    max_line_bytes: int = _DEFAULT_MAX_SSE_LINE_BYTES,
+    max_event_bytes: int = _DEFAULT_MAX_SSE_EVENT_BYTES,
+    error: type[ValueError] = ValueError,
+) -> AsyncIterator[ServerSentEvent]:
     """Parse an HTTP response body into SSE frames according to field boundaries."""
 
     event_name: str | None = None
     data_lines: list[str] = []
-    async for line in response.aiter_lines():
+    event_bytes = 0
+    async for line, line_bytes in _iter_sse_lines(
+        response,
+        max_line_bytes=max_line_bytes,
+        error=error,
+    ):
         if line == "":
             if data_lines:
                 yield ServerSentEvent(event=event_name, data="\n".join(data_lines))
             event_name = None
             data_lines = []
+            event_bytes = 0
             continue
+        event_bytes += line_bytes + 1
+        if event_bytes > max_event_bytes:
+            raise error(f"SSE event exceeds the configured {max_event_bytes}-byte limit")
         if line.startswith(":"):
             continue
         field, separator, raw_value = line.partition(":")
@@ -235,11 +385,54 @@ async def iter_server_sent_events(response: httpx.Response) -> AsyncIterator[Ser
         yield ServerSentEvent(event=event_name, data="\n".join(data_lines))
 
 
+async def _iter_sse_lines(
+    response: httpx.Response,
+    *,
+    max_line_bytes: int,
+    error: type[ValueError],
+) -> AsyncIterator[tuple[str, int]]:
+    pending = bytearray()
+    skip_lf = False
+    async for chunk in response.aiter_bytes():
+        for item in chunk:
+            if skip_lf:
+                skip_lf = False
+                if item == 0x0A:
+                    continue
+            if item == 0x0D:
+                yield _decode_sse_line(pending, error), len(pending)
+                pending.clear()
+                skip_lf = True
+                continue
+            if item == 0x0A:
+                yield _decode_sse_line(pending, error), len(pending)
+                pending.clear()
+                continue
+            if len(pending) >= max_line_bytes:
+                raise error(f"SSE line exceeds the configured {max_line_bytes}-byte limit")
+            pending.append(item)
+    if pending:
+        yield _decode_sse_line(pending, error), len(pending)
+
+
+def _decode_sse_line(value: bytearray, error: type[ValueError]) -> str:
+    try:
+        return value.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise error("SSE stream contains invalid UTF-8") from exc
+
+
 def response_error_metadata(response: httpx.Response) -> dict[str, str]:
     """Return portable HTTP context that is useful beyond provider error bodies."""
 
+    metadata: dict[str, str] = {}
     location = response.headers.get("location")
-    return {} if not location else {"location": location}
+    if location:
+        metadata["location"] = location
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        metadata["retry_after"] = retry_after
+    return metadata
 
 
 def response_request_id(
@@ -288,7 +481,8 @@ def _model_error(
     response: httpx.Response | None,
     policy: ModelErrorPolicy,
 ) -> ModelError:
-    if isinstance(exc, ModelError):
+    semantic_model_error = isinstance(exc, ModelError)
+    if semantic_model_error:
         info = exc.info
     else:
         if isinstance(exc, httpx.TimeoutException):
@@ -312,11 +506,15 @@ def _model_error(
     if response is not None:
         metadata = dict(info.metadata)
         metadata.update(response_error_metadata(response))
+        response_status = response.status_code
+        status_code = info.status_code
+        if status_code is None and (not semantic_model_error or not 200 <= response_status < 300):
+            status_code = response_status
         info = ModelErrorInfo(
             message=info.message,
             provider=info.provider,
             code=info.code,
-            status_code=response.status_code,
+            status_code=status_code,
             retryable=info.retryable,
             request_id=(
                 response_request_id(response, policy.request_id_headers) or info.request_id
@@ -365,6 +563,7 @@ def _body_error_info(
         retryable=(
             status_code in _RETRYABLE_STATUS_CODES
             or status_code in policy.additional_retryable_status_codes
+            or code in policy.retryable_error_codes
         ),
         request_id=request_id or body_request_id,
         metadata={} if metadata is None else metadata,

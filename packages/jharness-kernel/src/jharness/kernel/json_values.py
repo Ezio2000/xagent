@@ -10,6 +10,7 @@ from typing import Any, NoReturn, SupportsIndex, TypeAlias, cast
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+MAX_JSON_NESTING_DEPTH = 128
 
 
 class FrozenJsonList(Sequence[Any]):
@@ -205,6 +206,10 @@ class _JsonCopier:
             self.active_containers.remove(identity)
 
     def _enter_container(self, value: object, path: str) -> int:
+        if len(self.active_containers) >= MAX_JSON_NESTING_DEPTH:
+            raise ValueError(
+                f"{path} exceeds the maximum JSON nesting depth of {MAX_JSON_NESTING_DEPTH}"
+            )
         identity = id(value)
         if identity in self.active_containers:
             raise ValueError(f"{path} must not contain a reference cycle")

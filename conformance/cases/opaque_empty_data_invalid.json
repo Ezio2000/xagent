@@ -1,0 +1,19 @@
+{
+  "schema_version": "v0",
+  "name": "opaque_empty_data_invalid",
+  "kind": "validation",
+  "target": "message",
+  "value": {
+    "role": "user",
+    "parts": [
+      {
+        "type": "provider_extension",
+        "data": {},
+        "metadata": {}
+      }
+    ],
+    "metadata": {}
+  },
+  "expected_valid": false,
+  "expected_error_code": "schema_validation"
+}

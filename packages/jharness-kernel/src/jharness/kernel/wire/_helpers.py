@@ -7,7 +7,7 @@ from math import isfinite
 from typing import Any, TypeVar, cast
 
 from jharness.kernel.errors import ProtocolError
-from jharness.kernel.json_values import thaw_json_value
+from jharness.kernel.json_values import MAX_JSON_NESTING_DEPTH, thaw_json_value
 
 T = TypeVar("T")
 
@@ -20,7 +20,7 @@ def decode_document(value: object, label: str, decoder: Callable[[object], T]) -
         return decoder(value)
     except ProtocolError:
         raise
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, OverflowError, RecursionError, TypeError, ValueError) as exc:
         raise ProtocolError(f"invalid {label}: {exc}") from exc
 
 
@@ -80,7 +80,12 @@ def optional_integer(value: object, label: str, *, minimum: int | None = None) -
 def number(value: object, label: str, *, minimum: float | None = None) -> float:
     if not isinstance(value, int | float) or isinstance(value, bool):
         raise ProtocolError(f"{label} must be a number")
-    result = float(value)
+    if isinstance(value, int) and abs(value) > (2**53 - 1):
+        raise ProtocolError(f"{label} integer must be within the safe JSON number range")
+    try:
+        result = float(value)
+    except OverflowError as exc:
+        raise ProtocolError(f"{label} must be representable as a finite number") from exc
     if not isfinite(result):
         raise ProtocolError(f"{label} must be finite")
     if minimum is not None and result < minimum:
@@ -169,6 +174,10 @@ def _validate_json(value: object, label: str, active: set[int]) -> None:
 
 
 def _validate_container(value: object, label: str, active: set[int]) -> None:
+    if len(active) >= MAX_JSON_NESTING_DEPTH:
+        raise ProtocolError(
+            f"{label} exceeds the maximum JSON nesting depth of {MAX_JSON_NESTING_DEPTH}"
+        )
     identity = id(value)
     if identity in active:
         raise ProtocolError(f"{label} contains a cycle")

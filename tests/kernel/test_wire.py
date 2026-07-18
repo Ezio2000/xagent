@@ -28,7 +28,7 @@ from jharness.kernel.checkpoint import (
 )
 from jharness.kernel.context import RunContext
 from jharness.kernel.diagnostics import RunTrace, TraceEntry, TraceHeader
-from jharness.kernel.errors import ProtocolError
+from jharness.kernel.errors import ProtocolError, RequestError
 from jharness.kernel.events import Event, EventKind
 from jharness.kernel.limits import LimitReason
 from jharness.kernel.messages import ArtifactRef, ContentPart, ErrorInfo, Message, TaskRef, ToolCall
@@ -84,6 +84,7 @@ from jharness.kernel.wire import (
     decode_trace,
     encode_checkpoint,
     encode_content_part,
+    encode_context,
     encode_event,
     encode_fact,
     encode_message,
@@ -298,13 +299,15 @@ def test_run_request_round_trips_and_enforces_cross_fields() -> None:
 
     invalid_append = encode_run_request(ResumeRequest(_suspended(pending=True)))
     invalid_append["append_messages"] = [encode_message(Message.user("not allowed"))]
-    with pytest.raises(ProtocolError, match="planning continuation"):
+    with pytest.raises(RequestError, match="planning continuation") as planning_error:
         decode_run_request(invalid_append)
+    assert planning_error.value.code == "messages_require_planning"
 
     selector_mismatch = encode_run_request(ResumeRequest(suspended))
     selector_mismatch["selector"] = {"source": "other"}
-    with pytest.raises(ProtocolError, match="does not match"):
+    with pytest.raises(RequestError, match="does not match") as selector_error:
         decode_run_request(selector_mismatch)
+    assert selector_error.value.code == "suspension_mismatch"
 
     call = ToolCall("call-1", "lookup")
     with pytest.raises(ValueError, match="unresolved"):
@@ -691,6 +694,34 @@ def test_wire_boundary_rejects_versions_non_finite_values_and_cycles() -> None:
     cyclic["metadata"] = cyclic
     with pytest.raises(ProtocolError, match="cycle"):
         decode_message(cyclic)
+
+
+def test_wire_boundary_rejects_excessive_depth_and_unsafe_number_conversion() -> None:
+    nested: object = None
+    for _ in range(129):
+        nested = [nested]
+    message = encode_message(Message.user("hello"))
+    message["metadata"] = {"nested": nested}
+    with pytest.raises(ProtocolError, match="maximum JSON nesting depth"):
+        decode_message(message)
+
+    context = encode_context(_context())
+    context["started_at"] = 10**400
+    with pytest.raises(ProtocolError, match="safe JSON number range"):
+        decode_context(context)
+
+
+def test_opaque_data_presence_is_unambiguous() -> None:
+    opaque: dict[str, Any] = {
+        "type": "provider_extension",
+        "data": {},
+        "metadata": {},
+    }
+    with pytest.raises(ProtocolError, match="must not be empty when present"):
+        decode_content_part(opaque)
+
+    decoded = decode_content_part({"type": "provider_extension", "metadata": {}})
+    assert encode_content_part(decoded) == {"type": "provider_extension", "metadata": {}}
 
 
 def test_checkpoint_event_and_trace_cross_field_mismatches_are_rejected() -> None:

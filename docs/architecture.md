@@ -65,31 +65,15 @@ tooling and is excluded from all published distributions.
 
 ## Runtime and Invocation
 
-`Runtime` is an immutable configuration and port assembly. It exposes distinct
-methods because their legal inputs differ:
+`Runtime` is immutable configuration and port assembly. `start`, `continue_from`, and
+`resume` have distinct legal inputs and each creates one single-use `Invocation`.
+The invocation owns one execution; its authoritative result is the last committed
+`Checkpoint`.
 
-- `start(...)` creates and persists a new planning snapshot;
-- `continue_from(checkpoint)` recovers a nonterminal durable checkpoint whose
-  prior owner has relinquished execution;
-- `resume(checkpoint, ...)` acknowledges a suspension and persists its exact
-  saved continuation before work resumes.
-
-Each method returns one single-use `Invocation`. The invocation owns one engine
-execution, one invocation id, control delivery, and optional observation. Its
-result is the last successfully committed `Checkpoint`; state is available as
-`checkpoint.snapshot`. There is no result wrapper with a second status view.
-
-`Invocation.events()` and `Invocation.result()` never create separate runs. If
-event streaming is selected before execution starts, both APIs observe the same
-execution. If result-only mode starts first, the engine uses a null observation
-sink and a later event subscription is rejected. Awaiting the result more than
-once returns the same terminal value or error. An invocation cannot be restarted.
-
-Closing the event iterator requests cancellation of that invocation. It does
-not create a durable cancelled state. Pause, conversation insertion, and active
-tool cancellation are invocation-scoped control operations, not persisted
-command queues. They may be submitted before execution starts, but termination
-closes and drains the live channel; later submissions are ignored.
+Events, result waiting, and live controls observe that same execution rather than
+creating hidden runs or durable command queues. See [`event-stream.md`](event-stream.md)
+for observation semantics and [`contracts/v0/run-control.md`](../contracts/v0/run-control.md)
+for normative request and control behavior.
 
 ## Flat Lifecycle
 
@@ -180,26 +164,20 @@ Live events describe in-flight work and may be lossy. A committed event names
 the successfully stored checkpoint fact and a compact run view; it is never a
 persistence substitute. Event consumers are read-only.
 
-`jharness.kernel.diagnostics` constructs a trace from invocation events. A trace stores
-each entry once; `checkpoint_committed` entries carry the fact and compact after view.
-`verify_trace` checks ordering, event rules, and each durable change through the same
-pure verification rules used by runtime code. It does not claim to re-execute models or
-tools and does not implement a second lifecycle machine.
+Diagnostics compacts those events and verifies durable transitions without
+re-executing models or tools. See [`event-stream.md`](event-stream.md) and
+[`diagnostics.md`](diagnostics.md).
 
 ## Concurrency and Deadlines
 
-- One invocation opens one immutable tool catalog.
-- At most one task exists per selected batch member.
-- Active tools never exceed `RunLimits.max_tool_concurrency`.
-- Lossy deltas and progress use bounded queues; lifecycle and checkpoint events
-  remain lossless.
-- One monotonic work deadline covers model, catalog, approval, tool, history,
-  and ordinary repository awaits.
-- A separate fixed cleanup grace may only settle owned tasks and persist a
-  deadline terminal checkpoint.
-- Every async port must honor task cancellation and settle owned work before
-  cancellation escapes.
-- Kernel creates no hidden thread pool and leaves no detached work.
+One monotonic deadline bounds ordinary work, active tool concurrency is capped, and
+lossy observation queues are bounded. Async ports must honor cancellation and settle
+owned work; a non-compliant task may be reported as abandoned after the fixed cleanup
+grace. Cancelling an individual result waiter does not itself cancel the run.
+
+Normative deadline behavior lives in
+[`contracts/v0/run-control.md`](../contracts/v0/run-control.md); operational bounds and
+cleanup limits live in [`performance.md`](performance.md).
 
 ## Extension and Host Ownership
 

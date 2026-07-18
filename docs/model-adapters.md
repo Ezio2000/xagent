@@ -37,6 +37,19 @@ inject one client for a compatible event-loop lifecycle, reuse its connection po
 close it during host shutdown. When no client is injected, each request owns a
 short-lived client. Runtime never closes a host-owned client.
 
+The default transport policy bounds connect time at 10 seconds and every other HTTP
+phase at 60 seconds. A caller may replace that policy through the adapter `timeout`
+option; an explicit `timeout=None` disables only the HTTP phase timeout. The remaining
+`RunContext.deadline` still clamps every request and the runtime's absolute deadline
+still cancels the invocation. Omitting `timeout` is different from explicitly passing
+`None`.
+
+Streaming parsers accept only CR, LF, or CRLF as SSE line terminators and decode UTF-8
+strictly. A line is limited to 262,144 bytes and one event, including comments and all
+`data` fields, is limited to 1,048,576 bytes by default. Hosts may configure smaller
+positive limits. An over-limit or malformed stream raises the provider's structured
+model error and closes the response.
+
 Shared transport code owns only common mechanics:
 
 - client ownership and response lifetime;
@@ -56,6 +69,11 @@ response into a complete `ModelResponse`. A streaming call incrementally decodes
 provider chunks, awaits the ordered delta sink, and returns the same complete response
 type when the stream terminates.
 
+Provider transport, payload, iterator, and stream-protocol failures are normalized to
+the adapter's `ModelError`. A failure raised by the host-owned delta sink is outside the
+provider boundary: it propagates unchanged after the response is closed. This keeps
+host backpressure and observation failures distinguishable from provider failures.
+
 The adapter owns the only stream accumulator. It closes response bodies and settles
 emitter work before returning, failing, or propagating cancellation. Runtime events
 record model start and finish; provider deltas contain only incremental content,
@@ -68,6 +86,13 @@ invocation may no longer advertise the historical tool name.
 Adapters do not own retry loops. Hosts express retry and fallback by decorating the
 provider-neutral model boundary so attempt counts, budgets, cancellation, and
 observability remain explicit.
+
+Normalized HTTP errors preserve a raw `Retry-After` header in
+`ModelError.metadata["retry_after"]` when present; decorators may parse either delay
+seconds or an HTTP date. A semantic error delivered inside an HTTP-successful stream
+keeps the error payload's code and status instead of being rewritten as status 200.
+Provider overload codes, including Anthropic `overloaded_error`, are retryable even
+when the enclosing stream used a successful HTTP status.
 
 ## OpenAI Chat Completions
 
@@ -190,12 +215,3 @@ Wire-format branching belongs in codecs rather than the runtime-facing client fl
 
 This keeps kernel provider-neutral and puts endpoint differences in explicit profiles
 rather than scattered conditionals.
-
-## Testing
-
-Model adapter tests live under `tests/models`. They use mocked HTTP transports and cover
-message/content encoding, model options, tool choice, response formats, stream decoding,
-provider errors, cancellation, and profile switches without contacting a real endpoint.
-
-Deployment hosts own credential-gated smoke tests for the exact endpoint, model,
-profile, authentication, network, and account configuration they operate.

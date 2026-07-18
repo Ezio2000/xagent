@@ -29,6 +29,7 @@ from jharness.models.anthropic.messages_api.stream import AnthropicStreamDecoder
 from jharness.models.anthropic.profiles import AnthropicProfile
 
 _ADDITIONAL_RETRYABLE_STATUS_CODES = frozenset({529})
+_RETRYABLE_ERROR_CODES = frozenset({"overloaded_error"})
 _REQUEST_ID_HEADERS = ("request-id", "x-request-id", "x-ds-request-id")
 
 
@@ -37,6 +38,8 @@ class _AnthropicModelOptions(TypedDict, total=False):
     timeout: float | httpx.Timeout | None
     headers: Mapping[str, str] | None
     client: httpx.AsyncClient | None
+    max_sse_line_bytes: int
+    max_sse_event_bytes: int
 
 
 class AnthropicModel:
@@ -59,11 +62,13 @@ class AnthropicModel:
             constructor_name="AnthropicModel.__init__",
         )
         self.base_url = config.base_url
-        self.api_key = config.api_key
+        self._api_key = config.api_key
         self.model = config.model
         self.profile = config.profile
         self.codec = AnthropicCodec(model=config.model, profile=config.profile)
         self._timeout = config.timeout
+        self._max_sse_line_bytes = config.max_sse_line_bytes
+        self._max_sse_event_bytes = config.max_sse_event_bytes
         self._headers = dict(config.headers)
         self._client = config.client
         self._errors = ModelErrorPolicy(
@@ -72,6 +77,7 @@ class AnthropicModel:
             request_id_headers=_REQUEST_ID_HEADERS,
             error_code_keys=("type", "code"),
             additional_retryable_status_codes=_ADDITIONAL_RETRYABLE_STATUS_CODES,
+            retryable_error_codes=_RETRYABLE_ERROR_CODES,
             body_request_id_key="request_id",
         )
 
@@ -106,6 +112,7 @@ class AnthropicModel:
             return await invoke_sse_model(
                 client=self._client,
                 timeout=self._timeout,
+                context=context,
                 url=self._messages_url(),
                 payload=lambda: self.codec.encode_request(request, stream=True),
                 headers=self._request_headers,
@@ -114,10 +121,13 @@ class AnthropicModel:
                 emit_delta=emit_delta,
                 errors=self._errors,
                 incomplete_error="Anthropic stream ended before message_stop",
+                max_sse_line_bytes=self._max_sse_line_bytes,
+                max_sse_event_bytes=self._max_sse_event_bytes,
             )
         return await invoke_json_model(
             client=self._client,
             timeout=self._timeout,
+            context=context,
             url=self._messages_url(),
             payload=lambda: self.codec.encode_request(request, stream=False),
             headers=self._request_headers,
@@ -164,9 +174,9 @@ class AnthropicModel:
                 raise AnthropicError(f"{self.profile.name} does not support file ref inputs")
             _ensure_header_value(headers, "anthropic-beta", beta_header)
         if self.profile.auth_scheme == "bearer":
-            headers["Authorization"] = f"Bearer {self.api_key}"
+            headers["Authorization"] = f"Bearer {self._api_key}"
         else:
-            headers["x-api-key"] = self.api_key
+            headers["x-api-key"] = self._api_key
         return headers
 
 

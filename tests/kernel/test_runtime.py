@@ -28,6 +28,7 @@ from jharness.kernel import (
     ModelResponse,
     ModelUsage,
     Planning,
+    RequestError,
     RunContext,
     RunLimits,
     RunRepository,
@@ -280,8 +281,9 @@ async def test_waiting_result_suspends_and_exact_resume_completes() -> None:
     resumed = await runtime.resume(paused, selector=SuspensionSelector(wait_id="wait-1")).result()
     assert resumed.snapshot.status == "completed"
     assert resumed.snapshot.revision == 4
-    with pytest.raises(ValueError, match="mismatch"):
+    with pytest.raises(RequestError, match="does not match") as mismatch:
         runtime.resume(paused, selector=SuspensionSelector(wait_id="other"))
+    assert mismatch.value.code == "suspension_mismatch"
 
 
 async def test_pause_and_insert_interrupt_model_without_partial_commit() -> None:
@@ -351,6 +353,36 @@ class BlockingStartCommit(RunRepository):
             raise
 
 
+class CancellationIgnoringModel(Model):
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.cancellations = 0
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities()
+
+    async def invoke(
+        self,
+        request: ModelRequest,
+        context: RunContext,
+        *,
+        stream: bool,
+        emit_delta: DeltaSink | None,
+    ) -> ModelResponse:
+        del request, context, stream, emit_delta
+        try:
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.cancellations += 1
+        finally:
+            self.finished.set()
+        return final()
+
+
 async def test_start_commit_is_bounded_by_the_invocation_work_deadline() -> None:
     repository = BlockingStartCommit()
     model = ScriptModel([final()])
@@ -371,6 +403,30 @@ async def test_start_commit_is_bounded_by_the_invocation_work_deadline() -> None
     assert repository.attempts == 1
     assert repository.cancelled
     assert model.requests == []
+
+
+async def test_noncompliant_port_is_reported_after_bounded_cleanup() -> None:
+    model = CancellationIgnoringModel()
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    reports: list[Mapping[str, object]] = []
+    loop.set_exception_handler(lambda _loop, context: reports.append(context))
+    try:
+        checkpoint = (
+            await Runtime(
+                model=model,
+                limits=RunLimits(timeout_seconds=0.01),
+            )
+            .start((Message.user("go"),))
+            .result()
+        )
+        assert checkpoint.snapshot.status == "limited"
+        assert model.cancellations >= 1
+        assert any("abandoned a port task" in str(item.get("message")) for item in reports)
+    finally:
+        model.release.set()
+        await asyncio.wait_for(model.finished.wait(), timeout=1)
+        loop.set_exception_handler(previous_handler)
 
 
 async def test_repository_failure_preserves_last_checkpoint_and_stops_observation() -> None:

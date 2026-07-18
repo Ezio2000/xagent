@@ -34,6 +34,7 @@ from jharness.kernel.errors import (
     ModelErrorInfo,
     ProtocolError,
     RepositoryError,
+    RequestError,
     RevisionConflict,
     ToolError,
 )
@@ -41,6 +42,7 @@ from jharness.kernel.events import Event, EventKind
 from jharness.kernel.history import HistoryReducer, HistoryRewrite
 from jharness.kernel.invocation import Invocation
 from jharness.kernel.json_values import (
+    MAX_JSON_NESTING_DEPTH,
     JsonScalar,
     JsonValue,
     freeze_json_value,
@@ -102,6 +104,7 @@ from jharness.kernel.tools import (
 )
 
 __all__ = [
+    "MAX_JSON_NESTING_DEPTH",
     "ActiveState",
     "ApprovalAllow",
     "ApprovalDecision",
@@ -154,6 +157,7 @@ __all__ = [
     "Planning",
     "ProtocolError",
     "RepositoryError",
+    "RequestError",
     "ResponseFormat",
     "ResumedFact",
     "RevisionConflict",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from inspect import iscoroutinefunction
 from threading import Lock
@@ -10,10 +10,11 @@ from types import MappingProxyType
 from typing import Any, cast
 from uuid import uuid4
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validators
 from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.protocols import Validator
 from referencing import Registry
+from referencing.exceptions import Unresolvable
 from referencing.jsonschema import DRAFT202012, Schema, SchemaRegistry, SchemaResource
 
 from jharness.kernel import (
@@ -29,6 +30,23 @@ from jharness.kernel import (
     thaw_json_value,
 )
 from jharness.toolkit.tool import Tool
+
+
+def _is_lexical_integer(_checker: object, value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+_extend_validator = cast(
+    Callable[..., type[Draft202012Validator]],
+    validators.extend,  # pyright: ignore[reportUnknownMemberType]
+)
+StrictDraft202012Validator: type[Draft202012Validator] = _extend_validator(
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+        "integer",
+        _is_lexical_integer,
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +118,8 @@ class _Catalog:
             raise ToolError(
                 f"tool {call.name} arguments do not match input_schema: {exc.message}"
             ) from exc
+        except Unresolvable as exc:
+            raise ToolError(f"tool {call.name} input_schema reference cannot be resolved") from exc
         return _Binding(call, entry)
 
 
@@ -122,6 +142,10 @@ class _Binding:
                 raise ToolError(
                     f"tool {self.call.name} structured_content does not match "
                     f"output_schema: {exc.message}"
+                ) from exc
+            except Unresolvable as exc:
+                raise ToolError(
+                    f"tool {self.call.name} output_schema reference cannot be resolved"
                 ) from exc
         return result
 
@@ -150,7 +174,7 @@ def _compile_schema(
             resolver.lookup(reference)
     except Exception as exc:
         raise ValueError(f"{label} contains an unresolvable reference") from exc
-    return Draft202012Validator(plain, registry=registry)
+    return StrictDraft202012Validator(plain, registry=registry)
 
 
 def _ensure_result(value: object) -> ToolResult:
@@ -171,9 +195,10 @@ def _validate_tool(value: object) -> None:
 def _references(value: object) -> Iterator[str]:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        reference = mapping.get("$ref")
-        if isinstance(reference, str):
-            yield reference
+        for keyword in ("$ref", "$dynamicRef"):
+            reference = mapping.get(keyword)
+            if isinstance(reference, str):
+                yield reference
         for item in mapping.values():
             yield from _references(item)
     elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):

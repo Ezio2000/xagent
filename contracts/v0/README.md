@@ -92,6 +92,12 @@ schema is unique and matches its file name.
 - Portable tools expose one invoke operation. Portable models expose one invoke
   operation and optionally emit four delta variants.
 - Artifact data and tool outcomes each have one authoritative representation.
+- Portable JSON has a maximum container nesting depth of 128. Integer schema fields
+  require integer tokens; a floating representation such as `1.0` is rejected.
+- An omitted opaque-part `data` member is canonical empty data. A present `data`
+  object is non-empty.
+- Trace decoding is structural. Consumers that rely on trace evidence decode and then
+  run deterministic trace verification.
 
 ## Schema and Semantic Validation
 
@@ -114,6 +120,3 @@ additionally enforce semantic rules such as:
 - appended resume messages only for `resume_to=Planning`;
 - monotonic metrics and revisions;
 - trace entry sequence, fact transition, and final checkpoint-id consistency.
-
-Portable behavior changes update schemas, normative documents, and conformance
-cases together.

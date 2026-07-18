@@ -5,6 +5,7 @@ description = "OpenAI, Anthropic, and DeepSeek model adapters for JHarness"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "JHarness contributors" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -34,4 +35,4 @@ build-backend = "hatchling.build"
 packages = ["src/jharness"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/jharness/models", "README.md", "pyproject.toml"]
+include = ["src/jharness/models", "LICENSE", "README.md", "pyproject.toml"]

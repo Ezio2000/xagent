@@ -26,6 +26,7 @@ from jharness.kernel import (
     Invocation,
     ModelRequest,
     RepositoryError,
+    RequestError,
     RevisionConflict,
     RunLimits,
     RunSnapshot,
@@ -528,9 +529,6 @@ def _optional_string(value: object, label: str) -> str | None:
 
 
 def _request_error_code(exc: Exception) -> str:
-    message = str(exc)
-    if "suspension_mismatch" in message:
-        return "suspension_mismatch"
-    if "messages_require_planning" in message or "messages require a planning" in message:
-        return "messages_require_planning"
-    return "schema_validation"
+    if not isinstance(exc, RequestError):
+        raise TypeError(f"unexpected request exception: {type(exc).__name__}") from exc
+    return exc.code

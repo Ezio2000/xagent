@@ -33,3 +33,18 @@ JHarness exposes capabilities; it is not an operating-system sandbox. Hosts rema
 responsible for least-privilege credentials, authorization, approval policy, workspace
 boundaries, process and network isolation, durable queue ownership, fencing, secret
 management, and audit retention appropriate to their threat model.
+
+`BashTool` does not inherit the complete host environment by default. It copies only a
+small platform allowlist needed to locate programs, select locale, and use temporary
+directories, then applies the explicit `environment` overlay. Enabling
+`inherit_environment=True` exposes every host variable, including credentials and shell
+startup controls, and therefore requires the same review as passing a secret-bearing
+credential set to an untrusted subprocess.
+
+Filesystem path containment is a validation boundary, not a mount namespace. Hosts
+that accept writes from mutually distrusting principals must provide a dedicated
+filesystem or sandbox and must control hard-link creation. Process-tree cleanup is
+best-effort within operating-system primitives: POSIX uses a new session and process
+group, while Windows uses a Job Object with a tree-aware fallback. Containers must
+provide signal and reaping behavior suitable for child processes, especially when the
+application is PID 1.

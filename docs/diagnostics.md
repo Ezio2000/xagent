@@ -44,19 +44,10 @@ persistence.
 verification = verify_trace(trace)
 ```
 
-Verification checks:
-
-- event sequence and lifecycle ordering;
-- run/invocation identity consistency;
-- live versus durable event rules;
-- checkpoint ids are unique within the trace;
-- monotonically consecutive checkpoint revisions;
-- each `(before_view, fact, after_view)` through kernel's pure `verify_change`
-  rule;
-- terminal and suspension consistency;
-- metric, usage, pending-call, and history deltas;
-- model-order tool batch facts and atomicity;
-- deadline and cancellation cleanup constraints.
+Verification checks identity and event ordering, then validates every durable fact,
+revision, compact view, metric delta, and terminal or suspension boundary through the
+same pure transition rules used by runtime code. The normative checklist is in
+[`contracts/v0/run-trace.md`](../contracts/v0/run-trace.md#verification).
 
 A resume trace normally begins its durable entries with `resumed`. The sole
 exception is an inherited deadline that was already expired at invocation
@@ -69,12 +60,16 @@ Diagnostics does not maintain another lifecycle table.
 error. It never calls a model, tool, approval policy, history reducer, or
 repository and performs no I/O.
 
+`decode_trace` and `verify_trace` are intentionally separate trust boundaries.
+Decoding checks the portable document shape and constructs domain values; it does not
+establish lifecycle or transition correctness. Persisted or remote input used as
+evidence must follow `verify_trace(decode_trace(document))`.
+
 ## Scope
 
 A trace proves internal ordering and durable transition consistency. It cannot
 re-execute external effects or prove that a provider returned the same bytes.
 The API promises only the evidence it can verify.
 
-Portable trace schema and invalid-trace conformance cases cover every durable
-fact kind and event family. Diagnostic tests also require trace growth to remain
-linear in the number of entries.
+Portable trace schema and conformance cases cover every durable fact kind and event
+family.

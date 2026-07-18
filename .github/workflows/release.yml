@@ -130,13 +130,25 @@ jobs:
           retention-days: 30
 
   publish-testpypi:
-    name: Publish all distributions to TestPyPI
+    name: Publish ${{ matrix.project }} to TestPyPI
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: jharness-kernel
+            artifact_prefix: jharness_kernel
+          - project: jharness-models
+            artifact_prefix: jharness_models
+          - project: jharness-toolkit
+            artifact_prefix: jharness_toolkit
+          - project: jharness-tools
+            artifact_prefix: jharness_tools
     environment:
-      name: testpypi-jharness
-      url: https://test.pypi.org/p/jharness-kernel
+      name: testpypi-${{ matrix.project }}
+      url: https://test.pypi.org/p/${{ matrix.project }}
     permissions:
       id-token: write
 
@@ -152,8 +164,14 @@ jobs:
         run: |
           sha256sum --check dist/SHA256SUMS
           mkdir publish
-          cp dist/*.whl dist/*.tar.gz publish/
-          test "$(find publish -maxdepth 1 -type f | wc -l)" -eq 8
+          shopt -s nullglob
+          package_files=(
+            dist/${{ matrix.artifact_prefix }}-*.whl
+            dist/${{ matrix.artifact_prefix }}-*.tar.gz
+          )
+          test "${#package_files[@]}" -eq 2
+          cp "${package_files[@]}" publish/
+          test "$(find publish -maxdepth 1 -type f | wc -l)" -eq 2
 
       - name: Publish with trusted publishing
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
@@ -187,14 +205,26 @@ jobs:
         run: python scripts/verify_testpypi.py "${RELEASE_TAG#v}"
 
   publish-pypi:
-    name: Publish all distributions to PyPI
+    name: Publish ${{ matrix.project }} to PyPI
     needs: verify-testpypi
     if: always() && needs.verify-testpypi.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: jharness-kernel
+            artifact_prefix: jharness_kernel
+          - project: jharness-models
+            artifact_prefix: jharness_models
+          - project: jharness-toolkit
+            artifact_prefix: jharness_toolkit
+          - project: jharness-tools
+            artifact_prefix: jharness_tools
     environment:
-      name: pypi-jharness
-      url: https://pypi.org/p/jharness-kernel
+      name: pypi-${{ matrix.project }}
+      url: https://pypi.org/p/${{ matrix.project }}
     permissions:
       id-token: write
 
@@ -210,8 +240,14 @@ jobs:
         run: |
           sha256sum --check dist/SHA256SUMS
           mkdir publish
-          cp dist/*.whl dist/*.tar.gz publish/
-          test "$(find publish -maxdepth 1 -type f | wc -l)" -eq 8
+          shopt -s nullglob
+          package_files=(
+            dist/${{ matrix.artifact_prefix }}-*.whl
+            dist/${{ matrix.artifact_prefix }}-*.tar.gz
+          )
+          test "${#package_files[@]}" -eq 2
+          cp "${package_files[@]}" publish/
+          test "$(find publish -maxdepth 1 -type f | wc -l)" -eq 2
 
       - name: Publish with trusted publishing
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0

@@ -233,6 +233,11 @@ def test_anthropic_media_and_tool_choice_codec() -> None:
     )
 
     assert encode_user_content_part(image, profile)["source"]["type"] == "base64"
+    default_media = encode_user_content_part(
+        ContentPart("image", uri="data:;base64,aGVsbG8="),
+        profile,
+    )
+    assert default_media["source"]["media_type"] == "application/octet-stream"
     assert encode_user_content_part(pdf, profile)["source"]["media_type"] == "application/pdf"
     assert encode_user_content_part(text, profile)["source"]["data"] == "hello"
     assert encode_user_content_part(ContentPart.artifact_part(ArtifactRef("file-1")), profile)[

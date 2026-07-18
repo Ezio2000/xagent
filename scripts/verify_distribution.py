@@ -28,6 +28,7 @@ DEPENDENCIES: dict[str, set[str]] = {
     "jharness-models": {"jharness-kernel", "httpx"},
     "jharness-tools": {"jharness-kernel", "regex"},
 }
+ROOT_LICENSE = (Path(__file__).resolve().parents[1] / "LICENSE").read_bytes()
 
 
 @dataclass(frozen=True)
@@ -93,11 +94,14 @@ def _verify_wheel(path: Path) -> Wheel:
             f"{info}/METADATA",
             f"{info}/RECORD",
             f"{info}/WHEEL",
+            f"{info}/licenses/LICENSE",
         }
         if missing := sorted(required - names):
             raise ValueError(f"{distribution} wheel is missing files: {missing}")
         if "jharness/__init__.py" in names:
             raise ValueError(f"{distribution} must not own jharness/__init__.py")
+        if archive.read(f"{info}/licenses/LICENSE") != ROOT_LICENSE:
+            raise ValueError(f"{distribution} wheel LICENSE differs from the repository")
         allowed = (f"jharness/{component}/", f"{info}/")
         if unexpected := sorted(name for name in names if not name.startswith(allowed)):
             raise ValueError(f"{distribution} wheel contains unexpected files: {unexpected[:5]}")
@@ -129,6 +133,7 @@ def _verify_sdist(path: Path, *, distribution: str, version: str) -> None:
             raise ValueError(f"unexpected {distribution} sdist roots: {roots}")
         component = COMPONENTS[distribution]
         required = {
+            PurePosixPath(expected_root, "LICENSE"),
             PurePosixPath(expected_root, "pyproject.toml"),
             PurePosixPath(expected_root, "README.md"),
             PurePosixPath(expected_root, "src", "jharness", component, "__init__.py"),
@@ -136,6 +141,9 @@ def _verify_sdist(path: Path, *, distribution: str, version: str) -> None:
         }
         if missing := sorted(str(name) for name in required - names):
             raise ValueError(f"{distribution} sdist is missing files: {missing}")
+        license_file = archive.extractfile(f"{expected_root}/LICENSE")
+        if license_file is None or license_file.read() != ROOT_LICENSE:
+            raise ValueError(f"{distribution} sdist LICENSE differs from the repository")
         project_file = archive.extractfile(f"{expected_root}/pyproject.toml")
         if project_file is None:
             raise ValueError(f"{distribution} sdist has no regular pyproject.toml")

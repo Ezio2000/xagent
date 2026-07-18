@@ -20,6 +20,7 @@ from jharness.kernel import (
     ModelCapabilities,
     ModelRequest,
     ModelResponse,
+    RequestError,
     RunContext,
     Runtime,
     Suspended,
@@ -341,11 +342,12 @@ def test_runtime_rejects_wrong_selector_and_response_request() -> None:
     paused = asyncio.run(runtime.start((Message.user("Ask me"),)).result())
     request = extract_question_request(paused)
 
-    with pytest.raises(ValueError, match="suspension_mismatch"):
+    with pytest.raises(RequestError) as mismatch:
         runtime.resume(
             paused,
             selector=SuspensionSelector(wait_id="ask:not-this-request"),
         )
+    assert mismatch.value.code == "suspension_mismatch"
 
     wrong_response = QuestionResponse.cancelled(
         "ask:not-this-request",

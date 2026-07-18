@@ -162,6 +162,8 @@ def test_bash_public_contract_and_exact_schemas(tmp_path: Path) -> None:
     assert tool.spec.risk.destructive is True
     assert tool.spec.risk.requires_approval is True
     assert tool.spec.risk.extra == {}
+    assert tool.inherit_environment is False
+    assert tool.environment["JHARNESS_BASH_CONTRACT"] == "configured"
     assert thaw_json_value(tool.spec.input_schema) == {
         "type": "object",
         "required": ["command"],
@@ -242,6 +244,15 @@ def test_bash_constructor_validates_environment(
 ) -> None:
     with pytest.raises(error, match="environment"):
         tools.BashTool(tmp_path, bash_path=_bash_path(), environment=cast(Any, environment))
+
+
+def test_bash_constructor_validates_environment_inheritance_flag(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="inherit_environment"):
+        tools.BashTool(
+            tmp_path,
+            bash_path=_bash_path(),
+            inherit_environment=cast(Any, 1),
+        )
 
 
 def test_bash_registry_rejects_invalid_model_arguments(tmp_path: Path) -> None:
@@ -406,6 +417,36 @@ def test_bash_receives_host_configured_environment_without_ambient_secrets(
 
     assert result["exit_code"] == 0
     assert result["stdout"] == "visible|unset"
+
+
+def test_bash_environment_inheritance_requires_explicit_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JHARNESS_BASH_AMBIENT_SECRET", "host-secret")
+    minimal = tools.BashTool(tmp_path, bash_path=_bash_path())
+    inherited = tools.BashTool(
+        tmp_path,
+        bash_path=_bash_path(),
+        inherit_environment=True,
+    )
+
+    assert minimal.inherit_environment is False
+    assert "JHARNESS_BASH_AMBIENT_SECRET" not in minimal.environment
+    assert inherited.inherit_environment is True
+    assert inherited.environment["JHARNESS_BASH_AMBIENT_SECRET"] == "host-secret"
+
+    _, minimal_result = _success(
+        _invoke(
+            minimal,
+            {"command": "printf '%s' \"${JHARNESS_BASH_AMBIENT_SECRET-unset}\""},
+        )
+    )
+    _, inherited_result = _success(
+        _invoke(inherited, {"command": "printf '%s' \"$JHARNESS_BASH_AMBIENT_SECRET\""})
+    )
+    assert minimal_result["stdout"] == "unset"
+    assert inherited_result["stdout"] == "host-secret"
 
 
 def test_bash_bounds_and_drains_both_output_pipes(tmp_path: Path) -> None:

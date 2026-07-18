@@ -23,6 +23,7 @@ from jharness.tools.filesystem._common import (
     Workspace,
     check_cancelled,
     opened_file_path,
+    reject_reserved_relative_path,
     windows_error,
     windows_final_path,
     windows_kernel32,
@@ -118,6 +119,7 @@ def resolve_mutation_target(workspace: Workspace, value: str) -> MutationTarget:
     relative = absolute.relative_to(workspace.root)
     if not relative.parts:
         raise FilesystemFailure("not_a_file", f"Path is not a file: {value}")
+    reject_reserved_relative_path(relative, value)
     return MutationTarget(workspace, absolute, relative)
 
 

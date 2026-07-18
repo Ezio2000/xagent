@@ -6,16 +6,22 @@ four wheels and four source distributions built once and published together.
 
 ## One-Time Repository Setup
 
-For each of the four projects, configure a Pending Trusted Publisher on TestPyPI and
-PyPI for repository `Ezio2000/jharness`, workflow `release.yml`, and the matching
-GitHub environment:
+For each of the four projects, configure a Trusted Publisher on TestPyPI and PyPI for
+repository `Ezio2000/jharness` and workflow `release.yml`. Use a dedicated GitHub
+environment for each project:
 
-- TestPyPI: `testpypi-jharness`
-- PyPI: `pypi-jharness`
+| Project | TestPyPI environment | PyPI environment |
+| --- | --- | --- |
+| `jharness-kernel` | `testpypi-jharness-kernel` | `pypi-jharness-kernel` |
+| `jharness-models` | `testpypi-jharness-models` | `pypi-jharness-models` |
+| `jharness-toolkit` | `testpypi-jharness-toolkit` | `pypi-jharness-toolkit` |
+| `jharness-tools` | `testpypi-jharness-tools` | `pypi-jharness-tools` |
 
-The same environment may authorize all four project publishers. Protect `main` and
-`v*` tags, require CI, pin allowed Actions, and enable GitHub dependency and secret
-scanning. Publication uses OIDC; do not store long-lived package-index credentials.
+The distinct environments allow all not-yet-created projects to register pending
+publishers at the same time and scope each OIDC credential to one distribution.
+Protect `main` and `v*` tags, require CI, pin allowed Actions, and enable GitHub
+dependency and secret scanning. Publication uses OIDC; do not store long-lived
+package-index credentials.
 
 ## Prepare a Release
 
@@ -47,15 +53,21 @@ Create and push the reviewed `vX.Y.Z` tag. The release workflow:
 1. verifies all four versions, dependency pins, tag, changelog, and lock file;
 2. reruns the complete quality gate;
 3. builds all eight archives exactly once;
-4. verifies archive ownership, non-overlap, metadata, dependencies, and checksums;
+4. verifies archive ownership, non-overlap, metadata, dependencies, checksums, and an
+   exact copy of the repository `LICENSE` in every wheel and source distribution;
 5. installs all local wheels together in isolation;
-6. publishes the same eight archives to TestPyPI;
+6. publishes the same eight archives to TestPyPI in four parallel, project-scoped jobs;
 7. installs all four exact TestPyPI versions and runs smoke examples;
-8. publishes the same files to PyPI and verifies each component plus the full set;
+8. publishes the same files to PyPI in four parallel, project-scoped jobs and verifies
+   each component plus the full set;
 9. creates one GitHub Release containing all archives and `SHA256SUMS`.
 
 The workflow must never rebuild between TestPyPI, PyPI, and GitHub Release. Publishing
 only a subset is a failed release, even if an individual PyPI upload succeeded.
+TestPyPI verification retries only the exact-version installation/import check while
+the index propagates new files. Once imports succeed, each offline smoke example runs
+once; a smoke failure is a release defect and must fail immediately rather than being
+hidden by propagation retries.
 
 ## Failure and Recovery
 

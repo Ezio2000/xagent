@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, dataclass, field, replace
@@ -354,7 +355,7 @@ def test_agent_public_api_backend_protocol_specs_and_schemas() -> None:
     assert agent.spec.execution.idempotent is False
     assert agent.spec.risk.extra == {"delegates_child_run": True}
     assert agent.spec.risk.filesystem is None
-    assert agent.spec.risk.requires_approval is None
+    assert agent.spec.risk.requires_approval is True
 
     assert get.spec.execution.concurrency == "parallel"
     assert get.spec.execution.read_only is True
@@ -1374,6 +1375,7 @@ def test_agent_backend_errors_are_mapped_and_null_output_passes_registry(operati
 @pytest.mark.parametrize("operation", ["start", "get", "wait", "cancel"])
 def test_unexpected_backend_exceptions_are_normalized_without_leaking_details(
     operation: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     backend = _FakeBackend()
     backend.crash(operation)
@@ -1392,9 +1394,11 @@ def test_unexpected_backend_exceptions_are_normalized_without_leaking_details(
     else:
         selected = AgentCancelTool(backend)
         arguments = {"agent_id": "agent-1"}
-    outcome = _failure(_invoke(selected, arguments), "agent_backend_error")
+    with caplog.at_level(logging.ERROR, logger="jharness.tools.agent.tools"):
+        outcome = _failure(_invoke(selected, arguments), "agent_backend_error")
     assert outcome.error.message == ("The Host Agent backend failed while processing the request.")
     assert "sensitive" not in outcome.error.message
+    assert f"sensitive {operation} backend detail" in caplog.text
 
 
 def test_tool_instances_share_host_backend_state_ownership_and_idempotency() -> None:

@@ -52,6 +52,10 @@ verifies:
 The operation intentionally omits enough payload that it cannot recreate a
 recovery checkpoint.
 
+Wire decoding validates structure and constructs the trace value; it does not perform
+this deterministic verification. A consumer accepting an untrusted portable trace as
+evidence must call `verify_trace(decode_trace(document))`.
+
 ## Payload Policy
 
 Traces contain ids, counts, kinds, metadata-key summaries, compact facts, and

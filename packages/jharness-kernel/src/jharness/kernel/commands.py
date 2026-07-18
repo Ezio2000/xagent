@@ -15,6 +15,7 @@ from jharness.kernel._validation import (
 )
 from jharness.kernel.checkpoint import Checkpoint
 from jharness.kernel.context import RunContext
+from jharness.kernel.errors import RequestError
 from jharness.kernel.messages import Message
 from jharness.kernel.state import Planning, Suspended, ToolsPending
 
@@ -102,10 +103,16 @@ class ResumeRequest:
         if self.selector is not None:
             expect_instance(self.selector, SuspensionSelector, "resume selector")
             if not self.selector.matches(state):
-                raise ValueError("suspension_mismatch: selector does not match checkpoint")
+                raise RequestError(
+                    "suspension_mismatch",
+                    "resume selector does not match the suspended checkpoint",
+                )
         messages = expect_instance_tuple(self.append_messages, Message, "resume append_messages")
         if messages and isinstance(state.resume_to, ToolsPending):
-            raise ValueError("resume messages require a planning continuation")
+            raise RequestError(
+                "messages_require_planning",
+                "resume messages require a planning continuation",
+            )
         if any(message.role not in {"system", "user", "external"} for message in messages):
             raise ValueError("resume messages must use a regular role")
         object.__setattr__(self, "append_messages", messages)

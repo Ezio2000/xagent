@@ -74,6 +74,21 @@ def _verify_public_imports(project: Path) -> None:
     )
 
 
+def _await_public_imports(project: Path, *, attempts: int, delay: float) -> bool:
+    """Retry only the index-propagation-sensitive install and import boundary."""
+
+    for attempt in range(1, attempts + 1):
+        try:
+            _verify_public_imports(project)
+        except subprocess.CalledProcessError:
+            if attempt == attempts:
+                return False
+            time.sleep(delay)
+        else:
+            return True
+    return False
+
+
 def main() -> int:
     """Retry index propagation, then execute offline public smoke examples."""
 
@@ -92,17 +107,14 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="jharness-testpypi-") as temporary:
         project = Path(temporary)
         (project / "pyproject.toml").write_text(document, encoding="utf-8")
-        for attempt in range(1, args.attempts + 1):
-            try:
-                _verify_public_imports(project)
-                _run_example(project, args.examples / "basic_tool_loop.py")
-            except subprocess.CalledProcessError:
-                if attempt == args.attempts:
-                    return 1
-                time.sleep(args.delay)
-                continue
+        if not _await_public_imports(project, attempts=args.attempts, delay=args.delay):
+            return 1
+        try:
+            _run_example(project, args.examples / "basic_tool_loop.py")
             _run_example(project, args.examples / "pause_resume_trace.py")
-            return 0
+        except subprocess.CalledProcessError:
+            return 1
+        return 0
     return 1
 
 

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urljoin
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validators
 from jsonschema.protocols import Validator
 from referencing import Registry
 from referencing.jsonschema import DRAFT202012, Schema, SchemaRegistry, SchemaResource
@@ -18,6 +18,23 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts" / "v0"
 CONFORMANCE = ROOT / "conformance"
 SCHEMA_BASE = "https://jharness.invalid/spec/v0"
+
+
+def _is_lexical_integer(_checker: object, value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+_extend_validator = cast(
+    Callable[..., type[Draft202012Validator]],
+    validators.extend,  # pyright: ignore[reportUnknownMemberType]
+)
+StrictDraft202012Validator: type[Draft202012Validator] = _extend_validator(
+    Draft202012Validator,
+    type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+        "integer",
+        _is_lexical_integer,
+    ),
+)
 
 
 def _object(path: Path) -> dict[str, Any]:
@@ -30,9 +47,10 @@ def _object(path: Path) -> dict[str, Any]:
 def _references(value: object) -> Iterator[str]:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
-        reference = mapping.get("$ref")
-        if isinstance(reference, str):
-            yield reference
+        for keyword in ("$ref", "$dynamicRef"):
+            reference = mapping.get(keyword)
+            if isinstance(reference, str):
+                yield reference
         for item in mapping.values():
             yield from _references(item)
     elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
@@ -74,7 +92,7 @@ def _validator(
     registry: SchemaRegistry,
     schema_id: str,
 ) -> Validator:
-    return Draft202012Validator(schemas[schema_id], registry=registry)
+    return StrictDraft202012Validator(schemas[schema_id], registry=registry)
 
 
 def _validate_documents(schemas: Mapping[str, Schema], registry: SchemaRegistry) -> int:

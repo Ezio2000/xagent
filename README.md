@@ -90,7 +90,9 @@ runtime = Runtime(model=model, tools=registry)
 
 `EditTool`, `WriteTool`, and `BashTool` expose destructive capabilities. Hosts must
 apply approval, least-privilege credentials, and operating-system isolation. Bash
-requires a `bash` executable on `PATH`; child-agent tools require a host-owned
+requires a `bash` executable on `PATH` and starts with a minimal allowlisted process
+environment. Passing `inherit_environment=True` is an explicit decision to expose the
+complete host environment to commands. Child-agent tools require a host-owned
 `AgentBackend`.
 
 ## Durable State
@@ -115,11 +117,9 @@ The persistence family is documented in [`contracts/v0`](contracts/v0/README.md)
 | Installable projects | [`packages`](packages/) |
 | Tests | [`tests`](tests/) |
 | Examples | [`examples`](examples/) |
+| Documentation guide | [`docs`](docs/README.md) |
 | Contracts | [`contracts/v0`](contracts/v0/README.md) |
 | Conformance | [`conformance`](conformance/README.md) |
-| Architecture | [`docs/architecture.md`](docs/architecture.md) |
-| Package boundaries | [`docs/python-package-boundaries.md`](docs/python-package-boundaries.md) |
-| Model adapters | [`docs/model-adapters.md`](docs/model-adapters.md) |
 | Release process | [`docs/releasing.md`](docs/releasing.md) |
 
 ## Development

@@ -36,6 +36,8 @@ class _OpenAIModelOptions(TypedDict, total=False):
     timeout: float | httpx.Timeout | None
     headers: Mapping[str, str] | None
     client: httpx.AsyncClient | None
+    max_sse_line_bytes: int
+    max_sse_event_bytes: int
 
 
 class OpenAIChatCompletionsModel:
@@ -58,11 +60,13 @@ class OpenAIChatCompletionsModel:
             constructor_name="OpenAIChatCompletionsModel.__init__",
         )
         self.base_url = config.base_url
-        self.api_key = config.api_key
+        self._api_key = config.api_key
         self.model = config.model
         self.profile = config.profile
         self.codec = OpenAIChatCompletionsCodec(model=config.model, profile=config.profile)
         self._timeout = config.timeout
+        self._max_sse_line_bytes = config.max_sse_line_bytes
+        self._max_sse_event_bytes = config.max_sse_event_bytes
         self._headers = dict(config.headers)
         self._client = config.client
         self._errors = ModelErrorPolicy(
@@ -105,6 +109,7 @@ class OpenAIChatCompletionsModel:
             return await invoke_sse_model(
                 client=self._client,
                 timeout=self._timeout,
+                context=context,
                 url=self._chat_completions_url(),
                 payload=lambda: self.codec.encode_request(request, stream=True),
                 headers=lambda _payload: self._request_headers(),
@@ -113,10 +118,13 @@ class OpenAIChatCompletionsModel:
                 emit_delta=emit_delta,
                 errors=self._errors,
                 incomplete_error="chat completion stream ended before [DONE]",
+                max_sse_line_bytes=self._max_sse_line_bytes,
+                max_sse_event_bytes=self._max_sse_event_bytes,
             )
         return await invoke_json_model(
             client=self._client,
             timeout=self._timeout,
+            context=context,
             url=self._chat_completions_url(),
             payload=lambda: self.codec.encode_request(request, stream=False),
             headers=lambda _payload: self._request_headers(),
@@ -149,7 +157,7 @@ class OpenAIChatCompletionsModel:
 
     def _request_headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             **self._headers,
         }

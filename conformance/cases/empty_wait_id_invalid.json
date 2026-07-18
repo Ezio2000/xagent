@@ -1,0 +1,18 @@
+{
+  "schema_version": "v0",
+  "name": "empty_wait_id_invalid",
+  "kind": "validation",
+  "target": "state",
+  "value": {
+    "kind": "suspended",
+    "resume_to": { "kind": "planning" },
+    "suspension": {
+      "reason": "waiting",
+      "source": "tool",
+      "wait_id": "",
+      "metadata": {}
+    }
+  },
+  "expected_valid": false,
+  "expected_error_code": "schema_validation"
+}

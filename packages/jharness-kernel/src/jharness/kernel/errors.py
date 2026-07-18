@@ -27,6 +27,22 @@ class KernelError(Exception):
 class ProtocolError(KernelError):
     """A value or extension violated a kernel protocol invariant."""
 
+    __slots__ = ("code",)
+
+    def __init__(self, message: str, *, code: str = "protocol_error") -> None:
+        super().__init__(expect_non_empty_str(message, "protocol error message"))
+        self.code = expect_non_empty_str(code, "protocol error code")
+
+
+class RequestError(KernelError):
+    """A runtime request violated a stable request-level invariant."""
+
+    __slots__ = ("code",)
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(expect_non_empty_str(message, "request error message"))
+        self.code = expect_non_empty_str(code, "request error code")
+
 
 class ToolError(KernelError):
     """A tool catalog, binding, or progress boundary failed."""

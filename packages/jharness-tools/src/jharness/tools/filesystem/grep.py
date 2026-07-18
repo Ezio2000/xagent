@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -64,6 +65,7 @@ _MAX_PATTERN_COMPONENTS = 256
 _MAX_SEARCH_SECONDS = 10.0
 _MAX_SCANNED_ENTRIES = 100_000
 _MAX_TOTAL_BYTES = 64 * 1024 * 1024
+_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 
 class _SearchExpression(Protocol):
@@ -86,6 +88,7 @@ class GrepTool:
     max_search_seconds: float
     max_scanned_entries: int
     max_total_bytes: int
+    max_output_bytes: int
     excluded_directory_names: frozenset[str]
     spec: ToolSpec = field(repr=False)
 
@@ -104,6 +107,7 @@ class GrepTool:
         max_search_seconds: float = _MAX_SEARCH_SECONDS,
         max_scanned_entries: int = _MAX_SCANNED_ENTRIES,
         max_total_bytes: int = _MAX_TOTAL_BYTES,
+        max_output_bytes: int = _MAX_OUTPUT_BYTES,
         excluded_directory_names: Iterable[str] = DEFAULT_EXCLUDED_DIRECTORY_NAMES,
     ) -> None:
         default_limit = positive_int(default_limit, "default_limit")
@@ -117,6 +121,7 @@ class GrepTool:
         max_search_seconds = positive_float(max_search_seconds, "max_search_seconds")
         max_scanned_entries = positive_int(max_scanned_entries, "max_scanned_entries")
         max_total_bytes = positive_int(max_total_bytes, "max_total_bytes")
+        max_output_bytes = positive_int(max_output_bytes, "max_output_bytes")
         if default_limit > max_limit:
             raise ValueError("default_limit cannot exceed max_limit")
         object.__setattr__(self, "workspace", Workspace.create(root))
@@ -131,6 +136,7 @@ class GrepTool:
         object.__setattr__(self, "max_search_seconds", max_search_seconds)
         object.__setattr__(self, "max_scanned_entries", max_scanned_entries)
         object.__setattr__(self, "max_total_bytes", max_total_bytes)
+        object.__setattr__(self, "max_output_bytes", max_output_bytes)
         object.__setattr__(
             self,
             "excluded_directory_names",
@@ -242,8 +248,46 @@ class GrepTool:
             else:
                 entries.append(display_path)
 
-        structured = self._structured(mode, entries, truncated, files_searched, files_skipped)
-        return success(self._text(mode, entries), structured)
+        return self._bounded_result(
+            mode,
+            entries,
+            truncated,
+            files_searched,
+            files_skipped,
+        )
+
+    def _bounded_result(
+        self,
+        mode: OutputMode,
+        entries: list[GrepEntry],
+        truncated: bool,
+        files_searched: int,
+        files_skipped: int,
+    ) -> ToolResult:
+        while True:
+            structured = self._structured(
+                mode,
+                entries,
+                truncated,
+                files_searched,
+                files_skipped,
+            )
+            text = self._text(mode, entries)
+            structured_json = json.dumps(
+                structured,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            output_bytes = len(text.encode("utf-8")) + len(structured_json.encode("utf-8"))
+            if output_bytes <= self.max_output_bytes:
+                return success(text, structured)
+            if not entries:
+                raise FilesystemFailure(
+                    "output_budget_exceeded",
+                    "Grep output metadata exceeds the configured byte limit.",
+                )
+            entries.pop()
+            truncated = True
 
     def _prepare_expression(
         self,

@@ -1,0 +1,17 @@
+{
+  "schema_version": "v0",
+  "name": "unsafe_number_integer_invalid",
+  "kind": "validation",
+  "target": "event",
+  "value": {
+    "schema_version": "v0",
+    "run_id": "run-1",
+    "invocation_id": "inv-1",
+    "sequence": 1,
+    "kind": "model_started",
+    "created_at": 9007199254740992,
+    "data": { "planning_step": 1 }
+  },
+  "expected_valid": false,
+  "expected_error_code": "schema_validation"
+}

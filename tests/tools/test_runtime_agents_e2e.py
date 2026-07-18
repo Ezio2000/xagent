@@ -512,6 +512,7 @@ def test_real_foreground_agent_runs_child_tool_and_resumes_parent(tmp_path: Path
 
         record = host.only_record()
         assert record.snapshot.status == "running"
+        await asyncio.wait_for(model.child_entered.wait(), timeout=1)
         assert model.child_entered.is_set()
         assert record.child_context.parent_run_id == parent_paused.snapshot.context.run_id
         assert record.child_context.parent_tool_call_id == "delegate-child"

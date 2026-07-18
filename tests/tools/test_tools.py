@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -239,6 +240,8 @@ def test_constructor_validation(tmp_path: Path) -> None:
         tools.GrepTool(tmp_path, max_scanned_entries=0)
     with pytest.raises(ValueError, match="max_total_bytes"):
         tools.GrepTool(tmp_path, max_total_bytes=0)
+    with pytest.raises(ValueError, match="max_output_bytes"):
+        tools.GrepTool(tmp_path, max_output_bytes=0)
     with pytest.raises(ValueError, match="individual path names"):
         tools.GlobTool(tmp_path, excluded_directory_names=("a/b",))
     with pytest.raises(ValueError, match="individual path names"):
@@ -452,6 +455,38 @@ def test_exclusions_apply_to_directories_not_same_named_files(tmp_path: Path) ->
     assert cast(dict[str, object], grep_result)["files"] == ["venv"]
 
 
+def test_atomic_write_temporary_namespace_is_private_to_filesystem_tools(
+    tmp_path: Path,
+) -> None:
+    reserved_name = ".target.txt.jharness-0123456789abcdef.tmp"
+    reserved = tmp_path / reserved_name
+    reserved.write_text("needle", encoding="utf-8")
+    visible_name = ".target.txt.jharness-0123456789abcde.tmp"
+    (tmp_path / visible_name).write_text("needle", encoding="utf-8")
+
+    _failure(
+        _invoke(tools.ReadTool(tmp_path), {"file_path": reserved_name}),
+        "reserved_path",
+    )
+    _failure(
+        _invoke(
+            tools.WriteTool(tmp_path),
+            {
+                "file_path": reserved_name,
+                "content": "new",
+                "expected_sha256": None,
+            },
+        ),
+        "reserved_path",
+    )
+
+    _, glob_result = _success(_invoke(tools.GlobTool(tmp_path), {"pattern": "*"}))
+    assert cast(dict[str, object], glob_result)["matches"] == [visible_name]
+    _, grep_result = _success(_invoke(tools.GrepTool(tmp_path), {"pattern": "needle"}))
+    assert cast(dict[str, object], grep_result)["files"] == [visible_name]
+    assert reserved.read_text(encoding="utf-8") == "needle"
+
+
 def test_search_work_budgets_are_model_visible_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -559,6 +594,39 @@ def test_grep_bounds_long_content_lines(tmp_path: Path) -> None:
             "line_truncated": True,
         }
     ]
+
+
+def test_grep_bounds_combined_text_and_structured_output(tmp_path: Path) -> None:
+    (tmp_path / "long.txt").write_text(
+        "\n".join(f"needle {index} {'x' * 80}" for index in range(20)),
+        encoding="utf-8",
+    )
+    max_output_bytes = 700
+    text, result = _success(
+        _invoke(
+            tools.GrepTool(
+                tmp_path,
+                max_line_chars=64,
+                max_output_bytes=max_output_bytes,
+            ),
+            {"pattern": "needle", "output_mode": "content"},
+        )
+    )
+    structured = cast(dict[str, object], result)
+    encoded_structured = json.dumps(
+        structured,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert len(text.encode("utf-8")) + len(encoded_structured) <= max_output_bytes
+    assert structured["truncated"] is True
+    lines = cast(list[object], structured["lines"])
+    assert 0 < len(lines) < 20
+
+    _failure(
+        _invoke(tools.GrepTool(tmp_path, max_output_bytes=1), {"pattern": "absent"}),
+        "output_budget_exceeded",
+    )
 
 
 def test_grep_content_limit_counts_matches_not_context(tmp_path: Path) -> None:

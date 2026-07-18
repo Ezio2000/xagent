@@ -80,6 +80,11 @@ detached emitter tasks, and stops emission before returning or raising. If
 pause, insertion, provider failure, cancellation, or deadline interrupts the
 call, no partial assistant message is durable.
 
+The sink is a host callback, not provider wire data. If it raises, the adapter
+closes its response and propagates that exact exception; it must not convert the
+exception to `ModelError`. Only transport, provider payload, iterator, and stream
+protocol failures are normalized as model failures.
+
 ## Errors and Retry
 
 Adapters raise one structured provider-neutral `ModelError` containing stable

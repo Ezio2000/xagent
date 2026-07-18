@@ -193,7 +193,7 @@
         "uri": { "type": "string", "minLength": 1 },
         "media_type": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
-        "data": { "type": "object" },
+        "data": { "type": "object", "minProperties": 1 },
         "metadata": { "type": "object" }
       },
       "additionalProperties": false

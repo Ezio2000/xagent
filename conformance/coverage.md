@@ -75,6 +75,7 @@ do not replace the cases listed here.
 | Repository failure leaves the prior revision authoritative | `repository_commit_failure` |
 | A work-deadline cancellation cannot appear later as a partial ordinary commit | `repository_work_deadline_atomicity` |
 | Duplicate call ids, artifact refs, pending calls, and execution facts obey their structural and semantic invariants | `duplicate_tool_call_id_invalid`, `artifact_ref_invalid`, `tools_pending_requires_calls`, `parallel_spec_requires_safe_facts` |
+| Portable JSON uses one depth bound, lexical integers, safe number conversion, non-empty wait ids, and canonical opaque data | `excessive_json_depth_invalid`, `strict_integer_representation_invalid`, `unsafe_number_integer_invalid`, `empty_wait_id_invalid`, `opaque_empty_data_invalid` |
 | Multimodal/artifact final content survives exact wire round-trip | `artifact_final` |
 | Every scenario produces a verification-valid trace | every scenario (unconditional runner invariant) |
 | Revision gaps in checkpoint transitions are rejected | `trace_revision_gap_invalid` |

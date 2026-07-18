@@ -45,6 +45,11 @@ Focused implementation changes may begin with targeted tests, but the pull reque
 finish with all affected gates passing. Remove build, test, coverage, and temporary
 artifacts before handoff.
 
+Preview generated artifacts with `uv run python scripts/clean_workspace.py`, then add
+`--apply` only after reviewing the exact targets. The cleaner never traverses `.git`
+or directories named `.venv`, `venv`, or `ENV` at any nesting depth, so project-local
+and package-local environments remain outside cleanup ownership.
+
 ## Durable Behavior Changes
 
 A change to observable durable behavior must update, in one pull request:
