@@ -87,7 +87,8 @@ jobs:
           "${RUNNER_TEMP}/smoke/bin/python" -I -c "from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool"
           sha256sum dist/*.whl dist/*.tar.gz > dist/SHA256SUMS
           sha256sum --check dist/SHA256SUMS
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 9
+          test "$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)" -eq 8
+          test -f dist/SHA256SUMS
 
       - name: Recover verified artifacts from an earlier release run
         if: github.event_name == 'workflow_dispatch'
@@ -116,7 +117,8 @@ jobs:
           test "$tag_sha" = "$run_sha"
           test "$run_event" = "push"
           test "$run_path" = ".github/workflows/release.yml"
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 9
+          test "$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)" -eq 8
+          test -f dist/SHA256SUMS
           sha256sum --check dist/SHA256SUMS
           python scripts/verify_release.py --tag "$RELEASE_TAG"
           python scripts/verify_distribution.py dist

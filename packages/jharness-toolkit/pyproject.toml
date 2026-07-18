@@ -1,6 +1,6 @@
 [project]
 name = "jharness-toolkit"
-version = "0.2.0"
+version = "0.2.1"
 description = "Tool registry and adaptation toolkit for JHarness"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,7 +19,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "jharness-kernel==0.2.0",
+  "jharness-kernel==0.2.1",
   "jsonschema>=4.23.0",
   "referencing>=0.35.0",
 ]

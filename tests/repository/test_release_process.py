@@ -110,9 +110,15 @@ def test_release_workflow_builds_and_publishes_four_distributions() -> None:
     artifact_checks = _run(build, "Verify artifacts, imports, and checksums")
     assert "scripts/verify_distribution.py dist" in artifact_checks
     assert "sha256sum --check dist/SHA256SUMS" in artifact_checks
+    assert "-name '*.whl' -o -name '*.tar.gz'" in artifact_checks
+    assert '| wc -l)" -eq 8' in artifact_checks
+    assert "test -f dist/SHA256SUMS" in artifact_checks
     recovery_checks = _run(build, "Verify recovered run identity and artifacts")
     assert 'test "$run_path" = ".github/workflows/release.yml"' in recovery_checks
     assert "scripts/verify_distribution.py dist" in recovery_checks
+    assert "-name '*.whl' -o -name '*.tar.gz'" in recovery_checks
+    assert '| wc -l)" -eq 8' in recovery_checks
+    assert "test -f dist/SHA256SUMS" in recovery_checks
 
     test_publish = _step(jobs["publish-testpypi"], "Publish with trusted publishing")
     pypi_publish = _step(jobs["publish-pypi"], "Publish with trusted publishing")
