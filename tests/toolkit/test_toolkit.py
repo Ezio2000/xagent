@@ -486,7 +486,11 @@ async def test_circuit_breaker_opens_after_consecutive_failures() -> None:
     assert base.calls == 2
 
 
-async def test_circuit_breaker_recovers_through_one_successful_half_open_probe() -> None:
+async def test_circuit_breaker_recovers_through_one_successful_half_open_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr("jharness.toolkit.decorators.monotonic", lambda: now[0])
     base = FlakyTool(2)
     breaker = CircuitBreakingTool(
         base,
@@ -501,7 +505,7 @@ async def test_circuit_breaker_recovers_through_one_successful_half_open_probe()
     rejected = await breaker.invoke(call, context())
     assert isinstance(rejected, SettledResult)
     assert isinstance(rejected.outcome, ToolFailure)
-    await asyncio.sleep(0.002)
+    now[0] = 0.002
     recovered = await breaker.invoke(call, context())
     assert isinstance(recovered, SettledResult)
     assert isinstance(recovered.outcome, ToolSuccess)
@@ -509,7 +513,12 @@ async def test_circuit_breaker_recovers_through_one_successful_half_open_probe()
     assert base.calls == 4
 
 
-async def test_circuit_breaker_admits_only_one_half_open_probe() -> None:
+async def test_circuit_breaker_admits_only_one_half_open_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr("jharness.toolkit.decorators.monotonic", lambda: now[0])
+
     @dataclass(slots=True)
     class ProbeTool:
         spec: ToolSpec
@@ -536,7 +545,7 @@ async def test_circuit_breaker_admits_only_one_half_open_probe() -> None:
     call = ToolCall("call", "flaky")
     with pytest.raises(RuntimeError, match="open"):
         await breaker.invoke(call, context())
-    await asyncio.sleep(0.002)
+    now[0] = 0.002
 
     probe = asyncio.create_task(breaker.invoke(call, context()))
     await started.wait()
@@ -549,7 +558,11 @@ async def test_circuit_breaker_admits_only_one_half_open_probe() -> None:
     assert isinstance(await probe, SettledResult)
 
 
-async def test_failed_or_cancelled_half_open_probe_has_explicit_recovery_semantics() -> None:
+async def test_failed_or_cancelled_half_open_probe_has_explicit_recovery_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr("jharness.toolkit.decorators.monotonic", lambda: now[0])
     failed = FlakyTool(10)
     failed_breaker = CircuitBreakingTool(
         failed,
@@ -559,7 +572,7 @@ async def test_failed_or_cancelled_half_open_probe_has_explicit_recovery_semanti
     call = ToolCall("call", "flaky")
     with pytest.raises(RuntimeError):
         await failed_breaker.invoke(call, context())
-    await asyncio.sleep(0.002)
+    now[0] = 0.002
     with pytest.raises(RuntimeError):
         await failed_breaker.invoke(call, context())
     immediate = await failed_breaker.invoke(call, context())
@@ -588,7 +601,7 @@ async def test_failed_or_cancelled_half_open_probe_has_explicit_recovery_semanti
     )
     with pytest.raises(RuntimeError):
         await cancelled_breaker.invoke(call, context())
-    await asyncio.sleep(0.002)
+    now[0] = 0.004
     with pytest.raises(asyncio.CancelledError):
         await cancelled_breaker.invoke(call, context())
     recovered = await cancelled_breaker.invoke(call, context())
