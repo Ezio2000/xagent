@@ -1,4 +1,4 @@
-"""SQLite-backed checkpoint repository."""
+"""SQLite-backed incremental durable-commit repository."""
 
 from __future__ import annotations
 
@@ -6,37 +6,103 @@ import asyncio
 import math
 import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
-from hashlib import sha256
+from dataclasses import dataclass
 from threading import Lock
-from typing import TypeVar
+from typing import TypeVar, cast
 
-from jharness.kernel import Checkpoint, RepositoryError, RevisionConflict
+from jharness.kernel import (
+    Checkpoint,
+    DurableCommit,
+    HistoryAppend,
+    HistoryReplace,
+    HistoryUnchanged,
+    RepositoryError,
+    RevisionConflict,
+)
 
-from ._codec import EncodedCheckpoint, decode_checkpoint, encode_checkpoint
+from ._codec import (
+    HISTORY_CHUNK_SIZE,
+    CommitIdentity,
+    EncodedHistoryChunk,
+    commit_identity,
+    decode_core,
+    encode_core,
+    encode_history_change,
+    reconstruct_checkpoint,
+)
 
 _T = TypeVar("_T")
 
 _CREATE_HEADS = """
-CREATE TABLE IF NOT EXISTS jharness_v1_run_heads (
-    run_id TEXT NOT NULL PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS jharness_v2_run_heads (
+    run_id TEXT NOT NULL PRIMARY KEY CHECK (length(run_id) > 0),
     revision INTEGER NOT NULL CHECK (revision >= 0),
-    checkpoint_id TEXT NOT NULL,
-    checkpoint_digest BLOB NOT NULL CHECK (length(checkpoint_digest) = 32),
-    checkpoint_payload BLOB NOT NULL
+    checkpoint_id TEXT NOT NULL CHECK (length(checkpoint_id) > 0),
+    parent_checkpoint_id TEXT,
+    checkpoint_digest BLOB NOT NULL
+        CHECK (typeof(checkpoint_digest) = 'blob' AND length(checkpoint_digest) = 32),
+    checkpoint_core BLOB NOT NULL CHECK (typeof(checkpoint_core) = 'blob'),
+    checkpoint_core_digest BLOB NOT NULL
+        CHECK (typeof(checkpoint_core_digest) = 'blob' AND length(checkpoint_core_digest) = 32),
+    history_generation INTEGER NOT NULL CHECK (history_generation >= 0),
+    history_chunk_count INTEGER NOT NULL CHECK (history_chunk_count > 0),
+    history_message_count INTEGER NOT NULL CHECK (history_message_count > 0),
+    history_digest BLOB NOT NULL
+        CHECK (typeof(history_digest) = 'blob' AND length(history_digest) = 32),
+    CHECK (
+        (revision = 0 AND parent_checkpoint_id IS NULL)
+        OR (revision > 0 AND length(parent_checkpoint_id) > 0)
+    )
 )
 """
 
-_CREATE_CHECKPOINT_IDS = """
-CREATE TABLE IF NOT EXISTS jharness_v1_checkpoint_ids (
-    checkpoint_id TEXT NOT NULL PRIMARY KEY,
-    run_id TEXT NOT NULL,
+_CREATE_LEDGER = """
+CREATE TABLE IF NOT EXISTS jharness_v2_checkpoint_ledger (
+    run_id TEXT NOT NULL CHECK (length(run_id) > 0),
+    checkpoint_id TEXT NOT NULL CHECK (length(checkpoint_id) > 0),
     revision INTEGER NOT NULL CHECK (revision >= 0),
-    checkpoint_digest BLOB NOT NULL CHECK (length(checkpoint_digest) = 32)
-)
+    checkpoint_digest BLOB NOT NULL
+        CHECK (typeof(checkpoint_digest) = 'blob' AND length(checkpoint_digest) = 32),
+    PRIMARY KEY (run_id, checkpoint_id),
+    UNIQUE (run_id, revision)
+) WITHOUT ROWID
 """
+
+_CREATE_HISTORY = f"""
+CREATE TABLE IF NOT EXISTS jharness_v2_history_chunks (
+    run_id TEXT NOT NULL CHECK (length(run_id) > 0),
+    history_generation INTEGER NOT NULL CHECK (history_generation >= 0),
+    chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+    message_count INTEGER NOT NULL
+        CHECK (message_count > 0 AND message_count <= {HISTORY_CHUNK_SIZE}),
+    chunk_payload BLOB NOT NULL CHECK (typeof(chunk_payload) = 'blob'),
+    chunk_digest BLOB NOT NULL
+        CHECK (typeof(chunk_digest) = 'blob' AND length(chunk_digest) = 32),
+    PRIMARY KEY (run_id, history_generation, chunk_index)
+) WITHOUT ROWID
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class _Head:
+    run_id: str
+    revision: int
+    checkpoint_id: str
+    parent_checkpoint_id: str | None
+    checkpoint_digest: bytes
+    core_digest: bytes
+    history_generation: int
+    history_chunk_count: int
+    history_message_count: int
+    history_digest: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _CompleteHead(_Head):
+    core_payload: bytes
 
 
 class SQLiteRunRepository:
@@ -74,30 +140,31 @@ class SQLiteRunRepository:
         self._uri = uri
         self._connection: sqlite3.Connection | None = None
         self._initialized = False
-        self._executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="jharness-sqlite",
-        )
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jharness-sqlite")
         self._lifecycle_lock = Lock()
         self._close_future: Future[None] | None = None
         self._closed = False
 
     async def initialize(self) -> None:
-        """Create the repository schema if needed."""
+        """Create the v2 repository schema if needed."""
+
         await self._run(self._initialize_sync)
 
-    async def commit(self, checkpoint: Checkpoint) -> None:
+    async def commit(self, commit: DurableCommit) -> None:
         """Atomically advance one run head, or accept an exact prior retry."""
-        encoded = encode_checkpoint(checkpoint)
-        await self._run(lambda: self._commit_sync(encoded))
+
+        identity = commit_identity(commit)
+        await self._run(lambda: self._commit_sync(identity))
 
     async def get_head(self, run_id: str) -> Checkpoint | None:
         """Return the authoritative checkpoint for a run, if one exists."""
-        run_id = _validate_run_id(run_id)
-        return await self._run(lambda: self._get_head_sync(run_id))
+
+        normalized = _validate_run_id(run_id)
+        return await self._run(lambda: self._get_head_sync(normalized))
 
     async def close(self) -> None:
         """Close the SQLite connection and release the dedicated worker."""
+
         with self._lifecycle_lock:
             if self._closed:
                 return
@@ -106,7 +173,6 @@ class SQLiteRunRepository:
             if close_future is None:
                 close_future = self._executor.submit(self._close_sync)
                 self._close_future = close_future
-
         try:
             await _settle_future(close_future, cancel_if_queued=False)
         except sqlite3.Error as exc:
@@ -151,91 +217,85 @@ class SQLiteRunRepository:
             return
         connection = self._get_connection()
         connection.execute(_CREATE_HEADS)
-        connection.execute(_CREATE_CHECKPOINT_IDS)
+        connection.execute(_CREATE_LEDGER)
+        connection.execute(_CREATE_HISTORY)
         self._initialized = True
 
-    def _commit_sync(self, checkpoint: EncodedCheckpoint) -> None:
+    def _commit_sync(self, identity: CommitIdentity) -> None:
         self._initialize_sync()
         connection = self._get_connection()
         connection.execute("BEGIN IMMEDIATE")
         try:
-            current_head = _read_validated_head(connection, checkpoint.run_id)
-            actual_revision = None if current_head is None else current_head.snapshot.revision
-            existing = connection.execute(
-                """
-                SELECT run_id, revision, checkpoint_digest
-                FROM jharness_v1_checkpoint_ids
-                WHERE checkpoint_id = ?
-                """,
-                (checkpoint.checkpoint_id,),
-            ).fetchone()
-            if _accept_existing_checkpoint(existing, current_head, checkpoint):
+            head = _read_head_manifest(connection, identity.run_id)
+            existing = _read_ledger(connection, identity.run_id, identity.checkpoint_id)
+            if existing is not None:
+                _accept_existing(existing, head, identity)
                 connection.commit()
                 return
 
-            if actual_revision != checkpoint.expected_revision:
+            actual_revision = None if head is None else head.revision
+            if actual_revision != identity.expected_revision:
                 raise RevisionConflict(
-                    checkpoint.run_id,
-                    checkpoint.expected_revision,
+                    identity.run_id,
+                    identity.expected_revision,
                     actual_revision,
                 )
+            _validate_new_base(head, identity)
 
+            core = encode_core(identity)
+            chunks = encode_history_change(identity.commit)
+            generation, first_index, total_chunks = _next_history_manifest(
+                head,
+                identity,
+                len(chunks),
+            )
+            _validate_encoded_history(head, identity, chunks)
+
+            connection.executemany(
+                """
+                INSERT INTO jharness_v2_history_chunks (
+                    run_id,
+                    history_generation,
+                    chunk_index,
+                    message_count,
+                    chunk_payload,
+                    chunk_digest
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        identity.run_id,
+                        generation,
+                        first_index + offset,
+                        chunk.message_count,
+                        chunk.payload,
+                        chunk.digest,
+                    )
+                    for offset, chunk in enumerate(chunks)
+                ),
+            )
             connection.execute(
                 """
-                INSERT INTO jharness_v1_checkpoint_ids (
-                    checkpoint_id,
-                    run_id,
-                    revision,
-                    checkpoint_digest
+                INSERT INTO jharness_v2_checkpoint_ledger (
+                    run_id, checkpoint_id, revision, checkpoint_digest
                 ) VALUES (?, ?, ?, ?)
                 """,
                 (
-                    checkpoint.checkpoint_id,
-                    checkpoint.run_id,
-                    checkpoint.revision,
-                    checkpoint.digest,
+                    identity.run_id,
+                    identity.checkpoint_id,
+                    identity.revision,
+                    identity.digest,
                 ),
             )
-            if actual_revision is None:
-                connection.execute(
-                    """
-                    INSERT INTO jharness_v1_run_heads (
-                        run_id,
-                        revision,
-                        checkpoint_id,
-                        checkpoint_digest,
-                        checkpoint_payload
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        checkpoint.run_id,
-                        checkpoint.revision,
-                        checkpoint.checkpoint_id,
-                        checkpoint.digest,
-                        checkpoint.payload,
-                    ),
-                )
-            else:
-                updated = connection.execute(
-                    """
-                    UPDATE jharness_v1_run_heads
-                    SET revision = ?,
-                        checkpoint_id = ?,
-                        checkpoint_digest = ?,
-                        checkpoint_payload = ?
-                    WHERE run_id = ? AND revision = ?
-                    """,
-                    (
-                        checkpoint.revision,
-                        checkpoint.checkpoint_id,
-                        checkpoint.digest,
-                        checkpoint.payload,
-                        checkpoint.run_id,
-                        checkpoint.expected_revision,
-                    ),
-                )
-                if updated.rowcount != 1:
-                    raise RepositoryError("SQLite run head changed inside its write transaction")
+            _write_head(
+                connection,
+                identity,
+                core.payload,
+                core.digest,
+                generation,
+                total_chunks,
+                actual_revision,
+            )
             connection.commit()
         except BaseException:
             if connection.in_transaction:
@@ -244,13 +304,57 @@ class SQLiteRunRepository:
 
     def _get_head_sync(self, run_id: str) -> Checkpoint | None:
         self._initialize_sync()
-        return _read_validated_head(self._get_connection(), run_id)
+        connection = self._get_connection()
+        head = _read_complete_head(connection, run_id)
+        if head is None:
+            return None
+        rows = connection.execute(
+            """
+            SELECT chunk_index, chunk_payload, chunk_digest, message_count
+            FROM jharness_v2_history_chunks
+            WHERE run_id = ?
+              AND history_generation = ?
+              AND chunk_index < ?
+            ORDER BY chunk_index
+            """,
+            (run_id, head.history_generation, head.history_chunk_count),
+        ).fetchall()
+        if len(rows) != head.history_chunk_count:
+            raise RepositoryError("stored SQLite checkpoint history is incomplete")
+        chunks: list[tuple[bytes, bytes, int]] = []
+        message_count = 0
+        for expected_index, row in enumerate(rows):
+            if _stored_nonnegative_int(row[0], "history chunk index") != expected_index:
+                raise RepositoryError("stored SQLite history chunk order is invalid")
+            payload = _stored_bytes(row[1], "history chunk payload")
+            digest = _stored_digest(row[2], "history chunk digest")
+            count = _stored_positive_int(row[3], "history chunk message count")
+            if count > HISTORY_CHUNK_SIZE:
+                raise RepositoryError("stored SQLite history chunk message count is invalid")
+            message_count += count
+            chunks.append((payload, digest, count))
+        if message_count != head.history_message_count:
+            raise RepositoryError("stored SQLite checkpoint history count is inconsistent")
+        checkpoint, core = reconstruct_checkpoint(
+            core_payload=head.core_payload,
+            core_digest=head.core_digest,
+            chunks=chunks,
+            expected_checkpoint_digest=head.checkpoint_digest,
+        )
+        if (
+            checkpoint.id != head.checkpoint_id
+            or checkpoint.snapshot.context.run_id != run_id
+            or checkpoint.snapshot.revision != head.revision
+            or core.parent_checkpoint_id != head.parent_checkpoint_id
+            or core.history_digest != head.history_digest
+        ):
+            raise RepositoryError("stored SQLite run head is inconsistent")
+        return checkpoint
 
     def _get_connection(self) -> sqlite3.Connection:
         connection = self._connection
         if connection is not None:
             return connection
-
         connection = sqlite3.connect(
             self._database,
             timeout=self._timeout,
@@ -271,8 +375,272 @@ class SQLiteRunRepository:
     def _close_sync(self) -> None:
         connection = self._connection
         if connection is not None:
-            connection.close()
-            self._connection = None
+            try:
+                connection.close()
+            finally:
+                self._connection = None
+
+
+def _read_head_manifest(connection: sqlite3.Connection, run_id: str) -> _Head | None:
+    row = connection.execute(
+        """
+        SELECT revision,
+               checkpoint_id,
+               parent_checkpoint_id,
+               checkpoint_digest,
+               checkpoint_core_digest,
+               history_generation,
+               history_chunk_count,
+               history_message_count,
+               history_digest
+        FROM jharness_v2_run_heads
+        WHERE run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    head = _Head(
+        run_id=run_id,
+        revision=_stored_nonnegative_int(row[0], "revision"),
+        checkpoint_id=_stored_text(row[1], "checkpoint id"),
+        parent_checkpoint_id=_stored_optional_text(row[2], "parent checkpoint id"),
+        checkpoint_digest=_stored_digest(row[3], "checkpoint digest"),
+        core_digest=_stored_digest(row[4], "checkpoint core digest"),
+        history_generation=_stored_nonnegative_int(row[5], "history generation"),
+        history_chunk_count=_stored_positive_int(row[6], "history chunk count"),
+        history_message_count=_stored_positive_int(row[7], "history message count"),
+        history_digest=_stored_digest(row[8], "history digest"),
+    )
+    _validate_head_parent(head, "SQLite")
+    _validate_head_ledger(connection, head)
+    return head
+
+
+def _read_complete_head(
+    connection: sqlite3.Connection,
+    run_id: str,
+) -> _CompleteHead | None:
+    row = connection.execute(
+        """
+        SELECT revision,
+               checkpoint_id,
+               parent_checkpoint_id,
+               checkpoint_digest,
+               checkpoint_core_digest,
+               history_generation,
+               history_chunk_count,
+               history_message_count,
+               history_digest,
+               checkpoint_core
+        FROM jharness_v2_run_heads
+        WHERE run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    head = _CompleteHead(
+        run_id=run_id,
+        revision=_stored_nonnegative_int(row[0], "revision"),
+        checkpoint_id=_stored_text(row[1], "checkpoint id"),
+        parent_checkpoint_id=_stored_optional_text(row[2], "parent checkpoint id"),
+        checkpoint_digest=_stored_digest(row[3], "checkpoint digest"),
+        core_digest=_stored_digest(row[4], "checkpoint core digest"),
+        history_generation=_stored_nonnegative_int(row[5], "history generation"),
+        history_chunk_count=_stored_positive_int(row[6], "history chunk count"),
+        history_message_count=_stored_positive_int(row[7], "history message count"),
+        history_digest=_stored_digest(row[8], "history digest"),
+        core_payload=_stored_bytes(row[9], "checkpoint core"),
+    )
+    _validate_head_parent(head, "SQLite")
+    core = decode_core(head.core_payload, head.core_digest)
+    if (
+        core.checkpoint_id != head.checkpoint_id
+        or core.parent_checkpoint_id != head.parent_checkpoint_id
+        or core.revision != head.revision
+        or core.history_count != head.history_message_count
+        or core.history_digest != head.history_digest
+    ):
+        raise RepositoryError("stored SQLite run head core is inconsistent")
+    _validate_head_ledger(connection, head)
+    return head
+
+
+def _validate_head_parent(head: _Head, backend: str) -> None:
+    if (head.revision == 0) != (head.parent_checkpoint_id is None):
+        raise RepositoryError(f"stored {backend} run head parent is inconsistent")
+
+
+def _validate_head_ledger(connection: sqlite3.Connection, head: _Head) -> None:
+    current_ledger = _read_ledger(connection, head.run_id, head.checkpoint_id)
+    if current_ledger is None:
+        raise RepositoryError("stored SQLite run head has no checkpoint ledger entry")
+    if current_ledger != (head.revision, head.checkpoint_digest):
+        raise RepositoryError("stored SQLite run head and checkpoint ledger differ")
+
+
+def _read_ledger(
+    connection: sqlite3.Connection,
+    run_id: str,
+    checkpoint_id: str,
+) -> tuple[int, bytes] | None:
+    row = connection.execute(
+        """
+        SELECT revision, checkpoint_digest
+        FROM jharness_v2_checkpoint_ledger
+        WHERE run_id = ? AND checkpoint_id = ?
+        """,
+        (run_id, checkpoint_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return (
+        _stored_nonnegative_int(row[0], "ledger revision"),
+        _stored_digest(row[1], "ledger checkpoint digest"),
+    )
+
+
+def _accept_existing(
+    existing: tuple[int, bytes],
+    head: _Head | None,
+    identity: CommitIdentity,
+) -> None:
+    revision, digest = existing
+    if digest != identity.digest:
+        raise RepositoryError(
+            f"checkpoint id {identity.checkpoint_id!r} was reused with new content "
+            f"in run {identity.run_id!r}"
+        )
+    if revision != identity.revision:
+        raise RepositoryError("stored SQLite checkpoint ledger is inconsistent")
+    if head is None or head.revision < revision:
+        raise RepositoryError("stored SQLite checkpoint ledger is orphaned")
+    if head.revision == revision and (
+        head.checkpoint_id != identity.checkpoint_id or head.checkpoint_digest != digest
+    ):
+        raise RepositoryError("stored SQLite checkpoint ledger is orphaned")
+
+
+def _validate_new_base(head: _Head | None, identity: CommitIdentity) -> None:
+    if head is None:
+        if (
+            identity.parent_checkpoint_id is not None
+            or identity.base_history_count is not None
+            or identity.base_history_digest is not None
+        ):
+            raise RepositoryError("first durable commit has an invalid history base")
+        return
+    if identity.parent_checkpoint_id != head.checkpoint_id:
+        raise RepositoryError("parent checkpoint does not match the authoritative head")
+    if (
+        identity.base_history_count != head.history_message_count
+        or identity.base_history_digest != head.history_digest
+    ):
+        raise RepositoryError("history change base does not match the authoritative head")
+
+
+def _next_history_manifest(
+    head: _Head | None,
+    identity: CommitIdentity,
+    added_chunks: int,
+) -> tuple[int, int, int]:
+    change = identity.commit.history
+    if head is None or isinstance(change, HistoryReplace):
+        return identity.revision, 0, added_chunks
+    if isinstance(change, HistoryAppend):
+        return (
+            head.history_generation,
+            head.history_chunk_count,
+            head.history_chunk_count + added_chunks,
+        )
+    if not isinstance(change, HistoryUnchanged):
+        raise RepositoryError("advanced durable commit has an invalid history mutation")
+    return head.history_generation, head.history_chunk_count, head.history_chunk_count
+
+
+def _validate_encoded_history(
+    head: _Head | None,
+    identity: CommitIdentity,
+    chunks: Sequence[EncodedHistoryChunk],
+) -> None:
+    added_messages = sum(chunk.message_count for chunk in chunks)
+    change = identity.commit.history
+    if head is None or isinstance(change, HistoryReplace):
+        if not chunks or added_messages != identity.history_count:
+            raise RepositoryError("encoded replacement history is inconsistent")
+    elif isinstance(change, HistoryAppend):
+        if not chunks or head.history_message_count + added_messages != identity.history_count:
+            raise RepositoryError("encoded appended history is inconsistent")
+    elif chunks or head.history_message_count != identity.history_count:
+        raise RepositoryError("encoded unchanged history is inconsistent")
+
+
+def _write_head(
+    connection: sqlite3.Connection,
+    identity: CommitIdentity,
+    core_payload: bytes,
+    core_digest: bytes,
+    generation: int,
+    chunk_count: int,
+    actual_revision: int | None,
+) -> None:
+    values: tuple[object, ...] = (
+        identity.revision,
+        identity.checkpoint_id,
+        identity.parent_checkpoint_id,
+        identity.digest,
+        core_payload,
+        core_digest,
+        generation,
+        chunk_count,
+        identity.history_count,
+        identity.history_digest,
+    )
+    if actual_revision is None:
+        connection.execute(
+            """
+            INSERT INTO jharness_v2_run_heads (
+                run_id,
+                revision,
+                checkpoint_id,
+                parent_checkpoint_id,
+                checkpoint_digest,
+                checkpoint_core,
+                checkpoint_core_digest,
+                history_generation,
+                history_chunk_count,
+                history_message_count,
+                history_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (identity.run_id, *values),
+        )
+        return
+    updated = connection.execute(
+        """
+        UPDATE jharness_v2_run_heads
+        SET revision = ?,
+            checkpoint_id = ?,
+            parent_checkpoint_id = ?,
+            checkpoint_digest = ?,
+            checkpoint_core = ?,
+            checkpoint_core_digest = ?,
+            history_generation = ?,
+            history_chunk_count = ?,
+            history_message_count = ?,
+            history_digest = ?
+        WHERE run_id = ? AND revision = ? AND checkpoint_id = ?
+        """,
+        (
+            *values,
+            identity.run_id,
+            identity.expected_revision,
+            identity.parent_checkpoint_id,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise RepositoryError("SQLite run head changed inside its write transaction")
 
 
 async def _settle_future(
@@ -285,15 +653,11 @@ async def _settle_future(
         return await asyncio.shield(wrapped)
     except asyncio.CancelledError:
         if cancel_if_queued and future.cancel():
-            # The worker had not started this operation, so no write can
-            # appear after cancellation escapes.
             raise
     while True:
         try:
             return await asyncio.shield(wrapped)
         except asyncio.CancelledError:
-            # The worker already owns the operation. Let it reach a known
-            # outcome instead of exposing an ambiguous transaction result.
             continue
 
 
@@ -303,97 +667,42 @@ def _stored_bytes(value: object, label: str) -> bytes:
     return value
 
 
+def _stored_digest(value: object, label: str) -> bytes:
+    digest = _stored_bytes(value, label)
+    if len(digest) != 32:
+        raise RepositoryError(f"stored SQLite {label} is invalid")
+    return digest
+
+
 def _stored_text(value: object, label: str) -> str:
-    if not isinstance(value, str) or not value:
+    if type(value) is not str or not value:
         raise RepositoryError(f"stored SQLite {label} is invalid")
     return value
 
 
-def _stored_revision(value: object) -> int:
+def _stored_optional_text(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _stored_text(value, label)
+
+
+def _stored_nonnegative_int(value: object, label: str) -> int:
     if type(value) is not int or value < 0:
-        raise RepositoryError("stored SQLite revision is invalid")
+        raise RepositoryError(f"stored SQLite {label} is invalid")
     return value
 
 
-def _read_validated_head(
-    connection: sqlite3.Connection,
-    run_id: str,
-) -> Checkpoint | None:
-    row = connection.execute(
-        """
-        SELECT checkpoint_id, revision, checkpoint_digest, checkpoint_payload
-        FROM jharness_v1_run_heads
-        WHERE run_id = ?
-        """,
-        (run_id,),
-    ).fetchone()
-    if row is None:
-        return None
-
-    checkpoint_id = _stored_text(row[0], "checkpoint id")
-    revision = _stored_revision(row[1])
-    digest = _stored_bytes(row[2], "checkpoint digest")
-    payload = _stored_bytes(row[3], "checkpoint payload")
-    if len(digest) != 32 or sha256(payload).digest() != digest:
-        raise RepositoryError("stored SQLite run head has an invalid checkpoint digest")
-
-    ledger = connection.execute(
-        """
-        SELECT run_id, revision, checkpoint_digest
-        FROM jharness_v1_checkpoint_ids
-        WHERE checkpoint_id = ?
-        """,
-        (checkpoint_id,),
-    ).fetchone()
-    if ledger is None:
-        raise RepositoryError("stored SQLite run head has no checkpoint ledger entry")
-    if (
-        _stored_text(ledger[0], "run id") != run_id
-        or _stored_revision(ledger[1]) != revision
-        or _stored_bytes(ledger[2], "checkpoint digest") != digest
-    ):
-        raise RepositoryError("stored SQLite run head and checkpoint ledger differ")
-
-    checkpoint = decode_checkpoint(payload)
-    if (
-        checkpoint.id != checkpoint_id
-        or checkpoint.snapshot.context.run_id != run_id
-        or checkpoint.snapshot.revision != revision
-    ):
-        raise RepositoryError("stored SQLite run head is inconsistent")
-    return checkpoint
-
-
-def _accept_existing_checkpoint(
-    row: tuple[object, ...] | None,
-    current_head: Checkpoint | None,
-    checkpoint: EncodedCheckpoint,
-) -> bool:
-    if row is None:
-        return False
-    stored_run_id = _stored_text(row[0], "run id")
-    stored_revision = _stored_revision(row[1])
-    stored_digest = _stored_bytes(row[2], "checkpoint digest")
-    if stored_digest != checkpoint.digest:
-        raise RepositoryError(
-            f"checkpoint id {checkpoint.checkpoint_id!r} was reused with new content"
-        )
-    if stored_run_id != checkpoint.run_id or stored_revision != checkpoint.revision:
-        raise RepositoryError("stored SQLite checkpoint ledger is inconsistent")
-    if current_head is None or current_head.snapshot.revision < checkpoint.revision:
-        raise RepositoryError("stored SQLite checkpoint ledger is orphaned")
-    if (
-        current_head.snapshot.revision == checkpoint.revision
-        and current_head.id != checkpoint.checkpoint_id
-    ):
-        raise RepositoryError("stored SQLite checkpoint ledger is orphaned")
-    return True
+def _stored_positive_int(value: object, label: str) -> int:
+    result = _stored_nonnegative_int(value, label)
+    if result == 0:
+        raise RepositoryError(f"stored SQLite {label} is invalid")
+    return result
 
 
 def _validate_run_id(run_id: str) -> str:
-    if not isinstance(run_id, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+    if not isinstance(cast(object, run_id), str):
         raise TypeError("run_id must be a string")
-    run_id = str.__str__(run_id)
-    if not run_id:
+    normalized = str.__str__(run_id)
+    if not normalized:
         raise ValueError("run_id must not be empty")
-    return run_id
+    return normalized

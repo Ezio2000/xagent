@@ -23,7 +23,7 @@ from jharness.kernel.commands import (
     SuspensionSelector,
 )
 from jharness.kernel.context import RunContext
-from jharness.kernel.history import HistoryReducer
+from jharness.kernel.history import HistoryReducer, RunHistory
 from jharness.kernel.invocation import Invocation
 from jharness.kernel.limits import RunLimits
 from jharness.kernel.messages import Message
@@ -112,7 +112,7 @@ class Runtime:
         stream: bool = False,
     ) -> Invocation:
         context = self._start_context(context)
-        request = StartRequest(tuple(messages), context)
+        request = StartRequest(RunHistory(messages), context)
         return self._invocation(request, context.run_id, stream)
 
     def continue_from(self, checkpoint: Checkpoint, *, stream: bool = False) -> Invocation:

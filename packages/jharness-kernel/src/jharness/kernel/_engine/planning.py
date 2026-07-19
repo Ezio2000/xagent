@@ -35,7 +35,13 @@ from jharness.kernel.models import (
     ToolChoice,
 )
 from jharness.kernel.snapshot import RunSnapshot
-from jharness.kernel.state import Completed, Limited, Planning, ToolsPending
+from jharness.kernel.state import (
+    Completed,
+    Limited,
+    PendingToolCalls,
+    Planning,
+    ToolsPending,
+)
 from jharness.kernel.tools import ToolCatalog
 
 _TEXT_LIKE = frozenset({"text", "reasoning", "thinking", "redacted_thinking", "refusal"})
@@ -85,7 +91,7 @@ class PlanningStep:
         self, snapshot: RunSnapshot, *, deadline: Deadline, inbox: ControlInbox
     ) -> Change:
         request = ModelRequest(
-            snapshot.history,
+            tuple(snapshot.history),
             self._catalog.specs(),
             self._options,
             self._tool_choice,
@@ -155,7 +161,7 @@ class PlanningStep:
         if over_tokens:
             state = Limited(LimitReason.MAX_TOTAL_TOKENS)
         elif response.tool_calls:
-            state = ToolsPending(response.tool_calls)
+            state = ToolsPending(PendingToolCalls(response.tool_calls))
         else:
             state = Completed(response.parts)
         return Change(

@@ -24,9 +24,11 @@ from jharness.kernel import (
     Message,
     ModelTurnFact,
     ModelTurnResult,
+    PendingToolCalls,
     Planning,
     ResumedFact,
     RunContext,
+    RunHistory,
     RunMetrics,
     RunSnapshot,
     SettledResult,
@@ -94,7 +96,7 @@ def _active_checkpoint() -> Checkpoint:
     snapshot = RunSnapshot(
         0,
         RunContext("run-1", 1.0),
-        (Message.user("hello"),),
+        RunHistory((Message.user("hello"),)),
         RunMetrics(),
         Planning(),
     )
@@ -106,7 +108,7 @@ def _suspended_checkpoint() -> Checkpoint:
     snapshot = RunSnapshot(
         1,
         RunContext("run-1", 1.0),
-        (Message.user("hello"),),
+        RunHistory((Message.user("hello"),)),
         RunMetrics(),
         Suspended(Planning(), suspension),
     )
@@ -118,7 +120,7 @@ def test_closed_lifecycle_and_limit_vocabularies_match_state_schema() -> None:
     call = ToolCall("call-1", "lookup")
     states = (
         Planning(),
-        ToolsPending((call,)),
+        ToolsPending(PendingToolCalls((call,))),
         Suspended(Planning(), Suspension("pause", "host")),
         Completed((ContentPart.text_part("done"),)),
         Failed(ErrorInfo("failed", "failed")),
@@ -145,7 +147,7 @@ def test_event_request_approval_tool_and_scheduling_vocabularies_match() -> None
     assert {kind.value for kind in EventKind} == _enum(event_kinds["enum"])
 
     request_documents = (
-        encode_run_request(StartRequest((Message.user("hello"),))),
+        encode_run_request(StartRequest(RunHistory((Message.user("hello"),)))),
         encode_run_request(ContinueRequest(_active_checkpoint())),
         encode_run_request(ResumeRequest(_suspended_checkpoint())),
     )

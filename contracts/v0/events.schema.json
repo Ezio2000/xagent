@@ -23,6 +23,7 @@
         "model_started",
         "model_delta",
         "model_finished",
+        "tool_batch_selected",
         "approval_requested",
         "approval_decided",
         "tool_started",
@@ -64,6 +65,10 @@
         {
           "if": { "properties": { "kind": { "const": "model_finished" } }, "required": ["kind"] },
           "then": { "properties": { "data": { "$ref": "#/$defs/model_finished_data" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "tool_batch_selected" } }, "required": ["kind"] },
+          "then": { "properties": { "data": { "$ref": "#/$defs/tool_batch_selected_data" } } }
         },
         {
           "if": { "properties": { "kind": { "const": "approval_requested" } }, "required": ["kind"] },
@@ -187,6 +192,33 @@
           ]
         }
       },
+      "additionalProperties": false
+    },
+    "tool_batch_selected_data": {
+      "type": "object",
+      "required": [
+        "batch_id",
+        "call_ids",
+        "parallel",
+        "remaining_count",
+        "remaining_call_id_digest"
+      ],
+      "properties": {
+        "batch_id": { "type": "string", "minLength": 1 },
+        "call_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "parallel": { "type": "boolean" },
+        "remaining_count": { "type": "integer", "minimum": 0 },
+        "remaining_call_id_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "$comment": "The selected calls are the bounded pending prefix. Composing call_ids with remaining_call_id_digest reproduces the pending digest in the current RunView, and their counts reproduce pending_count.",
       "additionalProperties": false
     },
     "tool_started_data": {

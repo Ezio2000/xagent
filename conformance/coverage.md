@@ -66,6 +66,16 @@ do not replace the cases listed here.
 | Pause and deadline discard partial content | `stream_pause_discards_partial`, `stream_deadline_discards_partial` |
 | A model error after live deltas discards partial content and finishes as protocol failure | `stream_protocol_error_discards_partial` |
 
+## Model Input History
+
+| Normative behavior | Cases |
+| --- | --- |
+| Every model request receives the complete current durable history | `complete_model_history` |
+
+The case deliberately preserves complete-history `O(H)` request materialization.
+Cumulative LLM input may be `O(N^2)` and is outside the linear state-evolution and
+repository guarantees.
+
 ## Repository, Wire Values, and Replay
 
 | Normative behavior | Cases |

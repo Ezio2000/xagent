@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import pytest
 
+from jharness.kernel._digest import compose_call_id_digest, empty_call_id_suffix_digest
 from jharness.kernel._engine.verification import fact_data, run_view, verify_change
 from jharness.kernel.checkpoint import (
     Checkpoint,
@@ -25,6 +26,7 @@ from jharness.kernel.diagnostics import (
     verify_trace,
 )
 from jharness.kernel.events import Event, EventKind
+from jharness.kernel.history import RunHistory
 from jharness.kernel.messages import ContentPart, Message
 from jharness.kernel.snapshot import RunSnapshot
 from jharness.kernel.state import Completed, Planning, RunMetrics
@@ -37,6 +39,39 @@ _USAGE = {
     "cache_read_tokens": None,
     "cache_write_tokens": None,
 }
+
+
+def _call_id_digest(*call_ids: str) -> str:
+    return compose_call_id_digest(
+        call_ids,
+        empty_call_id_suffix_digest(),
+    ).hex()
+
+
+def _pending_state(*call_ids: str) -> dict[str, Any]:
+    return {
+        "kind": "tools_pending",
+        "pending_count": len(call_ids),
+        "call_id_digest": _call_id_digest(*call_ids),
+    }
+
+
+def _selection(
+    selected: tuple[str, ...],
+    remaining: tuple[str, ...],
+    *,
+    parallel: bool,
+) -> tuple[EventKind, Mapping[str, Any]]:
+    return (
+        EventKind.TOOL_BATCH_SELECTED,
+        {
+            "batch_id": "batch-1",
+            "call_ids": list(selected),
+            "parallel": parallel,
+            "remaining_count": len(remaining),
+            "remaining_call_id_digest": _call_id_digest(*remaining),
+        },
+    )
 
 
 def _events(items: Sequence[tuple[EventKind, Mapping[str, Any]]]) -> tuple[Event, ...]:
@@ -59,7 +94,7 @@ def _completed_events(*, delta_count: int = 1) -> tuple[Event, ...]:
     user = Message.user("hi")
     started = Checkpoint(
         "cp-0",
-        RunSnapshot(0, context, (user,), RunMetrics(), Planning()),
+        RunSnapshot(0, context, RunHistory((user,)), RunMetrics(), Planning()),
         StartedFact(1, ("user",)),
     )
     part = ContentPart.text_part("done")
@@ -68,7 +103,7 @@ def _completed_events(*, delta_count: int = 1) -> tuple[Event, ...]:
         RunSnapshot(
             1,
             context,
-            (user, Message.assistant((part,))),
+            RunHistory((user, Message.assistant((part,)))),
             RunMetrics(planning_steps=1),
             Completed((part,)),
         ),
@@ -126,7 +161,7 @@ def _parallel_tool_events() -> tuple[Event, ...]:
         "revision": 2,
         "history_count": 2,
         "metrics": {"planning_steps": 1, "tool_calls": 0, "usage": dict(_USAGE)},
-        "state": {"kind": "tools_pending", "call_ids": ["call-1", "call-2"]},
+        "state": _pending_state("call-1", "call-2"),
     }
     fact = ToolBatchFact(
         5,
@@ -152,6 +187,7 @@ def _parallel_tool_events() -> tuple[Event, ...]:
                     "starting": starting,
                 },
             ),
+            _selection(("call-1", "call-2"), (), parallel=True),
             (
                 EventKind.TOOL_STARTED,
                 {
@@ -220,7 +256,7 @@ def _pending_trace(
         "revision": 2,
         "history_count": 2,
         "metrics": {"planning_steps": 1, "tool_calls": 0, "usage": dict(_USAGE)},
-        "state": {"kind": "tools_pending", "call_ids": ["call-1", "call-2"]},
+        "state": _pending_state("call-1", "call-2"),
     }
     events = _events(
         [
@@ -466,13 +502,23 @@ def test_model_lifecycle_and_fact_mismatches_are_rejected() -> None:
 def test_approval_and_tool_lifecycle_evidence_is_checked() -> None:
     approval_request: tuple[EventKind, Mapping[str, Any]] = (
         EventKind.APPROVAL_REQUESTED,
-        {"call": {"id": "call-1", "name": "one", "arguments": {}}},
+        {
+            "batch_id": "batch-1",
+            "index": 0,
+            "call": {"id": "call-1", "name": "one", "arguments": {}},
+        },
     )
     approval_decision: tuple[EventKind, Mapping[str, Any]] = (
         EventKind.APPROVAL_DECIDED,
         {"call_id": "call-1"},
     )
-    assert verify_trace(_pending_trace((approval_request, approval_decision))).checkpoint_count == 0
+    selected = _selection(("call-1",), ("call-2",), parallel=False)
+    assert (
+        verify_trace(
+            _pending_trace((selected, approval_request, approval_decision))
+        ).checkpoint_count
+        == 0
+    )
 
     with pytest.raises(TraceError) as decision_error:
         verify_trace(_pending_trace((approval_decision,)))
@@ -480,16 +526,20 @@ def test_approval_and_tool_lifecycle_evidence_is_checked() -> None:
 
     nonpending_request: tuple[EventKind, Mapping[str, Any]] = (
         EventKind.APPROVAL_REQUESTED,
-        {"call": {"id": "other", "name": "one", "arguments": {}}},
+        {
+            "batch_id": "batch-1",
+            "index": 0,
+            "call": {"id": "other", "name": "one", "arguments": {}},
+        },
     )
     with pytest.raises(TraceError) as pending_error:
-        verify_trace(_pending_trace((nonpending_request,)))
+        verify_trace(_pending_trace((selected, nonpending_request)))
     assert pending_error.value.code == "approval_lifecycle"
 
     with pytest.raises(TraceError) as duplicate_error:
         verify_trace(
             _pending_trace(
-                (approval_request, approval_decision, approval_request),
+                (selected, approval_request, approval_decision, approval_request),
             )
         )
     assert duplicate_error.value.code == "approval_lifecycle"
@@ -514,6 +564,7 @@ def test_approval_and_tool_lifecycle_evidence_is_checked() -> None:
     )
     active_trace = _pending_trace(
         (
+            selected,
             tool_started,
             (EventKind.TOOL_PROGRESS, {"tool_call_id": "call-1"}),
             (EventKind.TOOL_CANCEL_REQUESTED, {"tool_call_id": "call-1"}),
@@ -536,8 +587,21 @@ def test_approval_and_tool_lifecycle_evidence_is_checked() -> None:
         },
     )
     with pytest.raises(TraceError) as finish_error:
-        verify_trace(_pending_trace((tool_started, bad_finish)))
+        verify_trace(_pending_trace((selected, tool_started, bad_finish)))
     assert finish_error.value.code == "tool_lifecycle"
+
+
+def test_trace_verifier_rejects_noncanonical_uppercase_digests() -> None:
+    kind, data = _selection(("call-1",), ("call-2",), parallel=False)
+    digest = cast(str, data["remaining_call_id_digest"])
+    uppercase = digest.upper()
+    assert uppercase != digest
+    selection = (kind, {**data, "remaining_call_id_digest": uppercase})
+
+    with pytest.raises(TraceError) as error:
+        verify_trace(_pending_trace((selection,)))
+
+    assert error.value.code == "invalid_entry"
 
 
 def test_checkpoint_and_stop_evidence_rejects_conflicts() -> None:
@@ -630,14 +694,14 @@ def test_parallel_tool_completion_order_may_differ_but_fact_keeps_model_order() 
 
 def test_tool_completion_must_match_the_atomic_batch_fact() -> None:
     trace = build_trace(_parallel_tool_events(), "continue")
-    finished = trace.entries[3]
+    finished = trace.entries[4]
     mismatch = replace(
         finished,
         data={**finished.data, "outcome_kind": "success"},
     )
 
     with pytest.raises(TraceError) as error:
-        verify_trace(_replace_entry(trace, 3, mismatch))
+        verify_trace(_replace_entry(trace, 4, mismatch))
 
     assert error.value.code == "tool_fact_mismatch"
 
@@ -657,7 +721,7 @@ def test_tool_fact_rejects_a_missing_observed_completion() -> None:
     )
     without_second_tool = RunTrace(
         both_successful.header,
-        (*both_successful.entries[:2], *both_successful.entries[4:]),
+        (*both_successful.entries[:3], *both_successful.entries[5:]),
     )
 
     with pytest.raises(TraceError) as error:
@@ -679,7 +743,7 @@ def test_tool_fact_rejects_an_extra_observed_completion() -> None:
         "revision": 3,
         "history_count": 3,
         "metrics": {"planning_steps": 1, "tool_calls": 1, "usage": dict(_USAGE)},
-        "state": {"kind": "tools_pending", "call_ids": ["call-2"]},
+        "state": _pending_state("call-2"),
     }
     partial_commit = replace(
         commit,
@@ -747,4 +811,37 @@ def test_history_rewrite_fact_must_name_the_actual_before_count() -> None:
     }
 
     with pytest.raises(ValueError, match="rewrite_before_mismatch"):
+        verify_change(before, fact, after)
+
+
+def test_change_verifier_rejects_noncanonical_uppercase_pending_digest() -> None:
+    state = _pending_state("call-1", "call-2")
+    digest = cast(str, state["call_id_digest"])
+    uppercase = digest.upper()
+    assert uppercase != digest
+    before: dict[str, Any] = {
+        "revision": 2,
+        "history_count": 2,
+        "metrics": {"planning_steps": 1, "tool_calls": 0, "usage": dict(_USAGE)},
+        "state": {**state, "call_id_digest": uppercase},
+    }
+    fact: dict[str, Any] = {
+        "kind": "tool_batch",
+        "at": 3.0,
+        "data": {
+            "batch_id": "batch-1",
+            "call_ids": ["call-1"],
+            "parallel": False,
+            "outcome_kinds": ["success"],
+            "suspension": None,
+        },
+    }
+    after: dict[str, Any] = {
+        "revision": 3,
+        "history_count": 3,
+        "metrics": {"planning_steps": 1, "tool_calls": 1, "usage": dict(_USAGE)},
+        "state": _pending_state("call-2"),
+    }
+
+    with pytest.raises(ValueError, match="invalid_pending_digest"):
         verify_change(before, fact, after)

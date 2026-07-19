@@ -373,7 +373,7 @@ def _validate_tool_boundary(snapshot: RunSnapshot, fact: ToolBatchFact) -> None:
     ):
         raise ValueError("tool batch suspension must match Suspended state")
     count = len(fact.call_ids)
-    messages = snapshot.history[-count:]
+    messages = tuple(snapshot.history.iter_tail(count))
     if len(messages) != count or any(message.role != "tool" for message in messages):
         raise ValueError("tool batch fact requires matching trailing tool messages")
     if tuple(message.tool_call_id for message in messages) != fact.call_ids:
@@ -408,7 +408,14 @@ def _validate_model_boundary(snapshot: RunSnapshot, fact: ModelTurnFact) -> None
     elif fact.result is ModelTurnResult.TOOLS_PENDING:
         if not isinstance(snapshot.state, ToolsPending):
             raise ValueError("tools_pending model fact must match ToolsPending state")
-        if snapshot.state.pending != assistant.tool_calls:
+        if len(snapshot.state.pending) != len(assistant.tool_calls) or any(
+            pending != call
+            for pending, call in zip(
+                snapshot.state.pending,
+                assistant.tool_calls,
+                strict=True,
+            )
+        ):
             raise ValueError("pending calls must match the assistant message")
     elif not isinstance(snapshot.state, Limited) or snapshot.state.reason is not fact.limit_reason:
         raise ValueError("limited model fact must match Limited state")

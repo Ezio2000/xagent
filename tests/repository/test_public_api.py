@@ -26,6 +26,7 @@ def test_repository_root_exports_all_supported_backends() -> None:
     assert set(repository.__all__) == {
         "MemoryRunRepository",
         "MySQLRunRepository",
+        "MySQLTLS",
         "RedisRunRepository",
         "SQLiteRunRepository",
     }
@@ -48,6 +49,7 @@ builtins.__import__ = guarded_import
 from jharness.repository import (
     MemoryRunRepository,
     MySQLRunRepository,
+    MySQLTLS,
     RedisRunRepository,
     SQLiteRunRepository,
 )
@@ -61,6 +63,7 @@ async def verify():
     await sqlite.close()
 
 asyncio.run(verify())
+assert MySQLTLS(ca="mysql-ca.pem").verify_identity is True
 assert MySQLRunRepository and RedisRunRepository
 """
     result = subprocess.run(

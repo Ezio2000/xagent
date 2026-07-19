@@ -372,7 +372,7 @@ class BatchPolicy(Protocol):
 
     def select(
         self,
-        pending: tuple[ToolCall, ...],
+        pending: Sequence[ToolCall],
         catalog: ToolCatalog,
         limits: RunLimits,
     ) -> ToolBatch: ...
@@ -385,7 +385,7 @@ class DefaultBatchPolicy:
 
     def select(
         self,
-        pending: tuple[ToolCall, ...],
+        pending: Sequence[ToolCall],
         catalog: ToolCatalog,
         limits: RunLimits,
     ) -> ToolBatch:
@@ -396,9 +396,10 @@ class DefaultBatchPolicy:
         batch_id = f"tool-batch-{first.id}"
         if first_spec is None or not first_spec.parallel_safe:
             return ToolBatch(batch_id, (first,))
-        selected: list[ToolCall] = []
-        capacity = limits.max_tool_batch_size
-        for call in pending[:capacity]:
+        selected = [first]
+        capacity = min(len(pending), limits.max_tool_batch_size)
+        for index in range(1, capacity):
+            call = pending[index]
             spec = catalog.spec(call.name)
             if spec is None or not spec.parallel_safe:
                 break

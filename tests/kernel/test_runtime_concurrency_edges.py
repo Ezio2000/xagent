@@ -18,6 +18,7 @@ from jharness.kernel import (
     ModelRequest,
     ModelResponse,
     RunContext,
+    RunHistory,
     RunSnapshot,
     Runtime,
     SettledResult,
@@ -275,7 +276,7 @@ class _InterruptedReducer:
             self.started.set()
             await asyncio.Event().wait()
         if self.calls == 2:
-            return HistoryRewrite((Message.user("summary"),), "compact")
+            return HistoryRewrite(RunHistory((Message.user("summary"),)), "compact")
         return None
 
 

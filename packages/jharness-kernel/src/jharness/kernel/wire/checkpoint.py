@@ -321,10 +321,19 @@ def _decode_state_view(value: object, *, active: bool = False) -> dict[str, Any]
         object_fields(raw, "planning view", frozenset({"kind"}))
         return {"kind": "planning"}
     if kind == "tools_pending":
-        data = object_fields(raw, "tools pending view", frozenset({"kind", "call_ids"}))
+        data = object_fields(
+            raw,
+            "tools pending view",
+            frozenset({"kind", "pending_count", "call_id_digest"}),
+        )
         return {
             "kind": "tools_pending",
-            "call_ids": list(_non_empty_unique_ids(data["call_ids"], "view call_ids")),
+            "pending_count": integer(
+                data["pending_count"],
+                "view pending_count",
+                minimum=1,
+            ),
+            "call_id_digest": _digest_hex(data["call_id_digest"], "view call_id_digest"),
         }
     if kind == "suspended":
         data = object_fields(
@@ -351,6 +360,17 @@ def _decode_state_view(value: object, *, active: bool = False) -> dict[str, Any]
         "kind": "limited",
         "reason": enum_string(data["reason"], "view limit reason", _LIMIT_REASONS),
     }
+
+
+def _digest_hex(value: object, label: str) -> str:
+    digest = string(value, label)
+    try:
+        decoded = bytes.fromhex(digest)
+    except ValueError as exc:
+        raise ProtocolError(f"{label} must contain 32-byte hex") from exc
+    if len(digest) != 64 or len(decoded) != 32 or decoded.hex() != digest:
+        raise ProtocolError(f"{label} must contain 32-byte hex")
+    return digest
 
 
 def _encode_suspension_view(value: SuspensionView) -> dict[str, Any]:

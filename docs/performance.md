@@ -6,13 +6,24 @@ behavior must remain deterministically testable.
 
 ## Required Bounds
 
-- Snapshot evolution reuses unchanged immutable values. Public construction, wire
-  decoding, and explicit history replacement validate complete history in `O(h)`;
-  proven append-only evolution does not revisit existing message content.
-- Trusted values are not serialized merely to copy them, and commits do not rebuild
-  already validated aggregates.
-- The ephemeral repository retains one compact fingerprint per checkpoint id rather
-  than historical snapshots.
+- `RunHistory` structurally shares a persistent skew-binary forest. Public
+  construction, wire decoding, and explicit history replacement validate their
+  complete input; proven append-only evolution adds each new message in `O(1)` without
+  copying or revisiting the old prefix. Random access is `O(log h)`, complete traversal
+  is `O(h)`, and a newest suffix is `O(k)` for the requested suffix size.
+- History linkage uses a persistent radix proof and cursor-based unresolved tool calls.
+  Fixed-size history and tool-result appends therefore do not depend on the number of
+  earlier messages or pending calls.
+- A `DurableCommit` carries `Initial`, `Append`, `Replace`, or `Unchanged` history data.
+  Repositories encode only checkpoint core data and the accepted delta; they never
+  serialize or decode old history on the ordinary commit path.
+- Checkpoint idempotency retains one compact semantic fingerprint per run-scoped id.
+  Exact non-initial retries are constant-time relative to history size.
+- `N` fixed-size append commits perform `O(N)` cumulative history and persistence work.
+  Complete recovery/export remains `O(h)`, the size of the value it returns, and an
+  explicit replacement is linear in its replacement input.
+- Trusted immutable values are not serialized merely to copy them, and Memory retains
+  shared domain values instead of round-tripping JSON.
 - Result-only execution allocates no event queue. Event mode bounds lossy deltas and
   progress while keeping lifecycle and checkpoint events lossless.
 - Tool schemas compile once per registration. A selected batch creates at most one
@@ -46,3 +57,9 @@ signal, not a production latency promise.
 Kernel does not hide network latency with unbounded queues, background threads,
 speculative side effects, or implicit retries. Provider transports and durable
 repositories own connection pooling, batching, and backend-specific tuning.
+
+User-supplied model, history, approval, batch, repository, and tool implementations
+remain responsible for the work they perform. Kernel sends complete current history in
+each `ModelRequest`; materializing and encoding one request is `O(h)`, and cumulative
+LLM input over `N` fixed-size turns may therefore be `O(N^2)`. That deliberate model
+cost is outside the linear state-evolution and persistence guarantees.

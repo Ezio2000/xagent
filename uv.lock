@@ -522,12 +522,12 @@ wheels = [
 
 [[package]]
 name = "jharness-kernel"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/jharness-kernel" }
 
 [[package]]
 name = "jharness-models"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/jharness-models" }
 dependencies = [
     { name = "httpx" },
@@ -542,7 +542,7 @@ requires-dist = [
 
 [[package]]
 name = "jharness-repository"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/jharness-repository" }
 dependencies = [
     { name = "jharness-kernel" },
@@ -566,7 +566,7 @@ provides-extras = ["mysql", "redis"]
 
 [[package]]
 name = "jharness-toolkit"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/jharness-toolkit" }
 dependencies = [
     { name = "jharness-kernel" },
@@ -583,7 +583,7 @@ requires-dist = [
 
 [[package]]
 name = "jharness-tools"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/jharness-tools" }
 dependencies = [
     { name = "jharness-kernel" },

@@ -80,8 +80,13 @@ schema is unique and matches its file name.
 - `Suspended.resume_to` is exactly `Planning` or `ToolsPending`.
 - One durable boundary increments snapshot revision once and writes one fact in
   the same checkpoint.
-- `Repository.commit(checkpoint)` returns no receipt; success means the
-  checkpoint is authoritative.
+- `Repository.commit(durable_commit)` returns no receipt; the commit proof carries one
+  validated history change and success means its complete checkpoint is authoritative.
+- Repository idempotency is scoped by `(run_id, checkpoint_id)`.
+- Every model request contains the complete current durable history; kernel does not
+  truncate model-visible conversation state.
+- Materializing one complete model request is `O(H)` and cumulative LLM input may be
+  `O(N^2)`; those costs are outside the linear state-evolution and repository bounds.
 - Only `checkpoint_committed` advances durable trace state. Other events are
   live observation.
 - A parallel tool batch commits all ordered outcomes or none.

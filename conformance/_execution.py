@@ -21,6 +21,7 @@ from jharness.kernel import (
     ApprovalSuspend,
     Checkpoint,
     CommitError,
+    DurableCommit,
     Event,
     HistoryRewrite,
     Invocation,
@@ -28,10 +29,12 @@ from jharness.kernel import (
     RepositoryError,
     RequestError,
     RevisionConflict,
+    RunHistory,
     RunLimits,
     RunSnapshot,
     Runtime,
     SuspensionSelector,
+    checkpoint_digest,
     thaw_json_value,
 )
 from jharness.kernel.diagnostics import RequestKind, RunTrace, build_trace, verify_trace
@@ -70,7 +73,14 @@ class InvocationOutcome:
 class CaseRepository:
     """Fixture repository with CAS, idempotency, delay, and failure controls."""
 
-    __slots__ = ("_by_id", "_delay", "_failure", "_head", "commits")
+    __slots__ = (
+        "_by_id",
+        "_delay",
+        "_durable_commits",
+        "_failure",
+        "_head",
+        "commits",
+    )
 
     def __init__(
         self,
@@ -81,8 +91,13 @@ class CaseRepository:
         self._head = initial
         self._failure = failure
         self._delay = delay
-        self._by_id = {} if initial is None else {initial.id: initial}
+        self._by_id = (
+            {}
+            if initial is None
+            else {(initial.snapshot.context.run_id, initial.id): checkpoint_digest(initial)}
+        )
         self.commits: list[Checkpoint] = []
+        self._durable_commits: list[DurableCommit] = []
 
     @property
     def checkpoint(self) -> Checkpoint:
@@ -90,24 +105,24 @@ class CaseRepository:
             raise RuntimeError("invocation has no durable checkpoint")
         return self._head
 
-    async def commit(self, checkpoint: Checkpoint) -> None:
-        existing = self._by_id.get(checkpoint.id)
+    async def commit(self, commit: DurableCommit) -> None:
+        checkpoint = commit.checkpoint
+        run_id = checkpoint.snapshot.context.run_id
+        key = (run_id, checkpoint.id)
+        existing = self._by_id.get(key)
         if existing is not None:
-            if existing == checkpoint:
+            if existing == commit.digest:
                 return
-            raise RepositoryError(f"checkpoint id {checkpoint.id!r} was reused with new content")
+            raise RepositoryError(
+                f"checkpoint id {checkpoint.id!r} was reused with new content in run {run_id!r}"
+            )
 
         head = self._head
-        run_id = checkpoint.snapshot.context.run_id
-        expected = checkpoint.snapshot.revision - 1 if checkpoint.snapshot.revision else None
-        if head is None:
-            actual = None
-        elif head.snapshot.context.run_id != run_id:
-            raise RepositoryError("fixture repository cannot contain more than one run")
-        else:
-            actual = head.snapshot.revision
+        expected = commit.expected_revision
+        actual = _head_revision(head, run_id)
         if actual != expected:
             raise RevisionConflict(run_id, expected, actual)
+        _validate_commit_base(head, commit)
 
         if self._delay is not None and checkpoint.fact.kind == string(
             self._delay["fact_kind"], "repository delay fact_kind"
@@ -119,31 +134,55 @@ class CaseRepository:
             raise RuntimeError(string(self._failure["message"], "repository failure message"))
 
         self._head = checkpoint
-        self._by_id[checkpoint.id] = checkpoint
+        self._by_id[key] = commit.digest
         self.commits.append(checkpoint)
+        self._durable_commits.append(commit)
 
     async def verify_idempotency(self) -> bool:
         original = tuple(self.commits)
-        for checkpoint in original:
-            await self.commit(checkpoint)
-        if original:
-            checkpoint = original[-1]
+        durable = tuple(self._durable_commits)
+        for commit in durable:
+            await self.commit(commit)
+        if durable:
+            commit = durable[-1]
+            checkpoint = commit.checkpoint
             changed_fact = replace(checkpoint.fact, at=checkpoint.fact.at + 1)
             collision = replace(checkpoint, fact=changed_fact)
             try:
-                await self.commit(collision)
+                await self.commit(replace(commit, checkpoint=collision))
             except RepositoryError:
                 pass
             else:
                 return False
             stale = replace(checkpoint, id=f"{checkpoint.id}-stale")
             try:
-                await self.commit(stale)
+                await self.commit(replace(commit, checkpoint=stale))
             except RevisionConflict:
                 pass
             else:
                 return False
         return self.commits == list(original)
+
+
+def _head_revision(head: Checkpoint | None, run_id: str) -> int | None:
+    if head is None:
+        return None
+    if head.snapshot.context.run_id != run_id:
+        raise RepositoryError("fixture repository cannot contain more than one run")
+    return head.snapshot.revision
+
+
+def _validate_commit_base(head: Checkpoint | None, commit: DurableCommit) -> None:
+    if head is None:
+        if commit.parent_checkpoint_id is not None or commit.base_history_count is not None:
+            raise RepositoryError("fixture start commit has an invalid history base")
+        return
+    if (
+        commit.parent_checkpoint_id != head.id
+        or commit.base_history_count != len(head.snapshot.history)
+        or commit.base_history_digest != head.snapshot.history.digest
+    ):
+        raise RepositoryError("fixture commit does not match its authoritative parent")
 
 
 async def run_invocation(
@@ -364,9 +403,11 @@ class _FixtureHistoryReducer:
         if delay:
             await asyncio.sleep(delay)
         return HistoryRewrite(
-            tuple(
-                decode_message(message)
-                for message in sequence(self._fixture["messages"], "rewrite messages")
+            RunHistory(
+                tuple(
+                    decode_message(message)
+                    for message in sequence(self._fixture["messages"], "rewrite messages")
+                )
             ),
             string(self._fixture["reason"], "rewrite reason"),
             mapping(self._fixture["metadata"], "rewrite metadata"),

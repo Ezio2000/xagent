@@ -16,6 +16,7 @@ from jharness.kernel import (
     CommitError,
     ContentPart,
     DeltaSink,
+    DurableCommit,
     Event,
     EventKind,
     HistoryRewrite,
@@ -27,9 +28,11 @@ from jharness.kernel import (
     ModelRequest,
     ModelResponse,
     ModelUsage,
+    PendingToolCalls,
     Planning,
     RequestError,
     RunContext,
+    RunHistory,
     RunLimits,
     RunRepository,
     RunSnapshot,
@@ -211,6 +214,17 @@ async def test_final_run_result_and_events_share_one_execution() -> None:
     assert len(model.requests) == 1
 
 
+async def test_model_request_receives_complete_history() -> None:
+    messages = tuple(Message.user(str(index)) for index in range(256))
+    call = ToolCall("call-complete-history", "lookup")
+    model = ScriptModel([ModelResponse(tool_calls=(call,)), final()])
+
+    checkpoint = await Runtime(model=model, tools=tool_provider()).start(messages).result()
+
+    assert model.requests[0].messages == messages
+    assert model.requests[1].messages == tuple(checkpoint.snapshot.history)[:-1]
+
+
 async def test_result_only_rejects_late_event_subscription() -> None:
     invocation = Runtime(model=ScriptModel([final()])).start((Message.user("hello"),))
     assert object.__getattribute__(invocation, "_queue") is None
@@ -263,6 +277,36 @@ async def test_tool_result_is_committed_in_model_order() -> None:
     outcome = checkpoint.snapshot.history[2].outcome
     assert isinstance(outcome, ToolSuccess)
     assert [event.kind for event in events].count(EventKind.CHECKPOINT_COMMITTED) == 4
+    selected = [event for event in events if event.kind is EventKind.TOOL_BATCH_SELECTED]
+    assert len(selected) == 1
+    assert selected[0].data["call_ids"] == (call.id,)
+    assert selected[0].data["remaining_count"] == 0
+
+
+async def test_serial_tool_batches_do_not_materialize_the_remaining_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = tuple(ToolCall(f"call-{index}", "lookup") for index in range(40))
+
+    def fail_prefix(_: PendingToolCalls, _count: int) -> tuple[ToolCall, ...]:
+        raise AssertionError("tool selection materialized the pending suffix")
+
+    monkeypatch.setattr(PendingToolCalls, "prefix", fail_prefix)
+    checkpoint = (
+        await Runtime(
+            model=ScriptModel([ModelResponse(tool_calls=calls), final()]),
+            tools=tool_provider(),
+            limits=RunLimits(max_tool_calls=len(calls), max_tool_batch_size=len(calls)),
+        )
+        .start((Message.user("go"),))
+        .result()
+    )
+
+    assert checkpoint.snapshot.metrics.tool_calls == len(calls)
+    tail = checkpoint.snapshot.history.iter_tail(len(calls) + 1)
+    assert [message.tool_call_id for message in tail if message.role == "tool"] == [
+        call.id for call in calls
+    ]
 
 
 async def test_waiting_result_suspends_and_exact_resume_completes() -> None:
@@ -330,12 +374,12 @@ async def test_total_token_limit_commits_complete_model_observation_then_limits(
 
 class RejectSecondCommit(RunRepository):
     def __init__(self) -> None:
-        self.commits: list[Checkpoint] = []
+        self.commits: list[DurableCommit] = []
 
-    async def commit(self, checkpoint: Checkpoint) -> None:
+    async def commit(self, commit: DurableCommit) -> None:
         if self.commits:
             raise RuntimeError("storage unavailable")
-        self.commits.append(checkpoint)
+        self.commits.append(commit)
 
 
 class BlockingStartCommit(RunRepository):
@@ -343,8 +387,8 @@ class BlockingStartCommit(RunRepository):
         self.attempts = 0
         self.cancelled = False
 
-    async def commit(self, checkpoint: Checkpoint) -> None:
-        del checkpoint
+    async def commit(self, commit: DurableCommit) -> None:
+        del commit
         self.attempts += 1
         try:
             await asyncio.Event().wait()
@@ -438,7 +482,7 @@ async def test_repository_failure_preserves_last_checkpoint_and_stops_observatio
     with pytest.raises(CommitError, match="storage unavailable") as caught:
         async for _ in events:
             pass
-    assert caught.value.last_checkpoint is repository.commits[0]
+    assert caught.value.last_checkpoint is repository.commits[0].checkpoint
 
 
 class DenyPolicy(ApprovalPolicy):
@@ -500,7 +544,7 @@ class OneRewrite:
         if self.used:
             return None
         self.used = True
-        return HistoryRewrite((Message.user("summary"),), "compact")
+        return HistoryRewrite(RunHistory((Message.user("summary"),)), "compact")
 
 
 async def test_history_rewrite_is_a_separate_checkpoint() -> None:

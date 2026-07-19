@@ -259,16 +259,13 @@
     },
     "tools_pending_view": {
       "type": "object",
-      "required": ["kind", "call_ids"],
+      "required": ["kind", "pending_count", "call_id_digest"],
       "properties": {
         "kind": { "const": "tools_pending" },
-        "call_ids": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        }
+        "pending_count": { "type": "integer", "minimum": 1 },
+        "call_id_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       },
+      "$comment": "The suffix digest is composable with a tool-batch call-id prefix, allowing compact deterministic transition verification.",
       "additionalProperties": false
     },
     "suspended_view": {

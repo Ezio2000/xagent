@@ -21,7 +21,7 @@ def test_case_inventory_is_unique_sorted_and_complete() -> None:
     cases = runner().load_cases()
     names = [str(case["name"]) for case in cases]
 
-    assert len(cases) == 71
+    assert len(cases) == 72
     assert names == sorted(names)
     assert len(names) == len(set(names))
     assert {str(case["kind"]) for case in cases} == {"scenario", "validation"}
@@ -32,8 +32,8 @@ async def test_every_portable_case_passes_reference_runner() -> None:
     suite = runner()
     results = [await suite.run_case(case) for case in suite.load_cases()]
 
-    assert len(results) == 71
-    assert sum(result.invocation_count for result in results) == 67
+    assert len(results) == 72
+    assert sum(result.invocation_count for result in results) == 68
 
 
 def test_cli_returns_success_for_complete_suite() -> None:

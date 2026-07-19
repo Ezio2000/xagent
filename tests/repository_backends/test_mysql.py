@@ -2,41 +2,49 @@ from __future__ import annotations
 
 import asyncio
 import os
+import struct
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from hashlib import sha256
+from dataclasses import FrozenInstanceError, dataclass
 from threading import Event
+from unittest.mock import Mock
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 import pymysql
 import pytest
+from pymysql.protocol import MysqlPacket, OKPacketWrapper
 
-from jharness.kernel import (
-    Checkpoint,
-    ControlFact,
-    Limited,
-    LimitedControl,
-    LimitReason,
-    Message,
-    Planning,
-    RepositoryError,
-    RevisionConflict,
-    RunContext,
-    RunMetrics,
-    RunSnapshot,
-    StartedFact,
-)
+from jharness.kernel import DurableCommit, RepositoryError, RevisionConflict
 from jharness.repository._codec import (  # pyright: ignore[reportPrivateUsage]
-    encode_checkpoint,
+    CommitIdentity,
+    commit_identity,
+    encode_core,
 )
 from jharness.repository.mysql import (
     MySQLRunRepository,
+    MySQLTLS,
     _CommitOutcomeUnknown,  # pyright: ignore[reportPrivateUsage]
     _settle_future,  # pyright: ignore[reportPrivateUsage]
 )
+from tests.repository_backends.support import append_external, started
 
 _MYSQL_URL_ENV = "JHARNESS_TEST_MYSQL_URL"
+_COMMIT_RESPONSE_ERROR_CASES: tuple[
+    tuple[type[Exception], tuple[object, ...]],
+    ...,
+] = (
+    (pymysql.err.OperationalError, (2014, "commands out of sync")),
+    (
+        pymysql.err.InternalError,
+        ("Packet sequence number wrong - got 2 expected 1",),
+    ),
+    (struct.error, ("truncated COMMIT response",)),
+    (IndexError, ("empty COMMIT response",)),
+    (
+        UnicodeDecodeError,
+        ("utf-8", b"\xff", 0, 1, "invalid COMMIT SQLSTATE"),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -48,26 +56,28 @@ class _MySQLConfig:
     database: str
 
 
-class _StoredIdCursor:
+class _ScriptedCursor:
     def __init__(
         self,
         *rows: tuple[object, ...] | None,
+        execute_error_at: int | None = None,
         close_error: Exception | None = None,
     ) -> None:
         self.rows = list(rows)
-        self.query = ""
-        self.args: tuple[object, ...] = ()
+        self.queries: list[tuple[str, tuple[object, ...]]] = []
         self.closed = False
+        self._execute_error_at = execute_error_at
         self._close_error = close_error
 
     def execute(self, query: str, args: tuple[object, ...] = ()) -> int:
-        self.query = query
-        self.args = args
+        self.queries.append((query, args))
+        if self._execute_error_at == len(self.queries):
+            raise pymysql.err.OperationalError(1146, "injected schema failure")
         return 1
 
     def fetchone(self) -> tuple[object, ...] | None:
         if not self.rows:
-            raise AssertionError("test cursor has no scripted row")
+            return None
         return self.rows.pop(0)
 
     def close(self) -> None:
@@ -79,7 +89,7 @@ class _StoredIdCursor:
 class _ScriptedConnection:
     def __init__(
         self,
-        cursor: _StoredIdCursor,
+        cursor: _ScriptedCursor,
         *,
         commit_error: Exception | None = None,
         cleanup_error: Exception | None = None,
@@ -92,7 +102,7 @@ class _ScriptedConnection:
         self.rolled_back = False
         self.closed = False
 
-    def cursor(self) -> _StoredIdCursor:
+    def cursor(self) -> _ScriptedCursor:
         return self._cursor
 
     def begin(self) -> None:
@@ -114,51 +124,28 @@ class _ScriptedConnection:
             raise self._cleanup_error
 
 
-def _started(run_id: str, checkpoint_id: str) -> Checkpoint:
-    context = RunContext(run_id, 1.0)
-    snapshot = RunSnapshot(
+def _head_row(identity: CommitIdentity) -> tuple[object, ...]:
+    core = encode_core(identity)
+    return (
+        identity.run_id,
+        identity.revision,
+        identity.checkpoint_id,
+        identity.parent_checkpoint_id,
+        identity.digest,
+        core.digest,
         0,
-        context,
-        (Message.user("hello"),),
-        RunMetrics(),
-        Planning(),
-    )
-    return Checkpoint(checkpoint_id, snapshot, StartedFact(1.0, ("user",)))
-
-
-def _limited(previous: Checkpoint, checkpoint_id: str) -> Checkpoint:
-    snapshot = RunSnapshot(
         1,
-        previous.snapshot.context,
-        previous.snapshot.history,
-        previous.snapshot.metrics,
-        Limited(LimitReason.DEADLINE),
-    )
-    return Checkpoint(
-        checkpoint_id,
-        snapshot,
-        ControlFact(2.0, LimitedControl(LimitReason.DEADLINE)),
+        identity.history_count,
+        identity.history_digest,
     )
 
 
-def _head_row(checkpoint: Checkpoint) -> tuple[object, ...]:
-    encoded = encode_checkpoint(checkpoint)
+def _ledger_row(identity: CommitIdentity) -> tuple[object, ...]:
     return (
-        encoded.run_id,
-        encoded.checkpoint_id,
-        encoded.revision,
-        encoded.digest,
-        encoded.payload,
-    )
-
-
-def _ledger_row(checkpoint: Checkpoint) -> tuple[object, ...]:
-    encoded = encode_checkpoint(checkpoint)
-    return (
-        encoded.checkpoint_id,
-        encoded.run_id,
-        encoded.revision,
-        encoded.digest,
+        identity.run_id,
+        identity.checkpoint_id,
+        identity.revision,
+        identity.digest,
     )
 
 
@@ -196,8 +183,9 @@ def _repository(table_prefix: str) -> MySQLRunRepository:
 def _drop_test_tables(table_prefix: str) -> None:
     config = _mysql_config()
     table_names = (
-        f"{table_prefix}_v1_checkpoint_ids",
-        f"{table_prefix}_v1_run_heads",
+        f"{table_prefix}_v2_history_chunks",
+        f"{table_prefix}_v2_checkpoint_ledger",
+        f"{table_prefix}_v2_run_heads",
     )
     connection = pymysql.connect(
         host=config.host,
@@ -228,66 +216,146 @@ def _drop_test_tables(table_prefix: str) -> None:
 
 async def _capture_commit(
     repository: MySQLRunRepository,
-    checkpoint: Checkpoint,
+    commit: DurableCommit,
 ) -> BaseException | None:
     try:
-        await repository.commit(checkpoint)
+        await repository.commit(commit)
     except BaseException as exc:
         return exc
     return None
 
 
-async def test_mysql_sql_uses_hashed_keys_and_checks_full_checkpoint_id() -> None:
+async def test_mysql_schema_uses_only_hashed_v2_tables() -> None:
     repository = MySQLRunRepository(table_prefix="jharness_unit")
-    first = _started("run-" + "x" * 2048, "checkpoint-" + "y" * 2048)
-    encoded = encode_checkpoint(first)
     try:
-        heads_sql = repository._create_heads_sql()  # pyright: ignore[reportPrivateUsage]
-        ids_sql = repository._create_ids_sql()  # pyright: ignore[reportPrivateUsage]
-        assert "run_key BINARY(32)" in heads_sql
-        assert "jharness_unit_v1_run_heads" in heads_sql
-        assert "run_id LONGTEXT" in heads_sql
-        assert "checkpoint_key BINARY(32)" in ids_sql
-        assert "jharness_unit_v1_checkpoint_ids" in ids_sql
-        assert "checkpoint_id LONGTEXT" in ids_sql
-
-        exact = _StoredIdCursor(
-            _ledger_row(first),
-            _head_row(first),
-            _ledger_row(first),
-        )
-        assert repository._accept_existing(  # pyright: ignore[reportPrivateUsage]
-            exact,
-            encoded,
-        )
-        assert "FOR UPDATE" in exact.query
-        checkpoint_key = exact.args[0]
-        assert isinstance(checkpoint_key, bytes)
-        assert len(checkpoint_key) == 32
-
-        changed = _StoredIdCursor(
-            (
-                encoded.checkpoint_id,
-                encoded.run_id,
-                encoded.revision,
-                b"x" * 32,
-            )
-        )
-        with pytest.raises(RepositoryError, match="reused"):
-            repository._accept_existing(  # pyright: ignore[reportPrivateUsage]
-                changed,
-                encoded,
-            )
+        heads = repository._create_heads_sql()  # pyright: ignore[reportPrivateUsage]
+        ledger = repository._create_ledger_sql()  # pyright: ignore[reportPrivateUsage]
+        history = repository._create_history_sql()  # pyright: ignore[reportPrivateUsage]
+        assert "jharness_unit_v2_run_heads" in heads
+        assert "run_key BINARY(32)" in heads
+        assert "checkpoint_core LONGBLOB" in heads
+        assert "jharness_unit_v2_checkpoint_ledger" in ledger
+        assert "PRIMARY KEY (run_key, checkpoint_key)" in ledger
+        assert "UNIQUE KEY run_revision (run_key, revision)" in ledger
+        assert "jharness_unit_v2_history_chunks" in history
+        assert "PRIMARY KEY (run_key, history_generation, chunk_index)" in history
+        assert "_v1_" not in heads + ledger + history
     finally:
         await repository.close()
 
 
-def test_mysql_rejects_unsafe_table_prefix() -> None:
+def test_mysql_real_packet_parser_exposes_commit_response_builtin_errors() -> None:
+    truncated_ok = MysqlPacket(b"\x00\xfe\x00\x00\x00\x00\x00", "utf8")
+    with pytest.raises(struct.error):
+        OKPacketWrapper(truncated_ok)
+
+    empty = MysqlPacket(b"", "utf8")
+    with pytest.raises(IndexError):
+        empty.is_error_packet()
+
+    invalid_sqlstate = MysqlPacket(b"\xff\x01\x00#\xff\xff\xff\xff\xff", "utf8")
+    with pytest.raises(UnicodeDecodeError):
+        invalid_sqlstate.raise_for_error()
+
+
+def test_mysql_rejects_unsafe_or_too_long_table_prefix() -> None:
     with pytest.raises(ValueError, match="table_prefix"):
         MySQLRunRepository(table_prefix="jharness; DROP TABLE runs")
+    with pytest.raises(ValueError, match="too long"):
+        MySQLRunRepository(table_prefix="j" * 60)
 
 
-async def test_mysql_driver_is_loaded_only_when_the_backend_is_used(
+def test_mysql_tls_is_immutable_and_validates_certificate_pair() -> None:
+    tls = MySQLTLS(
+        ca="root-ca.pem",
+        cert="client-cert.pem",
+        key="client-key.pem",
+        key_password="secret",
+    )
+    assert tls.verify_identity is True
+    assert "secret" not in repr(tls)
+    with pytest.raises(FrozenInstanceError):
+        tls.ca = "other-ca.pem"  # pyright: ignore[reportAttributeAccessIssue]
+    with pytest.raises(ValueError, match="ca"):
+        MySQLTLS(ca="")
+    with pytest.raises(ValueError, match="provided together"):
+        MySQLTLS(ca="root-ca.pem", cert="client-cert.pem")
+    with pytest.raises(ValueError, match="provided together"):
+        MySQLTLS(ca="root-ca.pem", key="client-key.pem")
+    with pytest.raises(ValueError, match="key_password"):
+        MySQLTLS(ca="root-ca.pem", key_password="secret")
+    with pytest.raises(TypeError, match="boolean"):
+        MySQLTLS(ca="root-ca.pem", verify_identity=1)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(TypeError, match="MySQLTLS"):
+        MySQLRunRepository(tls={})  # pyright: ignore[reportArgumentType]
+
+
+async def test_mysql_tls_parameters_are_explicit_and_driver_stays_lazy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = _ScriptedConnection(_ScriptedCursor())
+    connect = Mock(return_value=connection)
+    loads = 0
+
+    def load_driver() -> object:
+        nonlocal loads
+        loads += 1
+        return type("Driver", (), {"connect": staticmethod(connect)})()
+
+    monkeypatch.setattr("jharness.repository.mysql._load_pymysql", load_driver)
+    tls = MySQLTLS(
+        ca="root-ca.pem",
+        cert="client-cert.pem",
+        key="client-key.pem",
+        key_password="secret",
+        verify_identity=False,
+    )
+    secured = MySQLRunRepository(
+        host="mysql.internal",
+        port=3307,
+        user="agent",
+        password="password",
+        database="runs",
+        tls=tls,
+        connect_timeout=11,
+        read_timeout=12,
+        write_timeout=13,
+    )
+    plaintext = MySQLRunRepository()
+    assert loads == 0
+    try:
+        assert secured._connect(autocommit=True) is connection  # pyright: ignore[reportPrivateUsage]
+        assert loads == 1
+        connect.assert_called_once_with(
+            host="mysql.internal",
+            port=3307,
+            user="agent",
+            password="password",
+            database="runs",
+            charset="utf8mb4",
+            autocommit=True,
+            connect_timeout=11,
+            read_timeout=12,
+            write_timeout=13,
+            ssl_ca="root-ca.pem",
+            ssl_cert="client-cert.pem",
+            ssl_key="client-key.pem",
+            ssl_key_password="secret",
+            ssl_verify_cert=True,
+            ssl_verify_identity=False,
+        )
+
+        connect.reset_mock()
+        assert plaintext._connect(autocommit=False) is connection  # pyright: ignore[reportPrivateUsage]
+        assert loads == 2
+        options = connect.call_args.kwargs
+        assert not any(name.startswith("ssl_") for name in options)
+    finally:
+        await secured.close()
+        await plaintext.close()
+
+
+async def test_mysql_driver_is_lazy_and_failed_enter_closes_repository(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     imports: list[str] = []
@@ -297,85 +365,59 @@ async def test_mysql_driver_is_loaded_only_when_the_backend_is_used(
         raise ModuleNotFoundError("No module named 'pymysql'", name="pymysql")
 
     monkeypatch.setattr("jharness.repository.mysql.import_module", missing_driver)
-    repository = MySQLRunRepository(table_prefix="jharness_missing_driver")
-    try:
-        with pytest.raises(RepositoryError, match=r"jharness-repository\[mysql\]"):
-            async with repository:
-                raise AssertionError("initialization unexpectedly succeeded")
-        assert imports == ["pymysql"]
-        with pytest.raises(RepositoryError, match="closed"):
-            await repository.get_head("run-after-failed-enter")
-    finally:
-        await repository.close()
+    repository = MySQLRunRepository(table_prefix="jharness_missing")
+    with pytest.raises(RepositoryError, match=r"jharness-repository\[mysql\]"):
+        async with repository:
+            raise AssertionError("initialization unexpectedly succeeded")
+    assert imports == ["pymysql"]
+    with pytest.raises(RepositoryError, match="closed"):
+        await repository.get_head("after-failure")
+    await repository.close()
 
 
-async def test_mysql_normalizes_string_subclasses_before_formatting_and_reads() -> None:
-    class HostileString(str):
-        def __str__(self) -> str:
-            return "attacker-controlled-str"
+async def test_mysql_initialization_failure_closes_driver_resources() -> None:
+    repository = MySQLRunRepository(table_prefix="jharness_init_failure")
+    cursor = _ScriptedCursor(execute_error_at=2)
+    connection = _ScriptedConnection(cursor)
 
-        def __format__(self, format_spec: str) -> str:
-            del format_spec
-            return "bad`; DROP TABLE run_heads; --"
+    def connect(*, autocommit: bool) -> _ScriptedConnection:
+        del autocommit
+        return connection
 
-    repository = MySQLRunRepository(
-        host=HostileString("db.example"),
-        user=HostileString("safe-user"),
-        password=HostileString("safe-password"),
-        database=HostileString("safe-database"),
-        table_prefix=HostileString("safe_prefix"),
-    )
-    captured: list[str] = []
+    object.__setattr__(repository, "_connect", connect)
 
-    def capture_read(run_id: str) -> None:
-        captured.append(run_id)
-
-    object.__setattr__(repository, "_get_head_sync", capture_read)
-    try:
-        assert "`safe_prefix_v1_run_heads`" in repository._create_heads_sql()  # pyright: ignore[reportPrivateUsage]
-        assert "attacker" not in repository._create_heads_sql()  # pyright: ignore[reportPrivateUsage]
-        for name in ("_host", "_user", "_password", "_database", "_table_prefix"):
-            assert type(vars(repository)[name]) is str
-
-        assert await repository.get_head(HostileString("safe-run")) is None
-        assert captured == ["safe-run"]
-        assert type(captured[0]) is str
-    finally:
-        await repository.close()
+    with pytest.raises(RepositoryError, match="initialization"):
+        async with repository:
+            raise AssertionError("initialization unexpectedly succeeded")
+    assert cursor.closed
+    assert connection.closed
+    with pytest.raises(RepositoryError, match="closed"):
+        await repository.get_head("after-failure")
 
 
 @pytest.mark.parametrize(
     "transport_error",
     [
-        pymysql.err.OperationalError(1158, "network read error"),
-        pymysql.err.OperationalError(2006, "server gone"),
         pymysql.err.OperationalError(2013, "lost response"),
-        pymysql.err.OperationalError(2055, "lost extended response"),
+        pymysql.err.OperationalError(2014, "commands out of sync"),
+        pymysql.err.InternalError("Packet sequence number wrong - got 2 expected 1"),
+        struct.error("truncated COMMIT response"),
+        IndexError("empty COMMIT response"),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid COMMIT SQLSTATE"),
         pymysql.err.InterfaceError(0, "connection closed"),
         OSError("connection reset"),
     ],
-    ids=(
-        "packet-read",
-        "server-gone",
-        "server-lost",
-        "server-lost-extended",
-        "interface",
-        "os-error",
-    ),
 )
-async def test_mysql_commit_transport_failure_becomes_unknown_and_cleanup_is_best_effort(
+async def test_mysql_lost_commit_response_is_unknown_and_cleanup_is_best_effort(
     transport_error: Exception,
 ) -> None:
-    repository = MySQLRunRepository(table_prefix="jharness_unknown_commit")
-    cursor = _StoredIdCursor(
-        None,
-        None,
-        close_error=RuntimeError("cursor close failed"),
-    )
+    repository = MySQLRunRepository(table_prefix="jharness_unknown")
+    identity = commit_identity(started("run-a", "cp-0"))
+    cursor = _ScriptedCursor(None, None, close_error=RuntimeError("close failed"))
     connection = _ScriptedConnection(
         cursor,
         commit_error=transport_error,
-        cleanup_error=RuntimeError("connection cleanup failed"),
+        cleanup_error=RuntimeError("cleanup failed"),
     )
 
     def connect(*, autocommit: bool) -> _ScriptedConnection:
@@ -385,31 +427,134 @@ async def test_mysql_commit_transport_failure_becomes_unknown_and_cleanup_is_bes
     object.__setattr__(repository, "_connect", connect)
     try:
         with pytest.raises(_CommitOutcomeUnknown) as raised:
-            repository._commit_once(  # pyright: ignore[reportPrivateUsage]
-                encode_checkpoint(_started("run-unknown", "checkpoint-unknown"))
-            )
+            repository._commit_once(identity)  # pyright: ignore[reportPrivateUsage]
         assert raised.value.__cause__ is transport_error
-        assert connection.begun
-        assert connection.committed
-        assert connection.rolled_back
-        assert cursor.closed
-        assert connection.closed
+        assert connection.begun and connection.committed and connection.rolled_back
+        assert cursor.closed and connection.closed
     finally:
         await repository.close()
 
 
-async def test_mysql_unknown_commit_retries_transient_failures_until_settled(
+async def test_mysql_server_err_packet_internal_error_fails_immediately() -> None:
+    repository = MySQLRunRepository(table_prefix="jharness_server_commit_error")
+    identity = commit_identity(started("run-a", "cp-0"))
+    packet = MysqlPacket(b"\xff\x3e\x00#HY000Packets out of order", encoding="utf8")
+    with pytest.raises(pymysql.err.InternalError) as parsed:
+        packet.raise_for_error()
+    server_error = parsed.value
+    assert server_error.args == (62, "Packets out of order")
+    cursor = _ScriptedCursor(None, None)
+    connection = _ScriptedConnection(cursor, commit_error=server_error)
+    attempts = 0
+
+    def connect(*, autocommit: bool) -> _ScriptedConnection:
+        nonlocal attempts
+        assert autocommit is False
+        attempts += 1
+        return connection
+
+    object.__setattr__(repository, "_initialize_sync", lambda: None)
+    object.__setattr__(repository, "_connect", connect)
+    try:
+        with pytest.raises(pymysql.err.InternalError) as raised:
+            repository._commit_sync(identity)  # pyright: ignore[reportPrivateUsage]
+        assert raised.value is server_error
+        assert attempts == 1
+        assert connection.committed and connection.rolled_back and connection.closed
+    finally:
+        await repository.close()
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+@pytest.mark.parametrize(
+    ("error_type", "error_args"),
+    _COMMIT_RESPONSE_ERROR_CASES,
+)
+async def test_mysql_commit_parse_failure_settles_new_or_existing_state(
+    monkeypatch: pytest.MonkeyPatch,
+    persisted: bool,
+    error_type: type[Exception],
+    error_args: tuple[object, ...],
+) -> None:
+    repository = MySQLRunRepository(table_prefix="jharness_commit_parse")
+    identity = commit_identity(started("run-a", "cp-0"))
+    first_cursor = _ScriptedCursor(None, None)
+    first = _ScriptedConnection(
+        first_cursor,
+        commit_error=error_type(*error_args),
+    )
+    second_cursor = (
+        _ScriptedCursor(
+            _head_row(identity),
+            _ledger_row(identity),
+            _ledger_row(identity),
+        )
+        if persisted
+        else _ScriptedCursor(None, None)
+    )
+    second = _ScriptedConnection(second_cursor)
+    connections = [first, second]
+
+    def connect(*, autocommit: bool) -> _ScriptedConnection:
+        assert autocommit is False
+        return connections.pop(0)
+
+    object.__setattr__(repository, "_initialize_sync", lambda: None)
+    object.__setattr__(repository, "_connect", connect)
+
+    def no_sleep(_: float) -> None:
+        pass
+
+    monkeypatch.setattr("jharness.repository.mysql.sleep", no_sleep)
+    try:
+        repository._commit_sync(identity)  # pyright: ignore[reportPrivateUsage]
+        assert connections == []
+        assert first.committed and first.rolled_back and first.closed
+        assert second.committed and second.closed
+        second_inserted = any("INSERT INTO" in query for query, _ in second_cursor.queries)
+        assert second_inserted is not persisted
+    finally:
+        await repository.close()
+
+
+@pytest.mark.parametrize(
+    ("error_type", "error_args"),
+    _COMMIT_RESPONSE_ERROR_CASES,
+)
+async def test_mysql_same_parse_failure_in_transaction_body_fails_immediately(
+    error_type: type[Exception],
+    error_args: tuple[object, ...],
+) -> None:
+    repository = MySQLRunRepository(table_prefix="jharness_body_parse")
+    identity = commit_identity(started("run-a", "cp-0"))
+    body_error = error_type(*error_args)
+    attempts = 0
+
+    def commit_once(_: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise body_error
+
+    object.__setattr__(repository, "_initialize_sync", lambda: None)
+    object.__setattr__(repository, "_commit_once", commit_once)
+    try:
+        with pytest.raises(error_type) as raised:
+            repository._commit_sync(identity)  # pyright: ignore[reportPrivateUsage]
+        assert raised.value is body_error
+        assert attempts == 1
+    finally:
+        await repository.close()
+
+
+async def test_mysql_unknown_outcome_retries_until_idempotently_settled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = MySQLRunRepository(table_prefix="jharness_settlement")
-    checkpoint = encode_checkpoint(_started("run-settlement", "checkpoint-settlement"))
+    identity = commit_identity(started("run-a", "cp-0"))
     outcomes: list[Exception | None] = [
         _CommitOutcomeUnknown(),
         pymysql.err.OperationalError(2003, "cannot connect"),
         pymysql.err.OperationalError(1213, "deadlock"),
-        pymysql.err.InterfaceError(0, "closed"),
-        OSError("reset"),
-        pymysql.err.ProgrammingError(1146, "table temporarily unavailable"),
         None,
     ]
     attempts = 0
@@ -421,54 +566,30 @@ async def test_mysql_unknown_commit_retries_transient_failures_until_settled(
         if outcome is not None:
             raise outcome
 
+    object.__setattr__(repository, "_initialize_sync", lambda: None)
+    object.__setattr__(repository, "_commit_once", commit_once)
+
     def no_sleep(_: float) -> None:
         pass
 
-    object.__setattr__(repository, "_initialize_sync", lambda: None)
-    object.__setattr__(repository, "_commit_once", commit_once)
     monkeypatch.setattr("jharness.repository.mysql.sleep", no_sleep)
     try:
-        repository._commit_sync(checkpoint)  # pyright: ignore[reportPrivateUsage]
-        assert attempts == 7
-        assert not outcomes
-
-        outcomes.extend([_CommitOutcomeUnknown(), RepositoryError("definitive corruption")])
-        with pytest.raises(RepositoryError, match="definitive corruption"):
-            repository._commit_sync(checkpoint)  # pyright: ignore[reportPrivateUsage]
-        assert attempts == 9
+        repository._commit_sync(identity)  # pyright: ignore[reportPrivateUsage]
+        assert attempts == 4
     finally:
         await repository.close()
 
 
-@pytest.mark.parametrize(
-    ("corruption", "message"),
-    [
-        ("digest", "digest"),
-        ("payload", "payload"),
-        ("ledger", "ledger"),
-    ],
-)
-async def test_mysql_commit_validates_existing_head_before_revision_cas(
-    corruption: str,
-    message: str,
+async def test_mysql_exact_retry_does_not_encode_core_or_history(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = MySQLRunRepository(table_prefix=f"jharness_corrupt_{corruption}")
-    first = _started("run-corrupt", "checkpoint-first")
-    next_checkpoint = _limited(first, "checkpoint-next")
-    head = list(_head_row(first))
-    ledger = list(_ledger_row(first))
-    if corruption == "digest":
-        head[3] = b"x" * 32
-    elif corruption == "payload":
-        payload = b"not-json"
-        digest = sha256(payload).digest()
-        head[3] = digest
-        head[4] = payload
-        ledger[3] = digest
-    else:
-        ledger[3] = b"x" * 32
-
-    cursor = _StoredIdCursor(None, tuple(head), tuple(ledger))
+    repository = MySQLRunRepository(table_prefix="jharness_retry")
+    identity = commit_identity(started("run-a", "cp-0"))
+    cursor = _ScriptedCursor(
+        _head_row(identity),
+        _ledger_row(identity),
+        _ledger_row(identity),
+    )
     connection = _ScriptedConnection(cursor)
 
     def connect(*, autocommit: bool) -> _ScriptedConnection:
@@ -476,57 +597,74 @@ async def test_mysql_commit_validates_existing_head_before_revision_cas(
         return connection
 
     object.__setattr__(repository, "_connect", connect)
+
+    def forbidden(*args: object) -> None:
+        del args
+        raise AssertionError("exact retry must not encode payloads")
+
+    monkeypatch.setattr("jharness.repository.mysql.encode_core", forbidden)
+    monkeypatch.setattr("jharness.repository.mysql.encode_history_change", forbidden)
+    monkeypatch.setattr("jharness.repository.mysql.decode_core", forbidden)
     try:
-        with pytest.raises(RepositoryError, match=message):
-            repository._commit_once(  # pyright: ignore[reportPrivateUsage]
-                encode_checkpoint(next_checkpoint)
-            )
-        assert connection.begun
-        assert connection.rolled_back
-        assert not connection.committed
+        repository._commit_once(identity)  # pyright: ignore[reportPrivateUsage]
+        assert connection.committed
+        assert not any("INSERT INTO" in query for query, _ in cursor.queries)
     finally:
         await repository.close()
 
 
-async def test_mysql_exact_retry_rejects_same_revision_with_another_head() -> None:
-    repository = MySQLRunRepository(table_prefix="jharness_strict_retry")
-    retried = _started("run-strict", "checkpoint-retried")
-    other = _started("run-strict", "checkpoint-other")
-    cursor = _StoredIdCursor(
-        _ledger_row(retried),
-        _head_row(other),
-        _ledger_row(other),
-    )
+async def test_mysql_append_inserts_exactly_one_delta_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = MySQLRunRepository(table_prefix="jharness_delta")
+    first = started("run-a", "cp-0")
+    initial = commit_identity(first)
+    appended = commit_identity(append_external(first.checkpoint, "cp-1"))
+    cursor = _ScriptedCursor(_head_row(initial), _ledger_row(initial), None)
+    connection = _ScriptedConnection(cursor)
+
+    def connect(*, autocommit: bool) -> _ScriptedConnection:
+        del autocommit
+        return connection
+
+    def forbidden_decode(*args: object) -> None:
+        del args
+        raise AssertionError("commit path must not decode the previous core")
+
+    object.__setattr__(repository, "_connect", connect)
+    monkeypatch.setattr("jharness.repository.mysql.decode_core", forbidden_decode)
     try:
-        with pytest.raises(RepositoryError, match="orphaned"):
-            repository._accept_existing(  # pyright: ignore[reportPrivateUsage]
-                cursor,
-                encode_checkpoint(retried),
-            )
+        repository._commit_once(appended)  # pyright: ignore[reportPrivateUsage]
+        history_inserts = [
+            query
+            for query, _ in cursor.queries
+            if "INSERT INTO `jharness_delta_v2_history_chunks`" in query
+        ]
+        assert len(history_inserts) == 1
+        assert connection.committed
     finally:
         await repository.close()
 
 
 async def test_mysql_commit_settles_worker_after_cancellation() -> None:
     repository = MySQLRunRepository(table_prefix="jharness_cancel", max_workers=1)
-    started = Event()
+    worker_started = Event()
     release = Event()
 
-    def blocking_commit(checkpoint: object) -> None:
-        del checkpoint
-        started.set()
+    def blocking_commit(_: object) -> None:
+        worker_started.set()
         if not release.wait(2):
             raise AssertionError("test did not release MySQL commit worker")
 
     object.__setattr__(repository, "_commit_sync", blocking_commit)
-    commit = asyncio.create_task(repository.commit(_started("run-cancel", "checkpoint-cancel")))
+    task = asyncio.create_task(repository.commit(started("run-a", "cp-0")))
     try:
-        assert await asyncio.to_thread(started.wait, 1)
-        commit.cancel()
+        assert await asyncio.to_thread(worker_started.wait, 1)
+        task.cancel()
         await asyncio.sleep(0)
-        assert not commit.done()
+        assert not task.done()
         release.set()
-        await asyncio.wait_for(commit, 1)
+        await asyncio.wait_for(task, 1)
     finally:
         release.set()
         await repository.close()
@@ -534,18 +672,18 @@ async def test_mysql_commit_settles_worker_after_cancellation() -> None:
 
 async def test_mysql_cancellation_removes_a_queued_worker() -> None:
     executor = ThreadPoolExecutor(max_workers=1)
-    started = Event()
+    started_event = Event()
     release = Event()
     executed = Event()
 
     def occupy_worker() -> None:
-        started.set()
+        started_event.set()
         if not release.wait(2):
             raise AssertionError("test did not release occupied worker")
 
     running = executor.submit(occupy_worker)
     try:
-        assert await asyncio.to_thread(started.wait, 1)
+        assert await asyncio.to_thread(started_event.wait, 1)
         queued = executor.submit(executed.set)
         settling = asyncio.create_task(_settle_future(queued))
         await asyncio.sleep(0)
@@ -564,47 +702,36 @@ async def test_mysql_cancellation_removes_a_queued_worker() -> None:
     _MYSQL_URL_ENV not in os.environ,
     reason=f"set {_MYSQL_URL_ENV} to run MySQL integration tests",
 )
-async def test_mysql_repository_atomic_cas_and_global_id_ledger() -> None:
+async def test_mysql_atomic_cas_per_run_ledger_and_reliable_cleanup() -> None:
     table_prefix = f"jharness_t_{uuid4().hex[:16]}"
     repository = _repository(table_prefix)
     peer = _repository(table_prefix)
-    run_id = "run-长-" + "r" * 2048
-    first = _started(run_id, "checkpoint-零-" + "c" * 2048)
-    left = _limited(first, "checkpoint-left")
-    right = _limited(first, "checkpoint-right")
-
+    first = started("run-a", "shared-checkpoint")
+    other = started("run-b", "shared-checkpoint")
+    left = append_external(first.checkpoint, "checkpoint-left")
+    right = append_external(first.checkpoint, "checkpoint-right")
     try:
         async with repository, peer:
-            assert await repository.get_head(run_id) is None
             await repository.commit(first)
-            assert await peer.get_head(run_id) == first
-
+            await peer.commit(other)
+            assert await peer.get_head("run-a") == first.checkpoint
             outcomes = await asyncio.gather(
                 _capture_commit(repository, left),
                 _capture_commit(peer, right),
             )
             assert outcomes.count(None) == 1
-            failures = [outcome for outcome in outcomes if outcome is not None]
-            assert len(failures) == 1
-            assert isinstance(failures[0], RevisionConflict)
-
-            head = await repository.get_head(run_id)
-            assert head in (left, right)
+            assert sum(isinstance(item, RevisionConflict) for item in outcomes) == 1
+            head = await repository.get_head("run-a")
+            assert head in (left.checkpoint, right.checkpoint)
             await repository.commit(first)
-
-            assert head is not None
-            collision = Checkpoint(first.id, head.snapshot, head.fact)
+            collision = append_external(first.checkpoint, first.checkpoint_id, text="changed")
             with pytest.raises(RepositoryError, match="reused"):
                 await repository.commit(collision)
-
-            other_run = _started("other-run", first.id)
-            with pytest.raises(RepositoryError, match="reused"):
-                await peer.commit(other_run)
-
-            stale = Checkpoint("checkpoint-stale", head.snapshot, head.fact)
-            with pytest.raises(RevisionConflict) as raised:
-                await peer.commit(stale)
-            assert raised.value.expected_revision == 0
-            assert raised.value.actual_revision == 1
     finally:
-        await asyncio.to_thread(_drop_test_tables, table_prefix)
+        try:
+            await repository.close()
+        finally:
+            try:
+                await peer.close()
+            finally:
+                await asyncio.to_thread(_drop_test_tables, table_prefix)

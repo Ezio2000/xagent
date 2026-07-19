@@ -122,7 +122,9 @@ share the invocation's monotonic deadline.
 ## Batch Selection
 
 `BatchPolicy` is a pure synchronous strategy that selects a non-empty prefix of
-pending calls. Kernel validates the selection and owns execution.
+an already-bounded candidate window. The window contains at most the remaining
+tool-call budget and maximum batch size, so a policy cannot turn queue length
+into hidden per-step work. Kernel validates the selection and owns execution.
 
 The default policy:
 

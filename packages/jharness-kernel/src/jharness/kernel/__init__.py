@@ -39,7 +39,7 @@ from jharness.kernel.errors import (
     ToolError,
 )
 from jharness.kernel.events import Event, EventKind
-from jharness.kernel.history import HistoryReducer, HistoryRewrite
+from jharness.kernel.history import HistoryReducer, HistoryRewrite, RunHistory
 from jharness.kernel.invocation import Invocation
 from jharness.kernel.json_values import (
     MAX_JSON_NESTING_DEPTH,
@@ -66,7 +66,17 @@ from jharness.kernel.models import (
     ResponseFormat,
     ToolChoice,
 )
-from jharness.kernel.repository import EphemeralRepository, RunRepository
+from jharness.kernel.repository import (
+    DurableCommit,
+    EphemeralRepository,
+    HistoryAppend,
+    HistoryChange,
+    HistoryReplace,
+    HistoryUnchanged,
+    InitialHistory,
+    RunRepository,
+    checkpoint_digest,
+)
 from jharness.kernel.runtime import Runtime
 from jharness.kernel.snapshot import RunSnapshot
 from jharness.kernel.state import (
@@ -74,6 +84,7 @@ from jharness.kernel.state import (
     Completed,
     Failed,
     Limited,
+    PendingToolCalls,
     Planning,
     RunMetrics,
     RunState,
@@ -121,6 +132,7 @@ __all__ = [
     "ControlFact",
     "ConversationInsertFact",
     "DeltaSink",
+    "DurableCommit",
     "EphemeralRepository",
     "ErrorInfo",
     "Event",
@@ -128,9 +140,14 @@ __all__ = [
     "Fact",
     "Failed",
     "FailedControl",
+    "HistoryAppend",
+    "HistoryChange",
     "HistoryReducer",
+    "HistoryReplace",
     "HistoryRewrite",
     "HistoryRewriteFact",
+    "HistoryUnchanged",
+    "InitialHistory",
     "Invocation",
     "JsonScalar",
     "JsonValue",
@@ -154,6 +171,7 @@ __all__ = [
     "ModelTurnResult",
     "ModelUsage",
     "ModelUsageDelta",
+    "PendingToolCalls",
     "Planning",
     "ProtocolError",
     "RepositoryError",
@@ -162,6 +180,7 @@ __all__ = [
     "ResumedFact",
     "RevisionConflict",
     "RunContext",
+    "RunHistory",
     "RunLimits",
     "RunMetrics",
     "RunRepository",
@@ -198,6 +217,7 @@ __all__ = [
     "ToolWaiting",
     "ToolsPending",
     "WaitingResult",
+    "checkpoint_digest",
     "freeze_json_value",
     "thaw_json_value",
     "tool_message",

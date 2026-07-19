@@ -23,6 +23,7 @@ class EventKind(StrEnum):
     MODEL_STARTED = "model_started"
     MODEL_DELTA = "model_delta"
     MODEL_FINISHED = "model_finished"
+    TOOL_BATCH_SELECTED = "tool_batch_selected"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_DECIDED = "approval_decided"
     TOOL_STARTED = "tool_started"

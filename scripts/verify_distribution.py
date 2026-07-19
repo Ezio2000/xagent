@@ -75,7 +75,32 @@ def _requirement_name(requirement: str) -> str:
     match = REQUIREMENT_NAME.match(requirement)
     if match is None:
         raise ValueError(f"invalid Requires-Dist: {requirement!r}")
-    return match.group(1).lower().replace("_", "-")
+    return re.sub(r"[-_.]+", "-", match.group(1).lower())
+
+
+def _normalized_requirement(requirement: str) -> str:
+    name_match = REQUIREMENT_NAME.match(requirement)
+    if name_match is None:
+        raise ValueError(f"invalid Requires-Dist: {requirement!r}")
+    name = _requirement_name(name_match.group(1))
+    remainder = requirement[name_match.end() :].strip()
+    extras = ""
+    if remainder.startswith("["):
+        closing = remainder.find("]")
+        if closing < 0:
+            raise ValueError(f"invalid Requires-Dist extras: {requirement!r}")
+        raw_extras = remainder[1:closing].split(",")
+        normalized_extras = sorted(
+            _requirement_name(extra.strip()) for extra in raw_extras if extra.strip()
+        )
+        if not normalized_extras or len(normalized_extras) != len(raw_extras):
+            raise ValueError(f"invalid Requires-Dist extras: {requirement!r}")
+        extras = f"[{','.join(normalized_extras)}]"
+        remainder = remainder[closing + 1 :].strip()
+    specifier = re.sub(r"\s+", "", remainder)
+    if specifier and re.fullmatch(r"(?:===|==|!=|~=|<=|>=|<|>)[^;]+", specifier) is None:
+        raise ValueError(f"unsupported Requires-Dist specification: {requirement!r}")
+    return f"{name}{extras}{specifier}"
 
 
 def _requirement_groups(message: Message) -> dict[str | None, set[str]]:
@@ -88,29 +113,30 @@ def _requirement_groups(message: Message) -> dict[str | None, set[str]]:
             match = EXTRA_MARKER.fullmatch(marker.strip())
             if match is None:
                 raise ValueError(f"unsupported Requires-Dist marker: {requirement!r}")
-            extra = match.group(1).lower().replace("_", "-")
-        groups.setdefault(extra, set()).add(_requirement_name(specification.strip()))
+            extra = re.sub(r"[-_.]+", "-", match.group(1).lower())
+        groups.setdefault(extra, set()).add(_normalized_requirement(specification.strip()))
     return groups
 
 
 def _verify_dependencies(message: Message, distribution: str, version: str) -> None:
     requirement_groups = _requirement_groups(message)
-    actual_dependencies = requirement_groups.pop(None, set())
+    required = requirement_groups.pop(None, set())
+    actual_dependencies = {_requirement_name(requirement) for requirement in required}
     if actual_dependencies != DEPENDENCIES[distribution]:
         raise ValueError(f"{distribution} dependencies differ: {sorted(actual_dependencies)}")
     expected_optional = {
-        extra: {_requirement_name(requirement) for requirement in requirements}
+        extra: {_normalized_requirement(requirement) for requirement in requirements}
         for extra, requirements in OPTIONAL_REQUIREMENTS.get(distribution, {}).items()
     }
     if requirement_groups != expected_optional:
         raise ValueError(f"{distribution} optional dependencies differ: {requirement_groups}")
-    provided_extras = set(message.get_all("Provides-Extra", []))
+    provided_extras = {
+        re.sub(r"[-_.]+", "-", extra.lower()) for extra in message.get_all("Provides-Extra", [])
+    }
     if provided_extras != set(expected_optional):
         raise ValueError(f"{distribution} extras differ: {sorted(provided_extras)}")
-    if distribution != "jharness-kernel":
-        pins = message.get_all("Requires-Dist", [])
-        if not any(item == f"jharness-kernel=={version}" for item in pins):
-            raise ValueError(f"{distribution} does not pin the coordinated kernel")
+    if distribution != "jharness-kernel" and f"jharness-kernel=={version}" not in required:
+        raise ValueError(f"{distribution} does not pin the coordinated kernel")
 
 
 def _verify_wheel(path: Path) -> Wheel:

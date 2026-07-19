@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn, cast
 
+from jharness.kernel._digest import compose_call_id_digest
 from jharness.kernel._engine.verification import verify_change
 from jharness.kernel.diagnostics.trace import RunTrace, TraceEntry
 from jharness.kernel.events import EventKind
@@ -54,6 +55,15 @@ class _ToolObservation:
     outcome_kind: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _BatchSelection:
+    batch_id: str
+    call_ids: tuple[str, ...]
+    parallel: bool
+    remaining_count: int
+    remaining_call_id_digest: bytes
+
+
 class _Verifier:
     __slots__ = (
         "_active_tools",
@@ -68,6 +78,7 @@ class _Verifier:
         "_model_active",
         "_model_finished",
         "_seen_tools",
+        "_selected_batch",
         "_settled_tools",
         "_trace",
     )
@@ -82,6 +93,7 @@ class _Verifier:
         self._closed = False
         self._model_active = False
         self._model_finished: Mapping[str, Any] | None = None
+        self._selected_batch: _BatchSelection | None = None
         self._active_tools: dict[str, _ToolObservation] = {}
         self._settled_tools: dict[str, _ToolObservation] = {}
         self._seen_tools: set[str] = set()
@@ -149,6 +161,7 @@ class _Verifier:
             EventKind.MODEL_STARTED: self._model_started,
             EventKind.MODEL_DELTA: self._model_delta,
             EventKind.MODEL_FINISHED: self._model_completed,
+            EventKind.TOOL_BATCH_SELECTED: self._tool_batch_selected,
             EventKind.APPROVAL_REQUESTED: self._approval_requested,
             EventKind.APPROVAL_DECIDED: self._approval_decided,
             EventKind.TOOL_STARTED: self._tool_started,
@@ -195,14 +208,82 @@ class _Verifier:
         self._model_active = False
         self._model_finished = entry.data
 
+    def _tool_batch_selected(self, entry: TraceEntry) -> None:
+        self._require_pending_state(entry, "tool_batch_selected")
+        if (
+            self._model_active
+            or self._selected_batch is not None
+            or self._active_tools
+            or self._approvals_waiting
+        ):
+            _fail(entry, "tool_lifecycle", "tool batch selection requires an idle boundary")
+        batch_id = _string(
+            entry,
+            _required(entry, entry.data, "batch_id"),
+            "selected batch_id",
+            non_empty=True,
+        )
+        call_ids = _string_sequence(
+            entry,
+            _required(entry, entry.data, "call_ids"),
+            "selected call_ids",
+        )
+        if not call_ids or len(call_ids) != len(set(call_ids)):
+            _fail(entry, "tool_lifecycle", "selected call_ids must be non-empty and unique")
+        parallel = _boolean(
+            entry,
+            _required(entry, entry.data, "parallel"),
+            "selected parallel",
+        )
+        remaining_count = _integer(
+            entry,
+            _required(entry, entry.data, "remaining_count"),
+            "selected remaining_count",
+            minimum=0,
+        )
+        remaining_digest = _digest_hex(
+            entry,
+            _required(entry, entry.data, "remaining_call_id_digest"),
+            "selected remaining_call_id_digest",
+        )
+        current = cast(RunView, self._current)
+        state = _mapping(entry, _required(entry, current, "state"), "view state")
+        pending_count = _integer(
+            entry,
+            _required(entry, state, "pending_count"),
+            "pending_count",
+            minimum=1,
+        )
+        pending_digest = _digest_hex(
+            entry,
+            _required(entry, state, "call_id_digest"),
+            "call_id_digest",
+        )
+        if (
+            len(call_ids) + remaining_count != pending_count
+            or compose_call_id_digest(
+                call_ids,
+                remaining_digest,
+            )
+            != pending_digest
+        ):
+            _fail(entry, "tool_lifecycle", "selected batch is not the pending prefix")
+        self._selected_batch = _BatchSelection(
+            batch_id,
+            call_ids,
+            parallel,
+            remaining_count,
+            remaining_digest,
+        )
+
     def _approval_requested(self, entry: TraceEntry) -> None:
         self._require_pending_state(entry, "approval_requested")
-        if self._model_active or self._active_tools:
+        selected = self._selected_batch
+        if self._model_active or self._active_tools or selected is None:
             _fail(entry, "approval_lifecycle", "approval requires idle tool preparation")
         call = _mapping(entry, _required(entry, entry.data, "call"), "approval call")
         call_id = _string(entry, _required(entry, call, "id"), "approval call id", non_empty=True)
-        if call_id not in _pending_call_ids(entry, cast(RunView, self._current)):
-            _fail(entry, "approval_lifecycle", "approval call is not pending")
+        _validate_selected_envelope(entry, selected, call_id, approval=True)
         if call_id in self._approvals_waiting | self._approvals_decided:
             _fail(entry, "approval_lifecycle", "approval was requested more than once")
         self._approvals_waiting.add(call_id)
@@ -221,12 +302,12 @@ class _Verifier:
 
     def _tool_started(self, entry: TraceEntry) -> None:
         self._require_pending_state(entry, "tool_started")
-        if self._model_active or self._approvals_waiting:
+        selected = self._selected_batch
+        if self._model_active or self._approvals_waiting or selected is None:
             _fail(entry, "tool_lifecycle", "tool_started requires settled preparation")
         call = _mapping(entry, _required(entry, entry.data, "call"), "tool call")
         call_id = _string(entry, _required(entry, call, "id"), "tool call id", non_empty=True)
-        if call_id not in _pending_call_ids(entry, cast(RunView, self._current)):
-            _fail(entry, "tool_lifecycle", "started tool call is not pending")
+        _validate_selected_envelope(entry, selected, call_id, approval=False)
         if call_id in self._seen_tools:
             _fail(entry, "tool_lifecycle", "tool call started more than once in a boundary")
         batch_id = _string(
@@ -383,6 +464,13 @@ class _Verifier:
         if self._approvals_waiting:
             _fail(entry, "approval_lifecycle", "tool_batch requires every approval to settle")
         batch_id, parallel, call_ids, outcomes = _tool_fact_fields(entry, fact)
+        selected = self._selected_batch
+        if selected is None or (batch_id, call_ids, parallel) != (
+            selected.batch_id,
+            selected.call_ids,
+            selected.parallel,
+        ):
+            _fail(entry, "tool_fact_mismatch", "tool fact differs from selected batch")
         fact_calls = set(call_ids)
         observed_calls = set(self._settled_tools)
         required_calls = {
@@ -408,11 +496,17 @@ class _Verifier:
                 _fail(entry, "tool_fact_mismatch", "tool batch envelope differs from its fact")
 
     def _has_active_effect(self) -> bool:
-        return bool(self._model_active or self._active_tools or self._approvals_waiting)
+        return bool(
+            self._model_active
+            or self._selected_batch is not None
+            or self._active_tools
+            or self._approvals_waiting
+        )
 
     def _reset_boundary_events(self) -> None:
         self._model_active = False
         self._model_finished = None
+        self._selected_batch = None
         self._active_tools.clear()
         self._settled_tools.clear()
         self._seen_tools.clear()
@@ -565,6 +659,53 @@ def _string_sequence(entry: TraceEntry, value: object, label: str) -> tuple[str,
     return cast(tuple[str, ...], items)
 
 
+def _digest_hex(entry: TraceEntry, value: object, label: str) -> bytes:
+    digest = _string(entry, value, label)
+    try:
+        decoded = bytes.fromhex(digest)
+    except ValueError:
+        _fail(entry, "invalid_entry", f"{label} must contain 32-byte hex")
+    if len(digest) != 64 or len(decoded) != 32 or decoded.hex() != digest:
+        _fail(entry, "invalid_entry", f"{label} must contain 32-byte hex")
+    return decoded
+
+
+def _validate_selected_envelope(
+    entry: TraceEntry,
+    selected: _BatchSelection,
+    call_id: str,
+    *,
+    approval: bool,
+) -> None:
+    code = "approval_lifecycle" if approval else "tool_lifecycle"
+    batch_id = _string(
+        entry,
+        _required(entry, entry.data, "batch_id"),
+        "selected batch_id",
+        non_empty=True,
+    )
+    index = _integer(
+        entry,
+        _required(entry, entry.data, "index"),
+        "selected call index",
+        minimum=0,
+    )
+    if (
+        batch_id != selected.batch_id
+        or index >= len(selected.call_ids)
+        or selected.call_ids[index] != call_id
+    ):
+        _fail(entry, code, "call does not match the selected batch")
+    if not approval:
+        parallel = _boolean(
+            entry,
+            _required(entry, entry.data, "parallel"),
+            "tool parallel",
+        )
+        if parallel is not selected.parallel:
+            _fail(entry, code, "tool parallel does not match the selected batch")
+
+
 def _validate_view(entry: TraceEntry, view: RunView) -> None:
     _integer(entry, _required(entry, view, "revision"), "view revision", minimum=0)
     _integer(entry, _required(entry, view, "history_count"), "history_count", minimum=1)
@@ -585,16 +726,19 @@ def _state_kind(entry: TraceEntry, view: RunView) -> str:
     kind = _string(entry, _required(entry, state, "kind"), "state kind")
     if kind not in _ACTIVE_STATES | _CLOSED_STATES:
         _fail(entry, "invalid_entry", "state kind is unsupported")
+    if kind == "tools_pending":
+        _integer(
+            entry,
+            _required(entry, state, "pending_count"),
+            "pending_count",
+            minimum=1,
+        )
+        _digest_hex(
+            entry,
+            _required(entry, state, "call_id_digest"),
+            "call_id_digest",
+        )
     return kind
-
-
-def _pending_call_ids(entry: TraceEntry, view: RunView) -> tuple[str, ...]:
-    state = _mapping(entry, _required(entry, view, "state"), "view state")
-    return _string_sequence(
-        entry,
-        _required(entry, state, "call_ids"),
-        "pending call_ids",
-    )
 
 
 def _fail(entry: TraceEntry, code: str, message: str) -> NoReturn:

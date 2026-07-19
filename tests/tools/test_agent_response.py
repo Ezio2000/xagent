@@ -16,6 +16,7 @@ from jharness.kernel import (
     ModelCapabilities,
     ModelRequest,
     ModelResponse,
+    PendingToolCalls,
     Planning,
     RunContext,
     Runtime,
@@ -331,7 +332,7 @@ def test_agent_suspension_defenses() -> None:
             cast(Any, SimpleNamespace(snapshot=SimpleNamespace(state=wrong)))
         )
     pending = Suspended(
-        ToolsPending((ToolCall("next", "Read", {}),)),
+        ToolsPending(PendingToolCalls((ToolCall("next", "Read", {}),))),
         Suspension("agent_completion", "Agent", "wait"),
     )
     with pytest.raises(ValueError, match="resume to Planning"):

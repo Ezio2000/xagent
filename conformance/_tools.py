@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,7 @@ class _FaultBatchPolicy:
 
     def select(
         self,
-        pending: tuple[ToolCall, ...],
+        pending: Sequence[ToolCall],
         catalog: ToolCatalog,
         limits: RunLimits,
     ) -> ToolBatch:
@@ -51,7 +51,11 @@ class _FaultBatchPolicy:
             return ToolBatch("invalid", (pending[1],))
         if self._kind == "serial_multiple":
             raise ValueError("serial tool batch must contain exactly one call")
-        return ToolBatch("invalid", pending[:2], parallel=True)
+        if self._kind == "oversized":
+            first = pending[0]
+            extra = ToolCall(f"{first.id}-extra", first.name, {})
+            return ToolBatch("invalid", (first, extra), parallel=True)
+        return ToolBatch("invalid", tuple(pending[:2]), parallel=True)
 
 
 def fixture_batch_policy(value: object) -> BatchPolicy | None:

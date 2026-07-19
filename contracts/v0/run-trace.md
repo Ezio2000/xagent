@@ -38,6 +38,8 @@ verifies:
 - the supplied after view equals the deterministic fact transition;
 - model completion increments planning steps exactly once;
 - tool-batch checkpoints increment tool calls by committed outcome count;
+- `tool_batch_selected` proves one bounded pending prefix from the current
+  pending count and digest before approval or execution begins;
 - live deltas and progress do not advance durable state;
 - parallel physical completion may differ, but every live completion must
   match exactly one committed call and every non-failure outcome requires a
@@ -58,6 +60,7 @@ evidence must call `verify_trace(decode_trace(document))`.
 
 ## Payload Policy
 
-Traces contain ids, counts, kinds, metadata-key summaries, compact facts, and
-compact state views. They do not copy complete message history, content bodies,
+Traces contain ids, counts, kinds, metadata-key summaries, compact facts,
+bounded selected tool-call ids, and compact state views. They do not copy
+complete message history, the complete remaining pending queue, content bodies,
 provider metadata, arbitrary suspension metadata values, or large tool output.
