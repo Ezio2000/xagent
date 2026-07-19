@@ -17,10 +17,21 @@ DISTRIBUTIONS = (
     "jharness-kernel",
     "jharness-toolkit",
     "jharness-models",
+    "jharness-repository",
     "jharness-tools",
 )
-MODULES = ("jharness.kernel", "jharness.toolkit", "jharness.models", "jharness.tools")
+MODULES = (
+    "jharness.kernel",
+    "jharness.toolkit",
+    "jharness.models",
+    "jharness.repository",
+    "jharness.tools",
+)
 _PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+_MYSQL_IMAGE = (
+    "mysql:8.4.10@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d"
+)
+_REDIS_IMAGE = "redis:8.4.4@sha256:c44528447fa07ed62bdb0c1944cba54f8cad6a4e4a49ada9d4843b5b07d03227"
 
 
 def _mapping(value: object, label: str) -> dict[str, object]:
@@ -86,7 +97,27 @@ def test_release_metadata_is_coordinated() -> None:
     assert "distributions=jharness-kernel" in result.stdout
 
 
-def test_release_workflow_builds_and_publishes_four_distributions() -> None:
+def test_repository_integration_images_are_immutable_and_consistent() -> None:
+    quality = _jobs(_workflow("ci.yml"))["quality"]
+    services = _mapping(quality.get("services"), "CI services")
+    ci_images = {
+        str(_mapping(services.get(name), f"{name} service").get("image"))
+        for name in ("mysql", "redis")
+    }
+    expected_images = {_MYSQL_IMAGE, _REDIS_IMAGE}
+    assert ci_images == expected_images
+
+    release_build = _jobs(_workflow("release.yml"))["build"]
+    integration_run = _run(release_build, "Start repository integration services")
+    release_images = set(re.findall(r"(?:mysql|redis):[^\s\\]+", integration_run))
+    assert release_images == expected_images
+    assert all(":latest" not in image for image in ci_images | release_images)
+    assert all(
+        re.fullmatch(r"[^:]+:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", image) for image in ci_images
+    )
+
+
+def test_release_workflow_builds_and_publishes_five_distributions() -> None:
     jobs = _jobs(_workflow("release.yml"))
     assert set(jobs) == {
         "build",
@@ -105,19 +136,33 @@ def test_release_workflow_builds_and_publishes_four_distributions() -> None:
     assert jobs["github-release"]["needs"] == "verify-pypi"
 
     build = jobs["build"]
+    integration_step = _step(build, "Start repository integration services")
+    assert integration_step["if"] == "github.event_name == 'push'"
+    integration_run = _run(build, "Start repository integration services")
+    assert _MYSQL_IMAGE in integration_run
+    assert _REDIS_IMAGE in integration_run
+    quality_environment = _mapping(
+        _step(build, "Run release quality gate").get("env"),
+        "release quality environment",
+    )
+    assert "JHARNESS_TEST_MYSQL_URL" in quality_environment
+    assert "JHARNESS_TEST_REDIS_URL" in quality_environment
     assert 'verify_release.py --tag "$RELEASE_TAG"' in _run(build, "Verify tag and metadata")
     assert _run(build, "Build immutable artifact set") == ("uv build --all-packages --out-dir dist")
     artifact_checks = _run(build, "Verify artifacts, imports, and checksums")
     assert "scripts/verify_distribution.py dist" in artifact_checks
+    assert "find_spec('pymysql') is None" in artifact_checks
+    assert "find_spec('redis') is None" in artifact_checks
+    assert '"${repository_wheels[0]}[mysql,redis]"' in artifact_checks
     assert "sha256sum --check dist/SHA256SUMS" in artifact_checks
     assert "-name '*.whl' -o -name '*.tar.gz'" in artifact_checks
-    assert '| wc -l)" -eq 8' in artifact_checks
+    assert '| wc -l)" -eq 10' in artifact_checks
     assert "test -f dist/SHA256SUMS" in artifact_checks
     recovery_checks = _run(build, "Verify recovered run identity and artifacts")
     assert 'test "$run_path" = ".github/workflows/release.yml"' in recovery_checks
     assert "scripts/verify_distribution.py dist" in recovery_checks
     assert "-name '*.whl' -o -name '*.tar.gz'" in recovery_checks
-    assert '| wc -l)" -eq 8' in recovery_checks
+    assert '| wc -l)" -eq 10' in recovery_checks
     assert "test -f dist/SHA256SUMS" in recovery_checks
 
     test_publish = _step(jobs["publish-testpypi"], "Publish with trusted publishing")
@@ -157,6 +202,7 @@ def test_release_workflow_builds_and_publishes_four_distributions() -> None:
         assert include == [
             {"project": "jharness-kernel", "artifact_prefix": "jharness_kernel"},
             {"project": "jharness-models", "artifact_prefix": "jharness_models"},
+            {"project": "jharness-repository", "artifact_prefix": "jharness_repository"},
             {"project": "jharness-toolkit", "artifact_prefix": "jharness_toolkit"},
             {"project": "jharness-tools", "artifact_prefix": "jharness_tools"},
         ]
@@ -195,7 +241,9 @@ def test_test_suite_has_structural_workflow_dependencies_and_a_global_timeout() 
     assert isinstance(dev, list)
     dependencies = cast(list[object], dev)
     assert "pytest-timeout>=2.4.0" in dependencies
+    assert "pymysql[rsa]>=1.2.0" in dependencies
     assert "pyyaml>=6.0.3" in dependencies
+    assert "redis>=8.0.1" in dependencies
     assert "types-pyyaml>=6.0.12.20260518" in dependencies
     tool = _mapping(cast(object, project.get("tool")), "tool settings")
     pytest_settings = _mapping(
@@ -239,7 +287,7 @@ def test_testpypi_smoke_project_pins_all_distributions() -> None:
         assert f'{distribution} = {{{{ index = "testpypi" }}}}' in script
     for module in MODULES:
         assert module in script
-    assert script.count('{{ index = "testpypi" }}') == 4
+    assert script.count('{{ index = "testpypi" }}') == 5
 
 
 def test_testpypi_smoke_project_rejects_invalid_versions() -> None:

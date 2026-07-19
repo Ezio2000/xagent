@@ -12,6 +12,8 @@ and release metadata consistent within the same repository.
   breaking belong in `jharness.toolkit`.
 - Model transports, profiles, errors, and request/response codecs belong in
   `jharness.models`.
+- Memory and database implementations of the kernel repository protocol belong in
+  `jharness.repository`.
 - Reusable filesystem, shell, interaction, and child-agent implementations belong in
   `jharness.tools`.
 - Persisted JSON shapes belong in `contracts/v0`; deterministic behavior evidence
@@ -67,6 +69,6 @@ trust boundary.
 
 ## Releases
 
-The repository publishes four coordinated wheels and four source distributions from
+The repository publishes five coordinated wheels and five source distributions from
 one version and one immutable tag. Follow [`docs/releasing.md`](docs/releasing.md);
 never publish a partial set or upload artifacts built from a developer worktree.

@@ -45,17 +45,18 @@ extension port can mutate runtime state or redefine a durable boundary.
 
 ## Python Package Boundaries
 
-Four coordinated distributions expose four public namespace packages:
+Five coordinated distributions expose five public namespace packages:
 
 | Package | Owns |
 | --- | --- |
 | `jharness.kernel` | State, runtime/invocation, model and tool ports, control, limits, events, portable codecs, policies, atomic repository, and diagnostics. |
 | `jharness.toolkit` | Concrete tool registration, JSON Schema validation, Python function adapters, retry, and circuit-breaking decorators. |
 | `jharness.models` | Model clients, profiles, transport lifecycle, error normalization, and endpoint-local codecs. |
+| `jharness.repository` | Memory, SQLite, MySQL, and Redis implementations of the kernel repository port. |
 | `jharness.tools` | Ready-to-use filesystem, shell, structured interaction, and child-agent tools. |
 
-Kernel is the dependency foundation. Toolkit, models, and tools may import its
-public API but may not import one another. Applications compose these packages from the
+Kernel is the dependency foundation. Toolkit, models, repository, and tools may import
+its public API but may not import one another. Applications compose these packages from the
 outside. Detailed ownership and build gates are documented in
 [`python-package-boundaries.md`](python-package-boundaries.md).
 

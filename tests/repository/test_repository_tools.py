@@ -31,6 +31,7 @@ def _workspace(tmp_path: Path) -> Path:
         ("jharness-kernel", "kernel"),
         ("jharness-toolkit", "toolkit"),
         ("jharness-models", "models"),
+        ("jharness-repository", "repository"),
         ("jharness-tools", "tools"),
     ):
         _write(

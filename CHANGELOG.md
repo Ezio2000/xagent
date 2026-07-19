@@ -6,6 +6,23 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-19
+
+### Added
+
+- Added the coordinated `jharness-repository` distribution with memory, SQLite,
+  MySQL, and Redis implementations of the kernel checkpoint repository protocol.
+
+### Changed
+
+- Made MySQL and Redis repository drivers strict opt-in extras; the base repository
+  install now depends only on the coordinated kernel and supports Memory and SQLite.
+
+### Fixed
+
+- Closed MySQL and SQLite repository executors when asynchronous context initialization
+  fails, and made real MySQL and Redis integration tests remove their generated data.
+
 ## [0.2.1] - 2026-07-18
 
 ### Fixed
@@ -43,7 +60,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 - Sixty-six deterministic conformance cases and a standard tool catalog.
 - Provider-neutral lifecycle, model, tool, event, wire, and trace contracts.
 
-[Unreleased]: https://github.com/Ezio2000/jharness/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Ezio2000/jharness/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Ezio2000/jharness/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Ezio2000/jharness/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Ezio2000/jharness/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Ezio2000/jharness/releases/tag/v0.1.0

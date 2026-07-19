@@ -55,6 +55,39 @@ jobs:
         if: github.event_name == 'push'
         run: uv sync --locked
 
+      - name: Start repository integration services
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          docker run --name jharness-ci-mysql --detach --publish 3306:3306 \
+            --env MYSQL_ROOT_PASSWORD=jharness-test-password \
+            --env MYSQL_ROOT_HOST=% \
+            --env MYSQL_DATABASE=jharness \
+            --health-cmd='mysqladmin ping -h localhost -pjharness-test-password --silent' \
+            --health-interval=2s --health-timeout=2s --health-retries=60 \
+            mysql:8.4.10@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d
+          docker run --name jharness-ci-redis --detach --publish 6379:6379 \
+            --health-cmd='redis-cli ping' \
+            --health-interval=2s --health-timeout=2s --health-retries=60 \
+            redis:8.4.4@sha256:c44528447fa07ed62bdb0c1944cba54f8cad6a4e4a49ada9d4843b5b07d03227 \
+            redis-server --save '' --appendonly no
+          for attempt in {1..60}; do
+            mysql_health=$(docker inspect --format '{{.State.Health.Status}}' jharness-ci-mysql)
+            redis_health=$(docker inspect --format '{{.State.Health.Status}}' jharness-ci-redis)
+            if [[ "$mysql_health" == healthy && "$redis_health" == healthy ]]; then
+              exit 0
+            fi
+            if [[ "$mysql_health" == unhealthy || "$redis_health" == unhealthy ]]; then
+              docker logs jharness-ci-mysql
+              docker logs jharness-ci-redis
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs jharness-ci-mysql
+          docker logs jharness-ci-redis
+          exit 1
+
       - name: Verify tag and metadata
         if: github.event_name == 'push'
         run: uv run python scripts/verify_release.py --tag "$RELEASE_TAG"
@@ -63,6 +96,8 @@ jobs:
         if: github.event_name == 'push'
         env:
           COVERAGE_FILE: ${{ runner.temp }}/.coverage
+          JHARNESS_TEST_MYSQL_URL: mysql://root:jharness-test-password@127.0.0.1:3306/jharness
+          JHARNESS_TEST_REDIS_URL: redis://127.0.0.1:6379/0
         run: |
           uv run python scripts/validate_spec.py
           uv run ruff check .
@@ -84,10 +119,14 @@ jobs:
           uv run python scripts/verify_distribution.py dist
           uv venv "${RUNNER_TEMP}/smoke"
           uv pip install --python "${RUNNER_TEMP}/smoke/bin/python" dist/*.whl
-          "${RUNNER_TEMP}/smoke/bin/python" -I -c "from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool"
+          "${RUNNER_TEMP}/smoke/bin/python" -I -c "import importlib.util; assert importlib.util.find_spec('pymysql') is None; assert importlib.util.find_spec('redis') is None; from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.repository import MemoryRunRepository, MySQLRunRepository, RedisRunRepository, SQLiteRunRepository; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool"
+          repository_wheels=(dist/jharness_repository-*.whl)
+          test "${#repository_wheels[@]}" -eq 1
+          uv pip install --python "${RUNNER_TEMP}/smoke/bin/python" "${repository_wheels[0]}[mysql,redis]"
+          "${RUNNER_TEMP}/smoke/bin/python" -I -c "import pymysql, redis; assert pymysql and redis"
           sha256sum dist/*.whl dist/*.tar.gz > dist/SHA256SUMS
           sha256sum --check dist/SHA256SUMS
-          test "$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)" -eq 8
+          test "$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)" -eq 10
           test -f dist/SHA256SUMS
 
       - name: Recover verified artifacts from an earlier release run
@@ -117,7 +156,7 @@ jobs:
           test "$tag_sha" = "$run_sha"
           test "$run_event" = "push"
           test "$run_path" = ".github/workflows/release.yml"
-          test "$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)" -eq 8
+          test "$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l)" -eq 10
           test -f dist/SHA256SUMS
           sha256sum --check dist/SHA256SUMS
           python scripts/verify_release.py --tag "$RELEASE_TAG"
@@ -144,6 +183,8 @@ jobs:
             artifact_prefix: jharness_kernel
           - project: jharness-models
             artifact_prefix: jharness_models
+          - project: jharness-repository
+            artifact_prefix: jharness_repository
           - project: jharness-toolkit
             artifact_prefix: jharness_toolkit
           - project: jharness-tools
@@ -220,6 +261,8 @@ jobs:
             artifact_prefix: jharness_kernel
           - project: jharness-models
             artifact_prefix: jharness_models
+          - project: jharness-repository
+            artifact_prefix: jharness_repository
           - project: jharness-toolkit
             artifact_prefix: jharness_toolkit
           - project: jharness-tools
@@ -282,9 +325,10 @@ jobs:
               --with "jharness-kernel==$version" \
               --with "jharness-toolkit==$version" \
               --with "jharness-models==$version" \
+              --with "jharness-repository==$version" \
               --with "jharness-tools==$version" \
               python -I -c \
-              "from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool"; then
+              "from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.repository import MemoryRunRepository, MySQLRunRepository, RedisRunRepository, SQLiteRunRepository; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool"; then
               exit 0
             fi
             if [[ "$attempt" == 12 ]]; then exit 1; fi

@@ -11,11 +11,18 @@ from pathlib import Path
 
 _VERSION = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?")
 _PUBLIC_IMPORTS = (
+    "import importlib.util; "
+    "assert importlib.util.find_spec('pymysql') is None; "
+    "assert importlib.util.find_spec('redis') is None; "
     "from jharness.kernel import Runtime; "
     "from jharness.models.openai import OpenAIChatCompletionsModel; "
+    "from jharness.repository import (MemoryRunRepository, MySQLRunRepository, "
+    "RedisRunRepository, SQLiteRunRepository); "
     "from jharness.toolkit import ToolRegistry; "
     "from jharness.tools import ReadTool; "
-    "assert Runtime and OpenAIChatCompletionsModel and ToolRegistry and ReadTool"
+    "assert Runtime and OpenAIChatCompletionsModel and MemoryRunRepository and "
+    "MySQLRunRepository and RedisRunRepository and SQLiteRunRepository and "
+    "ToolRegistry and ReadTool"
 )
 _PROJECT = """\
 [project]
@@ -26,6 +33,7 @@ dependencies = [
   "jharness-kernel=={version}",
   "jharness-toolkit=={version}",
   "jharness-models=={version}",
+  "jharness-repository=={version}",
   "jharness-tools=={version}",
 ]
 
@@ -33,6 +41,7 @@ dependencies = [
 jharness-kernel = {{ index = "testpypi" }}
 jharness-toolkit = {{ index = "testpypi" }}
 jharness-models = {{ index = "testpypi" }}
+jharness-repository = {{ index = "testpypi" }}
 jharness-tools = {{ index = "testpypi" }}
 
 [[tool.uv.index]]

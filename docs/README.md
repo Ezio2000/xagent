@@ -27,7 +27,8 @@ Use the shortest path that matches your role:
 | Lifecycle and controls | [`state-machine.md`](state-machine.md), [`event-stream.md`](event-stream.md) |
 | Model or tool integration | [`model-protocol.md`](model-protocol.md), [`tool-protocol.md`](tool-protocol.md) |
 | Provider adapters | [`model-adapters.md`](model-adapters.md) |
-| Persistence and decoding | [`wire-protocol.md`](wire-protocol.md) |
+| Persistence implementations | [`repositories.md`](repositories.md) |
+| Persistence encoding and decoding | [`wire-protocol.md`](wire-protocol.md) |
 | Traces and verification | [`diagnostics.md`](diagnostics.md) |
 | Package ownership | [`python-package-boundaries.md`](python-package-boundaries.md) |
 | Performance constraints | [`performance.md`](performance.md) |

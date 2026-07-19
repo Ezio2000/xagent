@@ -90,6 +90,8 @@ def test_ci_references_existing_sources_and_required_commands() -> None:
     assert set(jobs) == {"quality", "runtime"}
 
     quality = jobs["quality"]
+    services = _mapping(quality.get("services"), "quality services")
+    assert set(services) == {"mysql", "redis"}
     quality_runs: dict[str, str] = {}
     for step in _steps(quality):
         uses = step.get("uses")
@@ -104,6 +106,12 @@ def test_ci_references_existing_sources_and_required_commands() -> None:
             quality_runs[name] = run
 
     assert "uv run pytest" in quality_runs["Test with branch coverage"]
+    test_environment = _mapping(
+        _named_step(quality, "Test with branch coverage").get("env"),
+        "quality test environment",
+    )
+    assert "JHARNESS_TEST_MYSQL_URL" in test_environment
+    assert "JHARNESS_TEST_REDIS_URL" in test_environment
     assert quality_runs["Run runtime smoke benchmark"] == (
         "uv run python benchmarks/runtime_smoke.py"
     )
@@ -112,6 +120,9 @@ def test_ci_references_existing_sources_and_required_commands() -> None:
     )
     distribution_checks = quality_runs["Verify distribution set and isolated imports"]
     assert "uv run python scripts/verify_distribution.py" in distribution_checks
+    assert "find_spec('pymysql') is None" in distribution_checks
+    assert "find_spec('redis') is None" in distribution_checks
+    assert '"${repository_wheels[0]}[mysql,redis]"' in distribution_checks
     assert all("packages/" not in run for run in quality_runs.values())
 
     runtime = jobs["runtime"]

@@ -79,6 +79,7 @@ def build_cleanup_plan(root: Path) -> CleanupPlan:
             ("jharness-kernel", "kernel"),
             ("jharness-toolkit", "toolkit"),
             ("jharness-models", "models"),
+            ("jharness-repository", "repository"),
             ("jharness-tools", "tools"),
         )
     ):

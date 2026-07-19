@@ -16,17 +16,26 @@ from typing import cast
 
 VERSION = re.compile(r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?")
 REQUIREMENT_NAME = re.compile(r"^([A-Za-z0-9_.-]+)")
+EXTRA_MARKER = re.compile(r"\(?\s*extra\s*==\s*['\"]([A-Za-z0-9_.-]+)['\"]\s*\)?")
 COMPONENTS = {
     "jharness-kernel": "kernel",
     "jharness-toolkit": "toolkit",
     "jharness-models": "models",
+    "jharness-repository": "repository",
     "jharness-tools": "tools",
 }
 DEPENDENCIES: dict[str, set[str]] = {
     "jharness-kernel": set(),
     "jharness-toolkit": {"jharness-kernel", "jsonschema", "referencing"},
     "jharness-models": {"jharness-kernel", "httpx"},
+    "jharness-repository": {"jharness-kernel"},
     "jharness-tools": {"jharness-kernel", "regex"},
+}
+OPTIONAL_REQUIREMENTS: dict[str, dict[str, set[str]]] = {
+    "jharness-repository": {
+        "mysql": {"pymysql[rsa]>=1.2.0"},
+        "redis": {"redis>=8.0.1"},
+    }
 }
 ROOT_LICENSE = (Path(__file__).resolve().parents[1] / "LICENSE").read_bytes()
 
@@ -62,15 +71,46 @@ def _metadata(archive: zipfile.ZipFile) -> Message:
     return message_from_bytes(archive.read(paths[0]))
 
 
-def _requirement_names(message: Message) -> set[str]:
-    names: set[str] = set()
+def _requirement_name(requirement: str) -> str:
+    match = REQUIREMENT_NAME.match(requirement)
+    if match is None:
+        raise ValueError(f"invalid Requires-Dist: {requirement!r}")
+    return match.group(1).lower().replace("_", "-")
+
+
+def _requirement_groups(message: Message) -> dict[str | None, set[str]]:
+    groups: dict[str | None, set[str]] = {}
     requirements = message.get_all("Requires-Dist", [])
     for requirement in requirements:
-        match = REQUIREMENT_NAME.match(requirement)
-        if match is None:
-            raise ValueError(f"invalid Requires-Dist: {requirement!r}")
-        names.add(match.group(1).lower().replace("_", "-"))
-    return names
+        specification, separator, marker = requirement.partition(";")
+        extra: str | None = None
+        if separator:
+            match = EXTRA_MARKER.fullmatch(marker.strip())
+            if match is None:
+                raise ValueError(f"unsupported Requires-Dist marker: {requirement!r}")
+            extra = match.group(1).lower().replace("_", "-")
+        groups.setdefault(extra, set()).add(_requirement_name(specification.strip()))
+    return groups
+
+
+def _verify_dependencies(message: Message, distribution: str, version: str) -> None:
+    requirement_groups = _requirement_groups(message)
+    actual_dependencies = requirement_groups.pop(None, set())
+    if actual_dependencies != DEPENDENCIES[distribution]:
+        raise ValueError(f"{distribution} dependencies differ: {sorted(actual_dependencies)}")
+    expected_optional = {
+        extra: {_requirement_name(requirement) for requirement in requirements}
+        for extra, requirements in OPTIONAL_REQUIREMENTS.get(distribution, {}).items()
+    }
+    if requirement_groups != expected_optional:
+        raise ValueError(f"{distribution} optional dependencies differ: {requirement_groups}")
+    provided_extras = set(message.get_all("Provides-Extra", []))
+    if provided_extras != set(expected_optional):
+        raise ValueError(f"{distribution} extras differ: {sorted(provided_extras)}")
+    if distribution != "jharness-kernel":
+        pins = message.get_all("Requires-Dist", [])
+        if not any(item == f"jharness-kernel=={version}" for item in pins):
+            raise ValueError(f"{distribution} does not pin the coordinated kernel")
 
 
 def _verify_wheel(path: Path) -> Wheel:
@@ -105,13 +145,7 @@ def _verify_wheel(path: Path) -> Wheel:
         allowed = (f"jharness/{component}/", f"{info}/")
         if unexpected := sorted(name for name in names if not name.startswith(allowed)):
             raise ValueError(f"{distribution} wheel contains unexpected files: {unexpected[:5]}")
-        actual_dependencies = _requirement_names(message)
-        if actual_dependencies != DEPENDENCIES[distribution]:
-            raise ValueError(f"{distribution} dependencies differ: {sorted(actual_dependencies)}")
-        if distribution != "jharness-kernel":
-            pins = message.get_all("Requires-Dist", [])
-            if not any(item == f"jharness-kernel=={version}" for item in pins):
-                raise ValueError(f"{distribution} does not pin the coordinated kernel")
+        _verify_dependencies(message, distribution, version)
     return Wheel(path, distribution, version, names)
 
 
@@ -151,6 +185,13 @@ def _verify_sdist(path: Path, *, distribution: str, version: str) -> None:
         metadata = cast(dict[str, object], project["project"])
         if metadata.get("name") != distribution or metadata.get("version") != version:
             raise ValueError(f"{distribution} sdist metadata differs from its wheel")
+        raw_optional = cast(
+            dict[str, list[str]],
+            metadata.get("optional-dependencies", {}),
+        )
+        optional = {extra: set(requirements) for extra, requirements in raw_optional.items()}
+        if optional != OPTIONAL_REQUIREMENTS.get(distribution, {}):
+            raise ValueError(f"{distribution} sdist optional dependencies differ: {optional}")
 
 
 def main() -> int:
@@ -160,9 +201,9 @@ def main() -> int:
     try:
         wheel_paths = sorted(args.directory.glob("*.whl"))
         sdist_paths = sorted(args.directory.glob("*.tar.gz"))
-        if len(wheel_paths) != 4 or len(sdist_paths) != 4:
+        if len(wheel_paths) != 5 or len(sdist_paths) != 5:
             raise ValueError(
-                "expected four wheels and four sdists, "
+                "expected five wheels and five sdists, "
                 f"got {len(wheel_paths)} and {len(sdist_paths)}"
             )
         wheels = [_verify_wheel(path) for path in wheel_paths]
@@ -196,7 +237,7 @@ def main() -> int:
     ) as exc:
         print(f"distribution verification failed: {exc}", file=sys.stderr)
         return 1
-    print(f"distribution set ok: count=4 version={version}")
+    print(f"distribution set ok: count=5 version={version}")
     return 0
 
 

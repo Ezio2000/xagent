@@ -1,6 +1,6 @@
 # ADR 0009: Single Repository and Coordinated Python Distributions
 
-Status: Accepted
+Status: Superseded by [ADR 0010](0010-coordinated-python-distributions.md)
 Date: 2026-07-18
 
 ## Context

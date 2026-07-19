@@ -17,6 +17,7 @@ COMPONENTS = {
     "jharness-kernel": "kernel",
     "jharness-toolkit": "toolkit",
     "jharness-models": "models",
+    "jharness-repository": "repository",
     "jharness-tools": "tools",
 }
 FORBIDDEN_PATHS = (
@@ -76,13 +77,7 @@ def _verify_components(version: str) -> None:
     for distribution, component in COMPONENTS.items():
         root = ROOT / "packages" / distribution
         project = _project(root / "pyproject.toml")
-        dependencies = cast(list[str], project.get("dependencies", []))
-        kernel_pin = f"jharness-kernel=={version}"
-        if distribution == "jharness-kernel":
-            if dependencies:
-                raise ValueError("jharness-kernel must have no runtime dependencies")
-        elif kernel_pin not in dependencies:
-            raise ValueError(f"{distribution} must pin {kernel_pin}")
+        _verify_component_dependencies(distribution, project, version)
 
         source = root / "src" / "jharness" / component
         if not (source / "__init__.py").is_file():
@@ -91,6 +86,33 @@ def _verify_components(version: str) -> None:
             raise ValueError(f"{distribution} is missing its nested py.typed marker")
         if (root / "src" / "jharness" / "__init__.py").exists():
             raise ValueError(f"{distribution} must use the implicit jharness namespace")
+
+
+def _verify_component_dependencies(
+    distribution: str,
+    project: dict[str, Any],
+    version: str,
+) -> None:
+    dependencies = cast(list[str], project.get("dependencies", []))
+    kernel_pin = f"jharness-kernel=={version}"
+    if distribution == "jharness-kernel":
+        if dependencies:
+            raise ValueError("jharness-kernel must have no runtime dependencies")
+    elif kernel_pin not in dependencies:
+        raise ValueError(f"{distribution} must pin {kernel_pin}")
+
+    optional = cast(dict[str, list[str]], project.get("optional-dependencies", {}))
+    if distribution == "jharness-repository":
+        expected_optional = {
+            "mysql": ["pymysql[rsa]>=1.2.0"],
+            "redis": ["redis>=8.0.1"],
+        }
+        if dependencies != [kernel_pin]:
+            raise ValueError("jharness-repository base install must depend only on kernel")
+        if optional != expected_optional:
+            raise ValueError("jharness-repository optional driver extras differ")
+    elif optional:
+        raise ValueError(f"{distribution} must not declare optional dependencies")
 
 
 def _verify_changelog(version: str, *, released: bool) -> None:

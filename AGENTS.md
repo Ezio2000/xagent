@@ -2,12 +2,13 @@
 
 ## Scope
 
-This repository is the complete JHarness Python project. It owns four coordinated,
+This repository is the complete JHarness Python project. It owns five coordinated,
 independently installable distributions:
 
 - `jharness-kernel`, providing `jharness.kernel`;
 - `jharness-toolkit`, providing `jharness.toolkit`;
 - `jharness-models`, providing `jharness.models`;
+- `jharness-repository`, providing `jharness.repository`;
 - `jharness-tools`, providing `jharness.tools`.
 
 Contracts, conformance, examples, benchmarks, tests, documentation, and release
@@ -31,14 +32,15 @@ automation live in this repository and use one coordinated version and release t
 ## Dependency Direction
 
 `jharness.kernel` is the foundation and must not import another JHarness package.
-Toolkit, models, and tools may import the public kernel API but must not depend on one
-another.
+Toolkit, models, repository, and tools may import the public kernel API but must not
+depend on one another.
 
 | Distribution | Direct runtime dependencies |
 | --- | --- |
 | `jharness-kernel` | None |
 | `jharness-toolkit` | exact matching `jharness-kernel`, `jsonschema`, `referencing` |
 | `jharness-models` | exact matching `jharness-kernel`, `httpx` |
+| `jharness-repository` | exact matching `jharness-kernel`; optional `mysql` and `redis` driver extras |
 | `jharness-tools` | exact matching `jharness-kernel`, `regex` |
 
 Every distribution owns only its `jharness.<component>` namespace portion and nested
@@ -75,6 +77,6 @@ uv run python scripts/verify_distribution.py dist
 ## Completion Standard
 
 Do not claim a change complete until relevant tests, formatting, lint, strict types,
-offline schema resolution, conformance, all four package builds, isolated artifact
+offline schema resolution, conformance, all five package builds, isolated artifact
 imports, and the performance smoke benchmark pass. Keep the worktree free of
 intermediate artifacts and report the modified directory list after every code change.

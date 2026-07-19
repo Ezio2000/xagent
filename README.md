@@ -5,7 +5,7 @@ Kernel, toolkit, model adapters, ready-to-use tools, portable contracts, conform
 tests, and release automation are developed in one repository and released with one
 coordinated version.
 
-JHarness requires Python 3.11 or newer and publishes four distributions.
+JHarness requires Python 3.11 or newer and publishes five distributions.
 
 ## Install
 
@@ -15,14 +15,22 @@ Install only the component you need:
 uv add jharness-kernel
 uv add jharness-toolkit
 uv add jharness-models
+uv add jharness-repository
 uv add jharness-tools
 ```
 
 The non-kernel distributions install the exact matching kernel automatically. Install
-the complete product with:
+the MySQL or Redis repository driver only when the application selects it:
 
 ```bash
-uv add jharness-kernel jharness-toolkit jharness-models jharness-tools
+uv add "jharness-repository[mysql]"
+uv add "jharness-repository[redis]"
+```
+
+Install the complete product with:
+
+```bash
+uv add jharness-kernel jharness-toolkit jharness-models jharness-repository jharness-tools
 ```
 
 | Distribution | Python import | Internal dependency |
@@ -30,6 +38,7 @@ uv add jharness-kernel jharness-toolkit jharness-models jharness-tools
 | `jharness-kernel` | `jharness.kernel` | None |
 | `jharness-toolkit` | `jharness.toolkit` | `jharness-kernel` |
 | `jharness-models` | `jharness.models` | `jharness-kernel` |
+| `jharness-repository` | `jharness.repository` | `jharness-kernel` |
 | `jharness-tools` | `jharness.tools` | `jharness-kernel` |
 
 ## Quick Start
@@ -109,6 +118,8 @@ restored = decode_checkpoint(payload)
 
 The persistence family is documented in [`contracts/v0`](contracts/v0/README.md), and
 [`conformance/cases`](conformance/cases/) verifies the same runtime behavior.
+Ready-to-use memory, SQLite, MySQL, and Redis implementations are documented in
+[`docs/repositories.md`](docs/repositories.md).
 
 ## Repository Layout
 

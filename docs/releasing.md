@@ -1,12 +1,13 @@
 # Release Process
 
-JHarness releases `jharness-kernel`, `jharness-toolkit`, `jharness-models`, and
-`jharness-tools` from one version and one immutable tag. A successful release contains
-four wheels and four source distributions built once and published together.
+JHarness releases `jharness-kernel`, `jharness-toolkit`, `jharness-models`,
+`jharness-repository`, and `jharness-tools` from one version and one immutable tag. A
+successful release contains five wheels and five source distributions built once and
+published together.
 
 ## One-Time Repository Setup
 
-For each of the four projects, configure a Trusted Publisher on TestPyPI and PyPI for
+For each of the five projects, configure a Trusted Publisher on TestPyPI and PyPI for
 repository `Ezio2000/jharness` and workflow `release.yml`. Use a dedicated GitHub
 environment for each project:
 
@@ -14,6 +15,7 @@ environment for each project:
 | --- | --- | --- |
 | `jharness-kernel` | `testpypi-jharness-kernel` | `pypi-jharness-kernel` |
 | `jharness-models` | `testpypi-jharness-models` | `pypi-jharness-models` |
+| `jharness-repository` | `testpypi-jharness-repository` | `pypi-jharness-repository` |
 | `jharness-toolkit` | `testpypi-jharness-toolkit` | `pypi-jharness-toolkit` |
 | `jharness-tools` | `testpypi-jharness-tools` | `pypi-jharness-tools` |
 
@@ -25,7 +27,7 @@ package-index credentials.
 
 ## Prepare a Release
 
-1. Set the same PEP 440 version in all four `packages/*/pyproject.toml` files.
+1. Set the same PEP 440 version in all five `packages/*/pyproject.toml` files.
 2. Pin that version in the root workspace dependencies and every component's kernel
    dependency.
 3. Update `CHANGELOG.md` and comparison links.
@@ -50,15 +52,16 @@ package-index credentials.
 
 Create and push the reviewed `vX.Y.Z` tag. The release workflow:
 
-1. verifies all four versions, dependency pins, tag, changelog, and lock file;
+1. verifies all five versions, dependency pins, tag, changelog, and lock file;
 2. reruns the complete quality gate;
-3. builds all eight archives exactly once;
+3. builds all ten archives exactly once;
 4. verifies archive ownership, non-overlap, metadata, dependencies, checksums, and an
    exact copy of the repository `LICENSE` in every wheel and source distribution;
-5. installs all local wheels together in isolation;
-6. publishes the same eight archives to TestPyPI in four parallel, project-scoped jobs;
-7. installs all four exact TestPyPI versions and runs smoke examples;
-8. publishes the same files to PyPI in four parallel, project-scoped jobs and verifies
+5. installs all local wheels together without repository drivers, verifies base
+   imports, then verifies the repository driver extras;
+6. publishes the same ten archives to TestPyPI in five parallel, project-scoped jobs;
+7. installs all five exact TestPyPI versions and runs smoke examples;
+8. publishes the same files to PyPI in five parallel, project-scoped jobs and verifies
    each component plus the full set;
 9. creates one GitHub Release containing all archives and `SHA256SUMS`.
 
@@ -72,7 +75,7 @@ hidden by propagation retries.
 ## Failure and Recovery
 
 Workflow dispatch may recover only the verified artifact set from a previous release
-run for the same immutable tag and commit. It verifies hashes and all eight archives,
+run for the same immutable tag and commit. It verifies hashes and all ten archives,
 then uses `skip-existing` to complete missing uploads. Never move a published tag or
 overwrite a version; publish a patch release when correction is required.
 

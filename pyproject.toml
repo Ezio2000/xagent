@@ -4,10 +4,11 @@ version = "0"
 description = "Development workspace for the coordinated JHarness distributions"
 requires-python = ">=3.11"
 dependencies = [
-  "jharness-kernel==0.2.1",
-  "jharness-models==0.2.1",
-  "jharness-toolkit==0.2.1",
-  "jharness-tools==0.2.1",
+  "jharness-kernel==0.2.2",
+  "jharness-models==0.2.2",
+  "jharness-repository==0.2.2",
+  "jharness-toolkit==0.2.2",
+  "jharness-tools==0.2.2",
 ]
 
 [tool.uv]
@@ -17,6 +18,7 @@ package = false
 members = [
   "packages/jharness-kernel",
   "packages/jharness-models",
+  "packages/jharness-repository",
   "packages/jharness-toolkit",
   "packages/jharness-tools",
 ]
@@ -24,6 +26,7 @@ members = [
 [tool.uv.sources]
 jharness-kernel = { workspace = true }
 jharness-models = { workspace = true }
+jharness-repository = { workspace = true }
 jharness-toolkit = { workspace = true }
 jharness-tools = { workspace = true }
 
@@ -34,12 +37,14 @@ default = true
 
 [dependency-groups]
 dev = [
+  "pymysql[rsa]>=1.2.0",
   "pyright>=1.1.407",
   "pytest>=8.4.0",
   "pytest-asyncio>=1.2.0",
   "pytest-cov>=6.0.0",
   "pytest-timeout>=2.4.0",
   "pyyaml>=6.0.3",
+  "redis>=8.0.1",
   "ruff>=0.15.21",
   "twine>=6.2.0",
   "types-pyyaml>=6.0.12.20260518",

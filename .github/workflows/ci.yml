@@ -16,6 +16,29 @@ jobs:
     name: Quality, contracts, and distributions
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    services:
+      mysql:
+        image: mysql:8.4.10@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d
+        env:
+          MYSQL_DATABASE: jharness
+          MYSQL_ROOT_HOST: "%"
+          MYSQL_ROOT_PASSWORD: jharness-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -pjharness-test-password --silent"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 60
+      redis:
+        image: redis:8.4.4@sha256:c44528447fa07ed62bdb0c1944cba54f8cad6a4e4a49ada9d4843b5b07d03227
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 60
 
     steps:
       - name: Check out repository
@@ -53,6 +76,8 @@ jobs:
       - name: Test with branch coverage
         env:
           COVERAGE_FILE: ${{ runner.temp }}/.coverage
+          JHARNESS_TEST_MYSQL_URL: mysql://root:jharness-test-password@127.0.0.1:3306/jharness
+          JHARNESS_TEST_REDIS_URL: redis://127.0.0.1:6379/0
         run: >-
           uv run pytest
           -q
@@ -85,7 +110,11 @@ jobs:
           uv run python scripts/verify_distribution.py "${RUNNER_TEMP}/dist"
           uv venv "${RUNNER_TEMP}/smoke"
           uv pip install --python "${RUNNER_TEMP}/smoke/bin/python" "${RUNNER_TEMP}"/dist/*.whl
-          "${RUNNER_TEMP}/smoke/bin/python" -I -c "from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool; assert Runtime and OpenAIChatCompletionsModel and ToolRegistry and ReadTool"
+          "${RUNNER_TEMP}/smoke/bin/python" -I -c "import importlib.util; assert importlib.util.find_spec('pymysql') is None; assert importlib.util.find_spec('redis') is None; from jharness.kernel import Runtime; from jharness.models.openai import OpenAIChatCompletionsModel; from jharness.repository import MemoryRunRepository, MySQLRunRepository, RedisRunRepository, SQLiteRunRepository; from jharness.toolkit import ToolRegistry; from jharness.tools import ReadTool; assert Runtime and OpenAIChatCompletionsModel and MemoryRunRepository and MySQLRunRepository and RedisRunRepository and SQLiteRunRepository and ToolRegistry and ReadTool"
+          repository_wheels=("${RUNNER_TEMP}"/dist/jharness_repository-*.whl)
+          test "${#repository_wheels[@]}" -eq 1
+          uv pip install --python "${RUNNER_TEMP}/smoke/bin/python" "${repository_wheels[0]}[mysql,redis]"
+          "${RUNNER_TEMP}/smoke/bin/python" -I -c "import pymysql, redis; assert pymysql and redis"
 
   runtime:
     name: Python ${{ matrix.python-version }} (${{ matrix.os }})
