@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from time import time
 from typing import Any, Protocol, TypeAlias, cast
 
+from jharness.kernel._digest import empty_call_id_suffix_digest
 from jharness.kernel._engine.change import Change, failed, limited, suspend
 from jharness.kernel._engine.deadline import Deadline, WorkDeadlineReached
 from jharness.kernel.approval import (
@@ -27,7 +28,7 @@ from jharness.kernel.events import EventKind
 from jharness.kernel.limits import LimitReason, RunLimits
 from jharness.kernel.messages import ToolCall
 from jharness.kernel.snapshot import RunSnapshot
-from jharness.kernel.state import Planning, Suspended, Suspension, ToolsPending
+from jharness.kernel.state import PendingToolCalls, Planning, Suspended, Suspension, ToolsPending
 from jharness.kernel.tools import (
     BatchPolicy,
     SettledResult,
@@ -89,7 +90,12 @@ class ToolStep:
         if capacity <= 0:
             return ToolStepOutcome(limited(LimitReason.MAX_TOOL_CALLS))
         try:
-            batch = self._select(pending.pending[:capacity])
+            selectable = pending.pending.limit(min(capacity, self._limits.max_tool_batch_size))
+            batch = self._select(selectable)
+            await self._emit(
+                EventKind.TOOL_BATCH_SELECTED,
+                selection_data(pending.pending, batch),
+            )
             prepared = self._bind(batch)
             approved = await self._approve(prepared, batch, deadline)
         except WorkDeadlineReached:
@@ -118,13 +124,15 @@ class ToolStep:
         deferred.extend(inserts)
         return _outcome(pending, batch, results, boundary_pause, deferred)
 
-    def _select(self, selectable: tuple[ToolCall, ...]) -> ToolBatch:
+    def _select(self, selectable: Sequence[ToolCall]) -> ToolBatch:
         batch = self._policy.select(selectable, self._catalog, self._limits)
         if not isinstance(cast(object, batch), ToolBatch):
             raise ToolError("batch policy returned an invalid batch")
         if len(batch.calls) > self._limits.max_tool_batch_size:
             raise ToolError("batch exceeds max_tool_batch_size")
-        if batch.calls != selectable[: len(batch.calls)]:
+        if len(batch.calls) > len(selectable) or any(
+            call != selectable[index] for index, call in enumerate(batch.calls)
+        ):
             raise ToolError("batch policy must select an exact pending prefix")
         if batch.parallel and any(
             (spec := self._catalog.spec(call.name)) is None or not spec.parallel_safe
@@ -481,8 +489,8 @@ def _outcome(
     pause: Pause | None,
     deferred: list[Insert],
 ) -> ToolStepOutcome:
-    remaining = pending.pending[len(batch.calls) :]
-    next_active = ToolsPending(remaining) if remaining else Planning()
+    remaining = pending.pending.advance(len(batch.calls))
+    next_active = ToolsPending(remaining) if remaining is not None else Planning()
     waiting = next((result for result in results if isinstance(result, WaitingResult)), None)
     suspension = (
         waiting.suspension if waiting is not None else (pause.suspension if pause else None)
@@ -514,6 +522,19 @@ def suspension_view(suspension: Suspension) -> SuspensionView:
         suspension.wait_id,
         tuple(sorted(suspension.metadata)),
     )
+
+
+def selection_data(pending: PendingToolCalls, batch: ToolBatch) -> Mapping[str, Any]:
+    remaining = pending.advance(len(batch.calls))
+    return {
+        "batch_id": batch.id,
+        "call_ids": [call.id for call in batch.calls],
+        "parallel": batch.parallel,
+        "remaining_count": 0 if remaining is None else remaining.pending_count,
+        "remaining_call_id_digest": (
+            empty_call_id_suffix_digest() if remaining is None else remaining.call_id_digest
+        ).hex(),
+    }
 
 
 async def _await_deadline(awaitable: Awaitable[Any], deadline: Deadline) -> Any:

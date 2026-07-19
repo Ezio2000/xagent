@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
@@ -22,6 +22,7 @@ from jharness.kernel import (
     ModelCapabilities,
     ModelRequest,
     ModelResponse,
+    PendingToolCalls,
     Planning,
     RunContext,
     Runtime,
@@ -1858,7 +1859,7 @@ def test_response_message_canonical_json_escapes_lone_surrogates_for_utf8() -> N
 
 def _forged_checkpoint(
     state: object,
-    history: tuple[object, ...] = (),
+    history: Sequence[object] = (),
     *,
     context: RunContext | None = None,
     fact: object | None = None,
@@ -1952,7 +1953,7 @@ def test_extract_question_request_rejects_wrong_type_suspension_and_resume_state
 
     wrong_resume = _forged_checkpoint(
         Suspended(
-            ToolsPending((ToolCall("pending", "AskQuestion"),)),
+            ToolsPending(PendingToolCalls((ToolCall("pending", "AskQuestion"),))),
             _ask_suspension(),
         )
     )

@@ -11,6 +11,7 @@ from jharness.kernel.state import (
     Completed,
     Failed,
     Limited,
+    PendingToolCalls,
     Planning,
     RunMetrics,
     RunState,
@@ -114,7 +115,7 @@ def decode_state_value(value: object) -> RunState:
     if kind == "tools_pending":
         data = object_fields(raw, "tools_pending state", frozenset({"kind", "pending"}))
         pending = tuple(decode_tool_call_value(x) for x in array(data["pending"], "pending calls"))
-        return ToolsPending(pending)
+        return ToolsPending(PendingToolCalls(pending))
     if kind == "suspended":
         data = object_fields(
             raw,

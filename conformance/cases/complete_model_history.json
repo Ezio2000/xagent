@@ -1,0 +1,86 @@
+{
+  "schema_version": "v0",
+  "name": "complete_model_history",
+  "kind": "scenario",
+  "invocations": [
+    {
+      "request": {
+        "kind": "start",
+        "messages": [
+          {
+            "role": "system",
+            "parts": [
+              { "type": "text", "text": "system", "metadata": {} }
+            ],
+            "metadata": {}
+          },
+          {
+            "role": "user",
+            "parts": [
+              { "type": "text", "text": "old user", "metadata": {} }
+            ],
+            "metadata": {}
+          },
+          {
+            "role": "external",
+            "parts": [
+              { "type": "text", "text": "old external", "metadata": {} }
+            ],
+            "metadata": {}
+          },
+          {
+            "role": "user",
+            "parts": [
+              { "type": "text", "text": "recent user", "metadata": {} }
+            ],
+            "metadata": {}
+          },
+          {
+            "role": "external",
+            "parts": [
+              { "type": "text", "text": "recent external", "metadata": {} }
+            ],
+            "metadata": {}
+          }
+        ]
+      },
+      "model_steps": [
+        {
+          "outcome": {
+            "kind": "response",
+            "response": {
+              "parts": [
+                { "type": "text", "text": "done", "metadata": {} }
+              ],
+              "tool_calls": [],
+              "finish_reason": "end_turn",
+              "usage": null,
+              "model_id": "fixture-model",
+              "response_id": null,
+              "metadata": {}
+            }
+          }
+        }
+      ],
+      "expected": {
+        "status": "completed",
+        "revision": 1,
+        "planning_steps": 1,
+        "tool_calls": 0,
+        "final_text": "done",
+        "model_request_roles": [
+          ["system", "user", "external", "user", "external"]
+        ],
+        "fact_kinds": ["started", "model_turn"],
+        "message_roles": [
+          "system",
+          "user",
+          "external",
+          "user",
+          "external",
+          "assistant"
+        ]
+      }
+    }
+  ]
+}

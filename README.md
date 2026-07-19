@@ -106,8 +106,9 @@ complete host environment to commands. Child-agent tools require a host-owned
 
 ## Durable State
 
-Every durable boundary produces one immutable `Checkpoint`. Explicit codecs keep
-persisted JSON independent from external model wire formats and Python object layout:
+Every durable boundary produces one immutable `Checkpoint` with a structurally shared
+`RunHistory`. Explicit codecs keep portable JSON independent from external model wire
+formats and Python object layout:
 
 ```python
 from jharness.kernel.wire import decode_checkpoint, encode_checkpoint
@@ -115,6 +116,11 @@ from jharness.kernel.wire import decode_checkpoint, encode_checkpoint
 payload = encode_checkpoint(checkpoint)
 restored = decode_checkpoint(payload)
 ```
+
+Runtime sends repositories a validated `DurableCommit`, so ordinary persistence writes
+only the new history delta while `Checkpoint` remains the complete recovery value.
+Model requests continue to receive that complete durable history; persistence
+complexity bounds do not truncate model-visible conversation state.
 
 The persistence family is documented in [`contracts/v0`](contracts/v0/README.md), and
 [`conformance/cases`](conformance/cases/) verifies the same runtime behavior.

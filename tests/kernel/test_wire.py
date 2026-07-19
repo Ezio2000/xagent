@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 from jharness.kernel import SuspensionSelector as KernelSuspensionSelector
+from jharness.kernel._digest import empty_call_id_suffix_digest
 from jharness.kernel._engine.verification import run_view
 from jharness.kernel.checkpoint import (
     Checkpoint,
@@ -30,6 +31,7 @@ from jharness.kernel.context import RunContext
 from jharness.kernel.diagnostics import RunTrace, TraceEntry, TraceHeader
 from jharness.kernel.errors import ProtocolError, RequestError
 from jharness.kernel.events import Event, EventKind
+from jharness.kernel.history import RunHistory
 from jharness.kernel.limits import LimitReason
 from jharness.kernel.messages import ArtifactRef, ContentPart, ErrorInfo, Message, TaskRef, ToolCall
 from jharness.kernel.models import ModelResponse, ModelUsage
@@ -38,6 +40,7 @@ from jharness.kernel.state import (
     Completed,
     Failed,
     Limited,
+    PendingToolCalls,
     Planning,
     RunMetrics,
     RunState,
@@ -104,22 +107,30 @@ def _context() -> RunContext:
     return RunContext("run-1", 1.0, deadline=9.0, metadata={"tenant": "a"})
 
 
+def _history(*messages: Message) -> RunHistory:
+    return RunHistory(messages)
+
+
+def _pending(*calls: ToolCall) -> PendingToolCalls:
+    return PendingToolCalls(calls)
+
+
 def _started() -> Checkpoint:
-    history = (Message.user("hello", metadata={"lang": "en"}),)
+    history = _history(Message.user("hello", metadata={"lang": "en"}))
     snapshot = RunSnapshot(0, _context(), history, RunMetrics(), Planning())
     return Checkpoint("cp-0", snapshot, StartedFact(1.0, ("user",)))
 
 
 def _suspended(*, pending: bool = False) -> Checkpoint:
     suspension = Suspension("approval_required", "approval", "wait-1", {"ticket": 7})
-    history: tuple[Message, ...]
+    history: RunHistory
     resume_to: Planning | ToolsPending
     if pending:
         call = ToolCall("call-1", "lookup", {"q": "x"})
-        history = (Message.user("go"), Message.assistant(tool_calls=(call,)))
-        resume_to = ToolsPending((call,))
+        history = _history(Message.user("go"), Message.assistant(tool_calls=(call,)))
+        resume_to = ToolsPending(_pending(call))
     else:
-        history = (Message.user("hello"),)
+        history = _history(Message.user("hello"))
         resume_to = Planning()
     snapshot = RunSnapshot(
         1,
@@ -224,8 +235,8 @@ def test_all_flat_states_round_trip() -> None:
     suspension = Suspension("pause", "host")
     states: tuple[RunState, ...] = (
         Planning(),
-        ToolsPending((call,)),
-        Suspended(ToolsPending((call,)), suspension),
+        ToolsPending(_pending(call)),
+        Suspended(ToolsPending(_pending(call)), suspension),
         Completed((ContentPart.text_part("done"),)),
         Failed(ErrorInfo("model", "failed")),
         Limited(LimitReason.DEADLINE),
@@ -283,7 +294,7 @@ def test_snapshot_checkpoint_and_fact_round_trips() -> None:
 
 def test_run_request_round_trips_and_enforces_cross_fields() -> None:
     assert SuspensionSelector is KernelSuspensionSelector
-    start = StartRequest((Message.user("hello"),), _context())
+    start = StartRequest(_history(Message.user("hello")), _context())
     continued = ContinueRequest(_started())
     suspended = _suspended()
     resumed = ResumeRequest(
@@ -311,7 +322,7 @@ def test_run_request_round_trips_and_enforces_cross_fields() -> None:
 
     call = ToolCall("call-1", "lookup")
     with pytest.raises(ValueError, match="unresolved"):
-        StartRequest((Message.user("go"), Message.assistant(tool_calls=(call,))))
+        StartRequest(_history(Message.user("go"), Message.assistant(tool_calls=(call,))))
 
 
 def test_checkpoint_rejects_fact_snapshot_message_mismatches() -> None:
@@ -319,7 +330,7 @@ def test_checkpoint_rejects_fact_snapshot_message_mismatches() -> None:
     suspended_snapshot = RunSnapshot(
         1,
         _context(),
-        (Message.user("hello"),),
+        _history(Message.user("hello")),
         RunMetrics(),
         Suspended(Planning(), suspension),
     )
@@ -332,7 +343,7 @@ def test_checkpoint_rejects_fact_snapshot_message_mismatches() -> None:
 
     call = ToolCall("call-1", "lookup")
     outcome = ToolSuccess((ContentPart.text_part("ok"),))
-    tool_history = (
+    tool_history = _history(
         Message.user("go"),
         Message.assistant(tool_calls=(call,)),
         Message.tool(call.id, outcome),
@@ -397,7 +408,7 @@ def test_checkpoint_rejects_fact_snapshot_message_mismatches() -> None:
     planning_snapshot = RunSnapshot(
         1,
         _context(),
-        (Message.user("hello"),),
+        _history(Message.user("hello")),
         RunMetrics(),
         Planning(),
     )
@@ -421,7 +432,7 @@ def test_checkpoint_rejects_fact_snapshot_message_mismatches() -> None:
     limited_snapshot = RunSnapshot(
         1,
         _context(),
-        (Message.user("go"), assistant),
+        _history(Message.user("go"), assistant),
         RunMetrics(1, 0, ModelUsage(total_tokens=10)),
         Limited(LimitReason.MAX_TOTAL_TOKENS),
     )
@@ -505,6 +516,16 @@ def test_every_event_data_shape_round_trips() -> None:
         ("model_delta", {"kind": "reasoning", "index": 0, "text_delta": "why"}),
         ("model_delta", {"kind": "usage", "usage": usage}),
         ("model_finished", {"finish_reason": "stop", "tool_call_count": 0, "usage": usage}),
+        (
+            "tool_batch_selected",
+            {
+                "batch_id": "batch-1",
+                "call_ids": [call.id],
+                "parallel": False,
+                "remaining_count": 0,
+                "remaining_call_id_digest": empty_call_id_suffix_digest().hex(),
+            },
+        ),
         (
             "approval_requested",
             {
@@ -631,7 +652,11 @@ _INVALID_PORTABLE_VALUES: tuple[tuple[Callable[[object], object], dict[str, Any]
                     "cache_write_tokens": None,
                 },
             },
-            "state": {"kind": "tools_pending", "call_ids": ["x", "x"]},
+            "state": {
+                "kind": "tools_pending",
+                "pending_count": 0,
+                "call_id_digest": "00" * 32,
+            },
         },
     ),
     (
@@ -937,6 +962,19 @@ def test_fact_and_run_view_codecs_reject_empty_or_illegal_variants() -> None:
                 },
             }
         )
+    with pytest.raises(ProtocolError, match="32-byte hex"):
+        decode_run_view(
+            {
+                "revision": 1,
+                "history_count": 1,
+                "metrics": metrics,
+                "state": {
+                    "kind": "tools_pending",
+                    "pending_count": 1,
+                    "call_id_digest": "AB" * 32,
+                },
+            }
+        )
 
     valid_states: tuple[Mapping[str, Any], ...] = (
         {"kind": "completed", "part_count": 1},
@@ -983,6 +1021,19 @@ def test_event_codec_rejects_missing_discriminators_and_starting_evidence() -> N
     missing_decision_kind = _event_wire("approval_decided", {"call_id": "call-1"})
     with pytest.raises(ProtocolError, match="approval decision is missing"):
         decode_event(missing_decision_kind)
+
+    uppercase_digest = _event_wire(
+        "tool_batch_selected",
+        {
+            "batch_id": "batch-1",
+            "call_ids": ["call-1"],
+            "parallel": False,
+            "remaining_count": 0,
+            "remaining_call_id_digest": "AB" * 32,
+        },
+    )
+    with pytest.raises(ProtocolError, match="32-byte hex"):
+        decode_event(uppercase_digest)
 
 
 def test_public_wire_decoders_cover_nested_values_and_empty_documents() -> None:
@@ -1092,14 +1143,14 @@ def test_public_wire_decoders_cover_nested_values_and_empty_documents() -> None:
 
 
 def test_request_and_trace_codecs_reject_empty_discriminated_documents() -> None:
-    assert StartRequest((Message.user("hello"),)).context is None
+    assert StartRequest(_history(Message.user("hello"))).context is None
     selector_request = ResumeRequest(
         _suspended(),
         SuspensionSelector(source="approval"),
     )
     assert encode_run_request(selector_request)["selector"] == {"source": "approval"}
-    with pytest.raises(ValueError, match="requires messages"):
-        StartRequest(())
+    with pytest.raises(ValueError, match="must not be empty"):
+        RunHistory(())
     with pytest.raises(ValueError, match="active checkpoint"):
         ContinueRequest(_suspended())
     with pytest.raises(ValueError, match="suspended checkpoint"):

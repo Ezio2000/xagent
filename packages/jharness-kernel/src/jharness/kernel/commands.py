@@ -16,6 +16,7 @@ from jharness.kernel._validation import (
 from jharness.kernel.checkpoint import Checkpoint
 from jharness.kernel.context import RunContext
 from jharness.kernel.errors import RequestError
+from jharness.kernel.history import RunHistory
 from jharness.kernel.messages import Message
 from jharness.kernel.state import Planning, Suspended, ToolsPending
 
@@ -57,12 +58,13 @@ class SuspensionSelector:
 
 @dataclass(frozen=True, slots=True)
 class StartRequest:
-    messages: tuple[Message, ...]
+    messages: RunHistory
     context: RunContext | None = None
 
     kind: ClassVar[Literal["start"]] = "start"
 
     def __post_init__(self) -> None:
+        expect_instance(self.messages, RunHistory, "start messages")
         messages, _ = analyze_history(
             self.messages,
             Planning(),

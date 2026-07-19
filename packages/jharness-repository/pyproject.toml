@@ -1,6 +1,6 @@
 [project]
 name = "jharness-repository"
-version = "0.2.2"
+version = "0.3.0"
 description = "Memory, SQLite, MySQL, and Redis checkpoint repositories for JHarness"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,7 +19,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "jharness-kernel==0.2.2",
+  "jharness-kernel==0.3.0",
 ]
 
 [project.optional-dependencies]

@@ -107,6 +107,39 @@ def append_history_digest(previous: bytes, message: Message) -> bytes:
     return writer.finish()
 
 
+def empty_tool_call_suffix_digest() -> bytes:
+    return DigestWriter("jharness.kernel.tool_calls.suffix.empty.v1").finish()
+
+
+def prepend_tool_call_digest(suffix: bytes, call: ToolCall) -> bytes:
+    writer = DigestWriter("jharness.kernel.tool_calls.suffix.prepend.v1")
+    writer.field("call")
+    write_tool_call(writer, call)
+    writer.field("suffix")
+    writer.bytes(suffix)
+    return writer.finish()
+
+
+def empty_call_id_suffix_digest() -> bytes:
+    return DigestWriter("jharness.kernel.tool_call_ids.suffix.empty.v1").finish()
+
+
+def prepend_call_id_digest(suffix: bytes, call_id: str) -> bytes:
+    writer = DigestWriter("jharness.kernel.tool_call_ids.suffix.prepend.v1")
+    writer.field("call_id")
+    writer.string(call_id)
+    writer.field("suffix")
+    writer.bytes(suffix)
+    return writer.finish()
+
+
+def compose_call_id_digest(prefix: Sequence[str], suffix: bytes) -> bytes:
+    digest = suffix
+    for call_id in reversed(prefix):
+        digest = prepend_call_id_digest(digest, call_id)
+    return digest
+
+
 def write_message(writer: DigestWriter, value: Message) -> None:
     writer.field("role")
     writer.string(value.role)
@@ -173,10 +206,10 @@ def _write_artifact(writer: DigestWriter, value: ArtifactRef) -> None:
 def write_tool_calls(writer: DigestWriter, values: tuple[ToolCall, ...]) -> None:
     writer.sequence(len(values))
     for value in values:
-        _write_tool_call(writer, value)
+        write_tool_call(writer, value)
 
 
-def _write_tool_call(writer: DigestWriter, value: ToolCall) -> None:
+def write_tool_call(writer: DigestWriter, value: ToolCall) -> None:
     writer.field("tool_call")
     writer.field("id")
     writer.string(value.id)

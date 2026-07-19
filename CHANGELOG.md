@@ -6,6 +6,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [0.3.0] - Unreleased
+
+### Changed
+
+- Replaced tuple-backed run history with structurally shared `RunHistory`, including
+  persistent tool-call linkage proofs and cursor-based pending tool calls.
+- Replaced `RunRepository.commit(checkpoint)` with validated incremental
+  `DurableCommit` values and run-scoped checkpoint idempotency.
+- Replaced full-checkpoint repository writes with shared in-memory values and v2
+  incremental history chunks for SQLite, MySQL, and Redis; obsolete v1 storage is not
+  read or migrated.
+
+### Performance
+
+- Fixed-size append runs now perform linear cumulative history, persistence, and
+  pending-tool work instead of repeatedly scanning or encoding old state. Model requests
+  intentionally continue to contain the complete current history.
+
 ## [0.2.2] - 2026-07-19
 
 ### Added
@@ -61,6 +79,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 - Provider-neutral lifecycle, model, tool, event, wire, and trace contracts.
 
 [Unreleased]: https://github.com/Ezio2000/jharness/compare/v0.2.2...HEAD
+[0.3.0]: https://github.com/Ezio2000/jharness/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Ezio2000/jharness/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Ezio2000/jharness/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Ezio2000/jharness/compare/v0.1.0...v0.2.0

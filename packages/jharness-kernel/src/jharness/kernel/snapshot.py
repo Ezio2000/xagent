@@ -9,10 +9,10 @@ from jharness.kernel._history import (
     HistoryProof,
     analyze_messages,
     evolve_history,
-    normalize_history,
 )
 from jharness.kernel._validation import expect_instance, expect_int
 from jharness.kernel.context import RunContext
+from jharness.kernel.history import RunHistory
 from jharness.kernel.messages import Message
 from jharness.kernel.state import RunMetrics, RunState
 
@@ -23,7 +23,7 @@ class RunSnapshot:
 
     revision: int
     context: RunContext
-    history: tuple[Message, ...]
+    history: RunHistory
     metrics: RunMetrics
     state: RunState
     _history_proof: HistoryProof = field(init=False, repr=False, compare=False)
@@ -32,12 +32,7 @@ class RunSnapshot:
         if expect_int(self.revision, "snapshot revision") < 0:
             raise ValueError("snapshot revision must be >= 0")
         expect_instance(self.context, RunContext, "snapshot context")
-        history = normalize_history(
-            self.history,
-            label="snapshot history",
-            empty_message="snapshot history must not be empty",
-        )
-        object.__setattr__(self, "history", history)
+        history = expect_instance(self.history, RunHistory, "snapshot history")
         expect_instance(self.metrics, RunMetrics, "snapshot metrics")
         if not isinstance(cast(object, self.state), RunState):
             raise TypeError("snapshot state must be a RunState")
@@ -53,7 +48,7 @@ class RunSnapshot:
         self,
         *,
         append: tuple[Message, ...],
-        replace: tuple[Message, ...] | None,
+        replace: RunHistory | None,
         metrics: RunMetrics,
         state: RunState,
     ) -> RunSnapshot:

@@ -4,13 +4,14 @@ import re
 import subprocess
 import sys
 import tomllib
+from email.message import Message
 from pathlib import Path
 from typing import cast
 
 import pytest
 import yaml
 
-from scripts import verify_testpypi
+from scripts import verify_distribution, verify_testpypi
 
 ROOT = Path(__file__).resolve().parents[2]
 DISTRIBUTIONS = (
@@ -115,6 +116,31 @@ def test_repository_integration_images_are_immutable_and_consistent() -> None:
     assert all(
         re.fullmatch(r"[^:]+:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}", image) for image in ci_images
     )
+
+
+@pytest.mark.parametrize(
+    "mysql_requirement",
+    (
+        "pymysql>=1.2.0",
+        "pymysql[rsa]",
+        "pymysql[rsa]>=1.1.0",
+        "pymysql[other]>=1.2.0",
+    ),
+)
+def test_distribution_verifier_rejects_inexact_repository_extras(
+    mysql_requirement: str,
+) -> None:
+    metadata = Message()
+    metadata["Requires-Dist"] = "jharness-kernel==0.3.0"
+    metadata["Requires-Dist"] = f'{mysql_requirement}; extra == "mysql"'
+    metadata["Requires-Dist"] = 'redis>=8.0.1; extra == "redis"'
+    metadata["Provides-Extra"] = "mysql"
+    metadata["Provides-Extra"] = "redis"
+
+    with pytest.raises(ValueError, match="optional dependencies differ"):
+        verify_distribution._verify_dependencies(  # pyright: ignore[reportPrivateUsage]
+            metadata, "jharness-repository", "0.3.0"
+        )
 
 
 def test_release_workflow_builds_and_publishes_five_distributions() -> None:

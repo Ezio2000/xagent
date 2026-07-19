@@ -65,7 +65,7 @@ def test_tool_manifest_and_all_cases_validate() -> None:
         CONFORMANCE_DIR / "tools.contract.schema.json",
         manifest,
     )
-    assert len(runner.load_cases()) == 71
+    assert len(runner.load_cases()) == 72
 
 
 def test_conformance_cases_use_the_flat_portable_layout() -> None:

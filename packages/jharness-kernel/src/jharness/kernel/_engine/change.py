@@ -16,6 +16,7 @@ from jharness.kernel.checkpoint import (
     SuspendedControl,
 )
 from jharness.kernel.control import Insert
+from jharness.kernel.history import RunHistory
 from jharness.kernel.limits import LimitReason
 from jharness.kernel.messages import ErrorInfo, Message
 from jharness.kernel.models import ModelUsage
@@ -39,7 +40,7 @@ class Change:
     fact: Fact
     state: RunState
     append: tuple[Message, ...] = ()
-    replace: tuple[Message, ...] | None = None
+    replace: RunHistory | None = None
     planning_steps: int = 0
     tool_calls: int = 0
     usage: ModelUsage | None = None
@@ -50,13 +51,11 @@ class Change:
         if not isinstance(cast(object, self.state), RunState):
             raise TypeError("change state must be a RunState")
         append = expect_instance_tuple(self.append, Message, "change append")
-        replace = (
-            None
-            if self.replace is None
-            else expect_instance_tuple(self.replace, Message, "change replacement")
-        )
-        if replace is not None and (not replace or append):
-            raise ValueError("change replacement must be non-empty and exclusive with append")
+        replace = self.replace
+        if replace is not None:
+            expect_instance(replace, RunHistory, "change replacement")
+        if replace is not None and append:
+            raise ValueError("change replacement must be exclusive with append")
         object.__setattr__(self, "append", append)
         object.__setattr__(self, "replace", replace)
 

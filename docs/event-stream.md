@@ -47,6 +47,7 @@ Live event kinds are:
 
 - `invocation_started`;
 - `model_started`, `model_delta`, `model_finished`;
+- `tool_batch_selected`;
 - `approval_requested`, `approval_decided`;
 - `tool_started`, `tool_progress`, `tool_finished`;
 - `tool_cancel_requested`;
@@ -60,16 +61,22 @@ For tools, the active-concurrency permit is held from `tool_started` through
 `tool_finished`. Physical finish order remains observable while durable messages
 are ordered by model call position.
 
+`tool_batch_selected` is emitted once after the runtime chooses a bounded
+pending prefix and before any approval request or tool start for that batch. Its
+selected call ids, remaining count, and remaining digest let diagnostics prove
+prefix membership without copying the complete pending queue into every view.
+
 `model_delta` and `tool_progress` are explicitly lossy. Runtime retains at most
 the configured bounded number of queued lossy events, defaulting to 1024.
-Lifecycle, approval, tool start/finish, checkpoint, and stop events are
-lossless. A slow consumer therefore cannot create unbounded streaming memory.
+Lifecycle, tool-batch selection, approval, tool start/finish, checkpoint, and stop
+events are lossless. A slow consumer therefore cannot create unbounded streaming
+memory.
 
 Consumers must never use live events as resume state.
 
 ## Checkpoint Event
 
-After `RunRepository.commit(checkpoint)` succeeds, runtime emits:
+After `RunRepository.commit(durable_commit)` succeeds, runtime emits:
 
 ```text
 checkpoint_committed
@@ -79,7 +86,7 @@ Its payload contains:
 
 - checkpoint id;
 - the compact semantic fact;
-- a compact after `RunView` with revision, state kind, pending call ids,
+- a compact after `RunView` with revision, state kind, pending count and digest,
   counters, usage, and terminal or suspension presence.
 
 It does not repeat full message history or arbitrary suspension metadata. The

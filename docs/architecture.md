@@ -35,6 +35,9 @@ Runtime.start / continue_from / resume
        Checkpoint(snapshot, fact)
                     |
                     v
+      DurableCommit(history change)
+                    |
+                    v
         Repository.commit atomically
 ```
 
@@ -96,10 +99,11 @@ derived presentation values, not mutable fields. `Completed`, `Failed`, and
 
 ## Planning
 
-At `Planning`, the engine optionally commits a valid history reduction, builds
-one provider-neutral `ModelRequest`, and calls `Model.invoke`. Complete and
-streaming execution use the same model operation. An optional async delta sink
-receives bounded live content, reasoning, tool-call, and usage deltas.
+At `Planning`, the engine optionally commits a valid history reduction, builds one
+provider-neutral `ModelRequest` from the complete current durable history, and calls
+`Model.invoke`. Complete and streaming execution use the same model operation. An
+optional async delta sink receives bounded live content, reasoning, tool-call, and
+usage deltas.
 
 The returned `ModelResponse` is complete. It produces one assistant message and
 either `ToolsPending` or `Completed`. Partial deltas never enter durable history.
@@ -107,7 +111,9 @@ Model usage and planning counters advance only with the successful checkpoint.
 
 ## Tools
 
-At `ToolsPending`, a pure policy selects a non-empty pending prefix. The engine:
+At `ToolsPending`, a pure policy selects a non-empty prefix from a candidate
+window already bounded by the remaining call budget and batch-size limit. The
+engine:
 
 1. binds and validates each call against one immutable invocation catalog;
 2. resolves approval for the ordered bound batch;
@@ -137,11 +143,17 @@ snapshot; expected revision is derived as `revision - 1`. Revision `0` requires
 that the run does not exist. Later revisions require the repository's current
 revision to be exactly the predecessor.
 
-`RunRepository.commit(checkpoint)` atomically persists the snapshot and fact.
-Retrying an identical checkpoint id is an idempotent success; reusing an id for
-different content is an error. Success returns no mirror receipt. Repository
-failure leaves the previous committed checkpoint authoritative, and committed
-observation is emitted only after success.
+The reducer also produces a `DurableCommit` containing that complete checkpoint, its
+parent checkpoint id, semantic digest, and one validated `Initial`, `Append`, `Replace`,
+or `Unchanged` history change. This envelope is an atomic commit proof, not another
+recovery model or wire shape.
+
+`RunRepository.commit(durable_commit)` atomically persists the checkpoint core and
+history change. Retrying identical content under the same
+`(run_id, checkpoint_id)` is an idempotent success; reusing that run-scoped id for
+different content is an error. Success returns no mirror receipt. Repository failure
+leaves the previous committed checkpoint authoritative, and committed observation is
+emitted only after success.
 
 Compare-and-swap is not a distributed execution lease. Hosts serialize
 invocation ownership per run id and use queue leases or fencing in deployment

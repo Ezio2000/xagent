@@ -28,7 +28,7 @@
         }
       ],
       "limits": {
-        "timeout_seconds": 0.02
+        "timeout_seconds": 0.5
       },
       "expected": {
         "status": "limited",

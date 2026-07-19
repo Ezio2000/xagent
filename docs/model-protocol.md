@@ -30,7 +30,7 @@ provider-owned response before cancellation escapes.
 
 `ModelRequest` contains:
 
-- immutable conversation history;
+- the complete immutable current durable conversation history;
 - immutable tool specifications from the invocation catalog;
 - model options;
 - tool choice;
@@ -42,6 +42,11 @@ portable call modes.
 
 Kernel exposes no request mutation hook. Request shaping, routing, fallback,
 caching, and telemetry are ordinary `Model` decorators.
+
+Kernel does not truncate, summarize, or window model-visible history. A host that must
+fit a provider limit may deliberately rewrite durable history or wrap `Model` with a
+request-shaping decorator, but that policy is outside the runtime's state and
+persistence complexity guarantees.
 
 ## Response
 

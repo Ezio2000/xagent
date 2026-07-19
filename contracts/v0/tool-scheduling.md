@@ -10,7 +10,9 @@ Invalid calls become precomputed tool failures and do not reach approval.
 
 ## Selection
 
-A batch policy selects one non-empty pending prefix. Kernel validates:
+A batch policy receives only the pending prefix bounded by the remaining
+tool-call budget and maximum batch size, then selects one non-empty prefix of
+that candidate window. Kernel validates:
 
 - the selected ids and values exactly match that prefix;
 - a serial batch contains exactly one call;

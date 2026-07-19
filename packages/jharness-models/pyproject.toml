@@ -1,6 +1,6 @@
 [project]
 name = "jharness-models"
-version = "0.2.2"
+version = "0.3.0"
 description = "OpenAI, Anthropic, and DeepSeek model adapters for JHarness"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,7 +19,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "jharness-kernel==0.2.2",
+  "jharness-kernel==0.3.0",
   "httpx>=0.27.0",
 ]
 

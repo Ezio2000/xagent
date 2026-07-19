@@ -17,6 +17,7 @@ from jharness.kernel.wire._helpers import (
     optional_string,
     string,
     thaw_object,
+    unique_strings,
 )
 from jharness.kernel.wire.checkpoint import (
     decode_fact_value,
@@ -85,6 +86,7 @@ _DATA_DECODERS: dict[EventKind, EventDataDecoder] = {
     EventKind.MODEL_STARTED: lambda value: _decode_model_started(value),
     EventKind.MODEL_DELTA: lambda value: _decode_model_delta(value),
     EventKind.MODEL_FINISHED: lambda value: _decode_model_finished(value),
+    EventKind.TOOL_BATCH_SELECTED: lambda value: _decode_tool_batch_selected(value),
     EventKind.APPROVAL_REQUESTED: lambda value: _decode_approval_requested(value),
     EventKind.APPROVAL_DECIDED: lambda value: _decode_approval_decided(value),
     EventKind.TOOL_STARTED: lambda value: _decode_tool_started(value),
@@ -135,6 +137,56 @@ def _decode_invocation_started(value: object) -> dict[str, Any]:
 def _decode_model_started(value: object) -> dict[str, Any]:
     data = object_fields(value, "model_started data", frozenset({"planning_step"}))
     return {"planning_step": integer(data["planning_step"], "planning_step", minimum=1)}
+
+
+def _decode_tool_batch_selected(value: object) -> dict[str, Any]:
+    data = object_fields(
+        value,
+        "tool_batch_selected data",
+        frozenset(
+            {
+                "batch_id",
+                "call_ids",
+                "parallel",
+                "remaining_count",
+                "remaining_call_id_digest",
+            }
+        ),
+    )
+    call_ids = unique_strings(
+        data["call_ids"],
+        "selected call_ids",
+        non_empty_items=True,
+    )
+    if not call_ids:
+        from jharness.kernel.errors import ProtocolError
+
+        raise ProtocolError("selected call_ids must not be empty")
+    digest = string(
+        data["remaining_call_id_digest"],
+        "remaining_call_id_digest",
+    )
+    try:
+        decoded = bytes.fromhex(digest)
+    except ValueError as exc:
+        from jharness.kernel.errors import ProtocolError
+
+        raise ProtocolError("remaining_call_id_digest must contain 32-byte hex") from exc
+    if len(digest) != 64 or len(decoded) != 32 or decoded.hex() != digest:
+        from jharness.kernel.errors import ProtocolError
+
+        raise ProtocolError("remaining_call_id_digest must contain 32-byte hex")
+    return {
+        "batch_id": string(data["batch_id"], "selected batch_id", non_empty=True),
+        "call_ids": list(call_ids),
+        "parallel": boolean(data["parallel"], "selected parallel"),
+        "remaining_count": integer(
+            data["remaining_count"],
+            "selected remaining_count",
+            minimum=0,
+        ),
+        "remaining_call_id_digest": digest,
+    }
 
 
 def _decode_model_delta(value: object) -> dict[str, Any]:

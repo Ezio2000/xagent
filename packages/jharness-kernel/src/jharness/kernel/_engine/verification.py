@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from jharness.kernel._digest import (
+    compose_call_id_digest,
+    empty_call_id_suffix_digest,
+)
 from jharness.kernel.checkpoint import (
     ControlFact,
     ConversationInsertFact,
@@ -118,7 +122,11 @@ def state_view(state: object) -> dict[str, Any]:
     if isinstance(state, Planning):
         return {"kind": "planning"}
     if isinstance(state, ToolsPending):
-        return {"kind": "tools_pending", "call_ids": [call.id for call in state.pending]}
+        return {
+            "kind": "tools_pending",
+            "pending_count": state.pending.pending_count,
+            "call_id_digest": state.pending.call_id_digest.hex(),
+        }
     if isinstance(state, Suspended):
         suspension = state.suspension
         return {
@@ -147,14 +155,18 @@ def verify_change(
 ) -> None:
     """Verify one compact durable transition without replaying effects."""
 
-    expected = _advance_view(before, fact)
+    expected = _advance_view(before, fact, after)
     if expected["revision"] != after.get("revision"):
         raise ValueError("revision_gap")
     if expected != dict(after):
         raise ValueError("change_mismatch")
 
 
-def _advance_view(before: Mapping[str, Any] | None, fact: Mapping[str, Any]) -> dict[str, Any]:
+def _advance_view(
+    before: Mapping[str, Any] | None,
+    fact: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
     kind = fact["kind"]
     data = cast(Mapping[str, Any], fact["data"])
     if kind == "started":
@@ -167,16 +179,18 @@ def _advance_view(before: Mapping[str, Any] | None, fact: Mapping[str, Any]) -> 
     handlers = {
         "resumed": _resumed,
         "model_turn": _model_turn,
-        "tool_batch": _tool_batch,
         "conversation_insert": _conversation_insert,
         "history_rewrite": _history_rewrite,
         "control": _control,
     }
-    try:
-        handler = handlers[cast(str, kind)]
-    except KeyError as exc:
-        raise ValueError("unsupported_fact") from exc
-    handler(base, before, data)
+    if kind == "tool_batch":
+        _tool_batch(base, before, data, after)
+    else:
+        try:
+            handler = handlers[cast(str, kind)]
+        except KeyError as exc:
+            raise ValueError("unsupported_fact") from exc
+        handler(base, before, data)
     return base
 
 
@@ -231,32 +245,79 @@ def _model_turn(result: dict[str, Any], before: Mapping[str, Any], data: Mapping
     if outcome == "completed":
         result["state"] = {"kind": "completed", "part_count": data["part_count"]}
     elif outcome == "tools_pending":
-        result["state"] = {"kind": "tools_pending", "call_ids": data["tool_call_ids"]}
+        call_ids = cast(Sequence[str], data["tool_call_ids"])
+        result["state"] = {
+            "kind": "tools_pending",
+            "pending_count": len(call_ids),
+            "call_id_digest": compose_call_id_digest(
+                call_ids,
+                empty_call_id_suffix_digest(),
+            ).hex(),
+        }
     else:
         result["state"] = {"kind": "limited", "reason": data["limit_reason"]}
 
 
-def _tool_batch(result: dict[str, Any], before: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+def _tool_batch(
+    result: dict[str, Any],
+    before: Mapping[str, Any],
+    data: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> None:
     state = cast(Mapping[str, Any], before["state"])
     if state.get("kind") != "tools_pending":
         raise ValueError("tool_batch_requires_pending")
-    pending = list(cast(Sequence[str], state["call_ids"]))
     calls = list(cast(Sequence[str], data["call_ids"]))
-    if pending[: len(calls)] != calls:
+    pending_count = cast(int, state["pending_count"])
+    if len(calls) > pending_count:
         raise ValueError("tool_batch_not_prefix")
     result["history_count"] = cast(int, result["history_count"]) + len(calls)
     metrics = cast(dict[str, Any], result["metrics"])
     metrics["tool_calls"] = cast(int, metrics["tool_calls"]) + len(calls)
-    remaining = pending[len(calls) :]
-    active: dict[str, Any] = (
-        {"kind": "tools_pending", "call_ids": remaining} if remaining else {"kind": "planning"}
-    )
+    remaining = pending_count - len(calls)
     suspension = data["suspension"]
+    after_state = cast(Mapping[str, Any], after["state"])
+    after_active = (
+        cast(Mapping[str, Any], after_state.get("resume_to"))
+        if suspension is not None and after_state.get("kind") == "suspended"
+        else after_state
+    )
+    if remaining:
+        if (
+            after_active.get("kind") != "tools_pending"
+            or after_active.get("pending_count") != remaining
+        ):
+            raise ValueError("tool_batch_pending_count_mismatch")
+        suffix = _view_digest(after_active.get("call_id_digest"))
+        active: dict[str, Any] = {
+            "kind": "tools_pending",
+            "pending_count": remaining,
+            "call_id_digest": suffix.hex(),
+        }
+    else:
+        if after_active.get("kind") != "planning":
+            raise ValueError("tool_batch_pending_count_mismatch")
+        suffix = empty_call_id_suffix_digest()
+        active = {"kind": "planning"}
+    if compose_call_id_digest(calls, suffix) != _view_digest(state.get("call_id_digest")):
+        raise ValueError("tool_batch_not_prefix")
     result["state"] = (
         active
         if suspension is None
         else {"kind": "suspended", "resume_to": active, "suspension": suspension}
     )
+
+
+def _view_digest(value: object) -> bytes:
+    if not isinstance(value, str) or len(value) != 64:
+        raise ValueError("invalid_pending_digest")
+    try:
+        digest = bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError("invalid_pending_digest") from exc
+    if len(digest) != 32 or digest.hex() != value:
+        raise ValueError("invalid_pending_digest")
+    return digest
 
 
 def _conversation_insert(

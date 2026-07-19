@@ -3,7 +3,7 @@
 Explicit OpenAI, Anthropic, and DeepSeek model adapters for the JHarness kernel.
 
 ```bash
-pip install jharness-models
+uv add jharness-models
 ```
 
 ```python

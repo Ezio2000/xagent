@@ -12,6 +12,7 @@ from jharness.kernel.commands import (
     SuspensionSelector,
 )
 from jharness.kernel.errors import ProtocolError
+from jharness.kernel.history import RunHistory
 from jharness.kernel.wire._helpers import (
     array,
     decode_document,
@@ -72,7 +73,7 @@ def _decode_run_request(value: object) -> RunRequest:
             raise ProtocolError("start messages must not be empty")
         context = data["context"]
         return StartRequest(
-            messages,
+            RunHistory(messages),
             None if context is None else decode_context_value(context),
         )
     if kind == "continue":

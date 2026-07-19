@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from jharness.kernel.context import RunContext
+from jharness.kernel.history import RunHistory
 from jharness.kernel.snapshot import RunSnapshot
 from jharness.kernel.wire._helpers import (
     array,
@@ -103,7 +104,7 @@ def decode_snapshot_value(value: object) -> RunSnapshot:
     return RunSnapshot(
         revision=integer(data["revision"], "snapshot revision", minimum=0),
         context=decode_context_value(data["context"]),
-        history=history,
+        history=RunHistory(history),
         metrics=decode_metrics_value(data["metrics"]),
         state=decode_state_value(data["state"]),
     )

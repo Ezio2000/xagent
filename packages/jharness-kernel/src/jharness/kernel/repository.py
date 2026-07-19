@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import ClassVar, Protocol, TypeAlias, cast, runtime_checkable
 
 from jharness.kernel._digest import (
     DigestWriter,
+    append_history_digest,
     write_error,
     write_optional_integer,
     write_optional_string,
     write_parts,
-    write_tool_calls,
 )
-from jharness.kernel._validation import expect_instance
+from jharness.kernel._validation import expect_instance, expect_instance_tuple
 from jharness.kernel.checkpoint import (
     Checkpoint,
     ControlDecision,
@@ -29,6 +30,8 @@ from jharness.kernel.checkpoint import (
 )
 from jharness.kernel.context import RunContext
 from jharness.kernel.errors import RepositoryError, RevisionConflict
+from jharness.kernel.history import RunHistory
+from jharness.kernel.messages import Message
 from jharness.kernel.models import ModelUsage
 from jharness.kernel.snapshot import RunSnapshot
 from jharness.kernel.state import (
@@ -43,11 +46,161 @@ from jharness.kernel.state import (
 )
 
 
+def _digest_bytes(value: object, label: str) -> bytes:
+    if type(value) is not bytes:
+        raise TypeError(f"{label} must be bytes")
+    if len(value) != 32:
+        raise ValueError(f"{label} must contain 32 bytes")
+    return value
+
+
+def _base_count(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError("history base_count must be int")
+    if value < 1:
+        raise ValueError("history base_count must be >= 1")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class InitialHistory:
+    """The complete history written by a run's first checkpoint."""
+
+    history: RunHistory
+
+    kind: ClassVar[str] = "initial"
+
+    def __post_init__(self) -> None:
+        expect_instance(self.history, RunHistory, "initial history")
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryAppend:
+    """A non-empty history suffix based on one exact committed history."""
+
+    base_count: int
+    base_digest: bytes
+    messages: tuple[Message, ...]
+
+    kind: ClassVar[str] = "append"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base_count", _base_count(self.base_count))
+        object.__setattr__(
+            self,
+            "base_digest",
+            _digest_bytes(self.base_digest, "history base_digest"),
+        )
+        messages = expect_instance_tuple(self.messages, Message, "history append messages")
+        if not messages:
+            raise ValueError("history append messages must not be empty")
+        object.__setattr__(self, "messages", messages)
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryReplace:
+    """A complete replacement based on one exact committed history."""
+
+    base_count: int
+    base_digest: bytes
+    history: RunHistory
+
+    kind: ClassVar[str] = "replace"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base_count", _base_count(self.base_count))
+        object.__setattr__(
+            self,
+            "base_digest",
+            _digest_bytes(self.base_digest, "history base_digest"),
+        )
+        expect_instance(self.history, RunHistory, "replacement history")
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryUnchanged:
+    """An unchanged history based on one exact committed history."""
+
+    base_count: int
+    base_digest: bytes
+
+    kind: ClassVar[str] = "unchanged"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base_count", _base_count(self.base_count))
+        object.__setattr__(
+            self,
+            "base_digest",
+            _digest_bytes(self.base_digest, "history base_digest"),
+        )
+
+
+HistoryChange: TypeAlias = InitialHistory | HistoryAppend | HistoryReplace | HistoryUnchanged
+
+
+@dataclass(frozen=True, slots=True)
+class DurableCommit:
+    """One validated checkpoint plus its minimal atomic history mutation."""
+
+    checkpoint: Checkpoint
+    parent_checkpoint_id: str | None
+    history: HistoryChange
+    digest: bytes = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        checkpoint = expect_instance(self.checkpoint, Checkpoint, "durable checkpoint")
+        parent = cast(object, self.parent_checkpoint_id)
+        if parent is not None and (not isinstance(parent, str) or not parent):
+            raise ValueError("parent_checkpoint_id must be None or a non-empty string")
+        change = cast(object, self.history)
+        if not isinstance(change, HistoryChange):
+            raise TypeError("durable history change has an unsupported type")
+        if checkpoint.snapshot.revision == 0:
+            if parent is not None or not isinstance(change, InitialHistory):
+                raise ValueError("revision 0 durable commit requires initial history and no parent")
+        elif parent is None or isinstance(change, InitialHistory):
+            raise ValueError("advanced durable commit requires a parent and non-initial history")
+        _validate_history_change(checkpoint.snapshot.history, self.history)
+        object.__setattr__(self, "digest", checkpoint_digest(checkpoint))
+
+    @property
+    def run_id(self) -> str:
+        return self.checkpoint.snapshot.context.run_id
+
+    @property
+    def checkpoint_id(self) -> str:
+        return self.checkpoint.id
+
+    @property
+    def revision(self) -> int:
+        return self.checkpoint.snapshot.revision
+
+    @property
+    def expected_revision(self) -> int | None:
+        return None if self.revision == 0 else self.revision - 1
+
+    @property
+    def history_count(self) -> int:
+        return len(self.checkpoint.snapshot.history)
+
+    @property
+    def history_digest(self) -> bytes:
+        return self.checkpoint.snapshot._history_digest()  # pyright: ignore[reportPrivateUsage]
+
+    @property
+    def base_history_count(self) -> int | None:
+        return None if isinstance(self.history, InitialHistory) else self.history.base_count
+
+    @property
+    def base_history_digest(self) -> bytes | None:
+        return None if isinstance(self.history, InitialHistory) else self.history.base_digest
+
+
 @runtime_checkable
 class RunRepository(Protocol):
     """Atomically make one checkpoint authoritative."""
 
-    async def commit(self, checkpoint: Checkpoint) -> None: ...
+    async def commit(self, commit: DurableCommit) -> None: ...
 
 
 class EphemeralRepository:
@@ -59,21 +212,28 @@ class EphemeralRepository:
         if initial is not None:
             expect_instance(initial, Checkpoint, "initial checkpoint")
         self._head = initial
-        self._by_id: dict[str, bytes] = (
-            {} if initial is None else {initial.id: _fingerprint(initial)}
+        self._by_id: dict[tuple[str, str], bytes] = (
+            {}
+            if initial is None
+            else {(initial.snapshot.context.run_id, initial.id): checkpoint_digest(initial)}
         )
 
-    async def commit(self, checkpoint: Checkpoint) -> None:
-        checkpoint = expect_instance(checkpoint, Checkpoint, "checkpoint")
-        existing = self._by_id.get(checkpoint.id)
+    async def commit(self, commit: DurableCommit) -> None:
+        commit = expect_instance(commit, DurableCommit, "durable commit")
+        checkpoint = commit.checkpoint
+        key = (commit.run_id, commit.checkpoint_id)
+        existing = self._by_id.get(key)
         if existing is not None:
-            if _fingerprint(checkpoint) == existing:
+            if commit.digest == existing:
                 return
-            raise RepositoryError(f"checkpoint id {checkpoint.id!r} was reused with new content")
+            raise RepositoryError(
+                f"checkpoint id {checkpoint.id!r} was reused with new content "
+                f"in run {commit.run_id!r}"
+            )
 
         head = self._head
-        run_id = checkpoint.snapshot.context.run_id
-        expected = checkpoint.snapshot.revision - 1 if checkpoint.snapshot.revision else None
+        run_id = commit.run_id
+        expected = commit.expected_revision
         if head is None:
             actual = None
         elif head.snapshot.context.run_id != run_id:
@@ -84,13 +244,21 @@ class EphemeralRepository:
             actual = head.snapshot.revision
         if actual != expected:
             raise RevisionConflict(run_id, expected, actual)
-        fingerprint = _fingerprint(checkpoint)
+        if head is not None:
+            if commit.parent_checkpoint_id != head.id:
+                raise RepositoryError("parent checkpoint does not match the authoritative head")
+            _validate_base(commit.history, head.snapshot.history)
+        elif not isinstance(commit.history, InitialHistory):
+            raise RepositoryError("first durable commit requires initial history")
         self._head = checkpoint
-        self._by_id[checkpoint.id] = fingerprint
+        self._by_id[key] = commit.digest
 
 
-def _fingerprint(checkpoint: Checkpoint) -> bytes:
-    writer = DigestWriter("jharness.kernel.checkpoint.v0")
+def checkpoint_digest(checkpoint: Checkpoint) -> bytes:
+    """Return the canonical checkpoint digest without scanning its old history."""
+
+    checkpoint = expect_instance(checkpoint, Checkpoint, "checkpoint")
+    writer = DigestWriter("jharness.kernel.checkpoint.v1")
     writer.field("id")
     writer.string(checkpoint.id)
     writer.field("snapshot")
@@ -98,6 +266,34 @@ def _fingerprint(checkpoint: Checkpoint) -> bytes:
     writer.field("fact")
     _write_fact(writer, checkpoint.fact)
     return writer.finish()
+
+
+def _validate_history_change(target: RunHistory, change: HistoryChange) -> None:
+    target_count = len(target)
+    target_digest = target._digest_bytes()  # pyright: ignore[reportPrivateUsage]
+    if isinstance(change, InitialHistory):
+        expected_count = len(change.history)
+        expected_digest = change.history._digest_bytes()  # pyright: ignore[reportPrivateUsage]
+    elif isinstance(change, HistoryAppend):
+        expected_count = change.base_count + len(change.messages)
+        expected_digest = change.base_digest
+        for message in change.messages:
+            expected_digest = append_history_digest(expected_digest, message)
+    elif isinstance(change, HistoryReplace):
+        expected_count = len(change.history)
+        expected_digest = change.history._digest_bytes()  # pyright: ignore[reportPrivateUsage]
+    else:
+        expected_count = change.base_count
+        expected_digest = change.base_digest
+    if target_count != expected_count or target_digest != expected_digest:
+        raise ValueError("history change does not produce the checkpoint history")
+
+
+def _validate_base(change: HistoryChange, actual: RunHistory) -> None:
+    if isinstance(change, InitialHistory):
+        raise RepositoryError("advanced durable commit cannot contain initial history")
+    if change.base_count != len(actual) or change.base_digest != actual._digest_bytes():  # pyright: ignore[reportPrivateUsage]
+        raise RepositoryError("history change base does not match the authoritative head")
 
 
 def _write_snapshot(writer: DigestWriter, value: RunSnapshot) -> None:
@@ -165,8 +361,7 @@ def _write_state(writer: DigestWriter, value: RunState) -> None:
     if isinstance(value, Planning):
         return
     if isinstance(value, ToolsPending):
-        writer.field("pending")
-        write_tool_calls(writer, value.pending)
+        _write_pending(writer, value)
     elif isinstance(value, Suspended):
         writer.field("resume_to")
         _write_active_state(writer, value.resume_to)
@@ -187,8 +382,14 @@ def _write_active_state(writer: DigestWriter, value: Planning | ToolsPending) ->
     writer.field("kind")
     writer.string(value.kind)
     if isinstance(value, ToolsPending):
-        writer.field("pending")
-        write_tool_calls(writer, value.pending)
+        _write_pending(writer, value)
+
+
+def _write_pending(writer: DigestWriter, value: ToolsPending) -> None:
+    writer.field("pending_count")
+    writer.integer(value.pending.pending_count)
+    writer.field("pending_digest")
+    writer.bytes(value.pending.digest)
 
 
 def _write_suspension(writer: DigestWriter, value: Suspension) -> None:
