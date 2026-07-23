@@ -29,14 +29,31 @@ def encode_chat_message(
             "content": _text_only_content(message.outcome.parts, "tool"),
         }
 
-    content = encode_message_content(message.parts, role, profile)
+    reasoning_content = None
+    content_parts = message.parts
+    if role == "assistant":
+        reasoning_content, content_parts = _extract_assistant_reasoning(message.parts, profile)
+    content = encode_message_content(content_parts, role, profile)
     data: JsonObject = {"role": role, "content": content}
-    if role == "assistant" and message.tool_calls:
-        from jharness.models.openai.chat_completions.tools import encode_assistant_tool_calls
+    if role == "assistant":
+        if reasoning_content is not None:
+            data["reasoning_content"] = reasoning_content
+        if (
+            message.tool_calls
+            and profile.reasoning_content_mode == "required_with_tools"
+            and reasoning_content is None
+        ):
+            raise OpenAIChatCompletionsError(
+                f"{profile.name} requires non-empty reasoning content for assistant tool calls"
+            )
+        if message.tool_calls:
+            from jharness.models.openai.chat_completions.tools import (
+                encode_assistant_tool_calls,
+            )
 
-        data["tool_calls"] = encode_assistant_tool_calls(message.tool_calls)
-        if content == "":
-            data["content"] = None
+            data["tool_calls"] = encode_assistant_tool_calls(message.tool_calls)
+            if content == "" and not profile.requires_assistant_content_for_tool_calls:
+                data["content"] = None
     return data
 
 
@@ -175,6 +192,29 @@ def _encode_assistant_content(
             wire_block = {"type": "refusal", "refusal": refusal}
         blocks.append(wire_block)
     return blocks
+
+
+def _extract_assistant_reasoning(
+    parts: Sequence[ContentPart],
+    profile: OpenAIChatCompletionsProfile,
+) -> tuple[str | None, tuple[ContentPart, ...]]:
+    reasoning_parts = [part for part in parts if part.type == "reasoning"]
+    if not reasoning_parts:
+        return None, tuple(parts)
+    if profile.reasoning_content_mode == "live_only":
+        raise OpenAIChatCompletionsError(
+            f"{profile.name} does not support reasoning content in assistant messages"
+        )
+    chunks: list[str] = []
+    for part in reasoning_parts:
+        if not isinstance(part.text, str):
+            raise OpenAIChatCompletionsError("assistant reasoning parts require a text string")
+        chunks.append(part.text)
+    reasoning_content = "".join(chunks)
+    return (
+        reasoning_content or None,
+        tuple(part for part in parts if part.type != "reasoning"),
+    )
 
 
 def _wire_block(part: ContentPart) -> JsonObject | None:

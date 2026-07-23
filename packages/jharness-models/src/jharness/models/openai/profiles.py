@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 from jharness.models._profiles import copy_json_mapping, copy_string_mapping, required_string
 
 MaxTokensField = Literal["max_tokens", "max_completion_tokens"]
+ReasoningContentMode = Literal["live_only", "round_trip", "required_with_tools"]
 SystemContentMode = Literal["string", "parts"]
 
 _BOOLEAN_FIELDS = (
@@ -22,6 +23,8 @@ _BOOLEAN_FIELDS = (
     "supports_file_input",
     "supports_json_object",
     "supports_json_schema",
+    "supports_seed",
+    "requires_assistant_content_for_tool_calls",
     "stream_include_usage",
 )
 
@@ -46,7 +49,10 @@ class OpenAIChatCompletionsProfile:
     supports_file_input: bool = False
     supports_json_object: bool = True
     supports_json_schema: bool = False
+    supports_seed: bool = True
+    requires_assistant_content_for_tool_calls: bool = False
     stream_include_usage: bool = True
+    reasoning_content_mode: ReasoningContentMode = "live_only"
     max_tokens_field: MaxTokensField = "max_tokens"
     system_content_mode: SystemContentMode = "string"
     json_schema_name: str = "response"
@@ -58,6 +64,16 @@ class OpenAIChatCompletionsProfile:
         for field_name in _BOOLEAN_FIELDS:
             if not isinstance(getattr(self, field_name), bool):
                 raise TypeError(f"{field_name} must be a bool")
+        if not isinstance(
+            cast(object, self.reasoning_content_mode), str
+        ) or self.reasoning_content_mode not in {
+            "live_only",
+            "round_trip",
+            "required_with_tools",
+        }:
+            raise ValueError(
+                "reasoning_content_mode must be 'live_only', 'required_with_tools', or 'round_trip'"
+            )
         if not isinstance(
             cast(object, self.max_tokens_field), str
         ) or self.max_tokens_field not in {

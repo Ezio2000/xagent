@@ -6,6 +6,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-23
+
+### Added
+
+- Added OpenAI Chat Completions profile controls for seed support, reasoning-content
+  round trips, required reasoning on tool calls, and non-null assistant tool-call
+  content, plus an Anthropic profile control for redacted-thinking replay.
+
+### Fixed
+
+- Enabled DeepSeek OpenAI-format thinking models to use tools while omitting the
+  unsupported `tool_choice` parameter and preserving the required
+  `reasoning_content` and non-null assistant `content` across tool-call turns.
+- Rejected unsupported DeepSeek `seed` requests and mapped its top-level
+  `prompt_cache_hit_tokens` usage field to `cache_read_tokens`.
+- Prevented DeepSeek Anthropic-format history from replaying unsupported
+  `redacted_thinking` blocks.
+
 ## [0.3.0] - 2026-07-19
 
 ### Changed
@@ -78,7 +96,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions f
 - Sixty-six deterministic conformance cases and a standard tool catalog.
 - Provider-neutral lifecycle, model, tool, event, wire, and trace contracts.
 
-[Unreleased]: https://github.com/Ezio2000/jharness/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Ezio2000/jharness/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Ezio2000/jharness/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Ezio2000/jharness/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/Ezio2000/jharness/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Ezio2000/jharness/compare/v0.2.0...v0.2.1

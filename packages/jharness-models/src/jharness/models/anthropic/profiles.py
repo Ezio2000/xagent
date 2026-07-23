@@ -17,6 +17,7 @@ _BOOLEAN_FIELDS = (
     "supports_tool_choice",
     "supports_parallel_tool_calls",
     "supports_parallel_tool_call_control",
+    "supports_redacted_thinking",
     "supports_image_input",
     "supports_file_input",
     "supports_json_object",
@@ -38,6 +39,7 @@ class AnthropicProfile:
     supports_tool_choice: bool = True
     supports_parallel_tool_calls: bool = True
     supports_parallel_tool_call_control: bool = True
+    supports_redacted_thinking: bool = True
     supports_image_input: bool = True
     supports_file_input: bool = True
     supports_json_object: bool = False

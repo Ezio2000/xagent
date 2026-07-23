@@ -280,6 +280,8 @@ def _encode_assistant_part(part: ContentPart, profile: AnthropicProfile) -> Json
             block["signature"] = signature
         return block
     if part.type == "redacted_thinking":
+        if not profile.supports_redacted_thinking:
+            raise AnthropicError(f"{profile.name} does not support redacted_thinking")
         data = _anthropic_metadata_str(part, "data")
         if data is None:
             raise AnthropicError("redacted_thinking parts require anthropic metadata data")
@@ -311,6 +313,8 @@ def _wire_block(
         raise AnthropicError(f"{profile.name} does not support image input")
     if block_type == "document" and not profile.supports_file_input:
         raise AnthropicError(f"{profile.name} does not support file input")
+    if block_type == "redacted_thinking" and not profile.supports_redacted_thinking:
+        raise AnthropicError(f"{profile.name} does not support redacted_thinking")
     _validate_wire_block(mapping, block_type)
     return dict(mapping)
 

@@ -95,8 +95,13 @@ def test_deepseek_profiles_drive_capabilities_without_runtime_special_cases() ->
     )
 
     assert thinking_profile.extra_request_body["thinking"] == {"type": "enabled"}
-    assert openai_model.capabilities.tools is False
+    assert thinking_profile.extra_request_body["reasoning_effort"] == "high"
+    assert thinking_profile.reasoning_content_mode == "required_with_tools"
+    assert thinking_profile.supports_seed is False
+    assert openai_model.capabilities.tools is True
+    assert openai_model.capabilities.tool_choice is False
     assert openai_model.capabilities.multimodal_input is False
+    assert plain_profile.supports_redacted_thinking is False
     assert anthropic_model.capabilities.tools is True
     assert anthropic_model.capabilities.multimodal_input is False
 
@@ -110,6 +115,13 @@ def test_openai_profile_validates_every_configuration_family() -> None:
     invalid: tuple[tuple[dict[str, Any], type[Exception], str], ...] = (
         ({"name": ""}, ValueError, "profile name"),
         ({"supports_streaming": 1}, TypeError, "must be a bool"),
+        ({"supports_seed": 1}, TypeError, "must be a bool"),
+        (
+            {"requires_assistant_content_for_tool_calls": 1},
+            TypeError,
+            "must be a bool",
+        ),
+        ({"reasoning_content_mode": "other"}, ValueError, "reasoning_content_mode"),
         ({"max_tokens_field": "other"}, ValueError, "max_tokens_field"),
         ({"system_content_mode": "other"}, ValueError, "system_content_mode"),
         ({"json_schema_name": ""}, ValueError, "json_schema_name"),
@@ -142,6 +154,7 @@ def test_anthropic_profile_validates_every_configuration_family() -> None:
         ({"name": ""}, ValueError, "profile name"),
         ({"anthropic_version": ""}, ValueError, "anthropic_version"),
         ({"supports_streaming": 1}, TypeError, "must be a bool"),
+        ({"supports_redacted_thinking": 1}, TypeError, "must be a bool"),
         ({"auth_scheme": "other"}, ValueError, "auth_scheme"),
         ({"system_content_mode": "other"}, ValueError, "system_content_mode"),
         ({"default_max_tokens": True}, TypeError, "must be an integer"),
@@ -164,11 +177,27 @@ def test_anthropic_profile_validates_every_configuration_family() -> None:
 
 def test_deepseek_profiles_validate_thinking_and_effort_combinations() -> None:
     plain = deepseek_openai_chat_profile(thinking=False)
+    openai_thinking = deepseek_openai_chat_profile(thinking=True, effort="high")
     thinking = deepseek_anthropic_profile(thinking=True, effort="max")
     assert plain.name.endswith("nonthinking")
     assert plain.extra_request_body["thinking"] == {"type": "disabled"}
+    assert plain.reasoning_content_mode == "live_only"
+    assert plain.supports_seed is False
+    assert plain.supports_tools is True
+    assert openai_thinking.extra_request_body == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "high",
+    }
+    assert openai_thinking.reasoning_content_mode == "required_with_tools"
+    assert openai_thinking.supports_tools is True
+    assert openai_thinking.supports_tool_choice is False
+    assert openai_thinking.supports_parallel_tool_calls is True
+    assert openai_thinking.supports_parallel_tool_call_control is False
+    assert openai_thinking.requires_assistant_content_for_tool_calls is True
     assert thinking.name.endswith("thinking")
+    assert thinking.extra_request_body == {"thinking": {"type": "enabled"}}
     assert thinking.extra_output_config == {"effort": "max"}
+    assert thinking.supports_redacted_thinking is False
     with pytest.raises(ValueError, match="thinking must be a bool"):
         deepseek_openai_chat_profile(thinking=cast(Any, 1))
     with pytest.raises(ValueError, match="effort must be one of"):

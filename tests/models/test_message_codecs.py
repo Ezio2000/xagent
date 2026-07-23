@@ -214,6 +214,40 @@ def test_anthropic_message_codec_covers_system_tools_and_native_parts() -> None:
     assert encode_message(Message.external("callback"), profile)["role"] == "user"
 
 
+def test_anthropic_message_codec_guards_redacted_thinking_replay() -> None:
+    default_profile = AnthropicProfile()
+    metadata_redacted = ContentPart(
+        type="redacted_thinking",
+        metadata={"anthropic": {"data": "secret"}},
+    )
+    assert encode_message(
+        Message.assistant((metadata_redacted,)),
+        default_profile,
+    )["content"] == [{"type": "redacted_thinking", "data": "secret"}]
+
+    profile = AnthropicProfile(
+        name="anthropic-without-redacted-thinking",
+        supports_redacted_thinking=False,
+    )
+    expected_error = "anthropic-without-redacted-thinking does not support redacted_thinking"
+    native_redacted = ContentPart(
+        type="redacted_thinking",
+        data={"anthropic": {"type": "redacted_thinking", "data": "secret"}},
+    )
+    for part in (metadata_redacted, native_redacted):
+        with pytest.raises(AnthropicError, match=expected_error):
+            encode_message(Message.assistant((part,)), profile)
+
+    thinking = ContentPart(
+        type="thinking",
+        text="reason",
+        metadata={"anthropic": {"signature": "sig"}},
+    )
+    assert encode_message(Message.assistant((thinking,)), profile)["content"] == [
+        {"type": "thinking", "thinking": "reason", "signature": "sig"}
+    ]
+
+
 def test_anthropic_media_and_tool_choice_codec() -> None:
     profile = AnthropicProfile()
     image = ContentPart(

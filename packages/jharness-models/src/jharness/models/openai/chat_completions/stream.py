@@ -20,6 +20,12 @@ from jharness.models.openai.errors import OPENAI_JSON, OpenAIChatCompletionsErro
 from jharness.models.openai.profiles import OpenAIChatCompletionsProfile
 
 _MetadataValue = TypeVar("_MetadataValue")
+_ContentPartType = Literal["reasoning", "text", "refusal"]
+_CONTENT_PART_RANK: dict[_ContentPartType, int] = {
+    "reasoning": 0,
+    "text": 1,
+    "refusal": 2,
+}
 
 
 class OpenAIChatStreamDecoder:
@@ -37,6 +43,10 @@ class OpenAIChatStreamDecoder:
         self._usage: ModelUsage | None = None
         self._object: str | None = None
         self._created: int | None = None
+        self._has_reasoning_content = False
+        self._has_tool_calls = False
+        self._content_part_indexes: dict[_ContentPartType, int] = {}
+        self._last_content_part_rank = -1
         self._phase: Literal["initial", "active", "finished"] = "initial"
 
     def apply_chunk(self, value: Mapping[str, Any]) -> list[ModelDelta]:
@@ -114,6 +124,15 @@ class OpenAIChatStreamDecoder:
             raise OpenAIChatCompletionsError(
                 "chat completion stream completed before finish_reason"
             )
+        if (
+            self._profile.reasoning_content_mode == "required_with_tools"
+            and self._has_tool_calls
+            and not self._has_reasoning_content
+        ):
+            raise OpenAIChatCompletionsError(
+                f"{self._profile.name} requires non-empty reasoning content "
+                "for assistant tool calls"
+            )
         metadata: dict[str, Any] = {
             "provider": self._profile.name,
             "choice_count": 1,
@@ -153,29 +172,91 @@ class OpenAIChatStreamDecoder:
 
     def _deltas_from_wire(self, delta: Mapping[str, Any]) -> list[ModelDelta]:
         _validate_delta_role(delta.get("role"))
-        deltas: list[ModelDelta] = [
-            item
-            for item in (
-                self._content_event(delta.get("content")),
-                _reasoning_event(delta.get("reasoning_content")),
-                self._refusal_event(delta.get("refusal")),
-            )
-            if item is not None
-        ]
-        deltas.extend(self._tool_call_events(delta.get("tool_calls")))
+        if self._profile.reasoning_content_mode == "live_only":
+            content_event = self._content_event(delta.get("content"))
+            reasoning_events = self._reasoning_events(delta.get("reasoning_content"))
+            refusal_event = self._refusal_event(delta.get("refusal"))
+            deltas: list[ModelDelta] = [
+                item
+                for item in (
+                    content_event,
+                    *reasoning_events,
+                    refusal_event,
+                )
+                if item is not None
+            ]
+        else:
+            reasoning_events = self._reasoning_events(delta.get("reasoning_content"))
+            content_event = self._content_event(delta.get("content"))
+            refusal_event = self._refusal_event(delta.get("refusal"))
+            deltas = [
+                *reasoning_events,
+                *(
+                    item
+                    for item in (
+                        content_event,
+                        refusal_event,
+                    )
+                    if item is not None
+                ),
+            ]
+        tool_call_events = self._tool_call_events(delta.get("tool_calls"))
+        if tool_call_events:
+            self._has_tool_calls = True
+        deltas.extend(tool_call_events)
         return deltas
 
     def _content_event(self, value: object) -> ModelContentDelta | None:
         content = _optional_delta_text(value, "content")
         if not content:
             return None
-        return ModelContentDelta(index=0, text_delta=content)
+        return ModelContentDelta(
+            index=self._content_part_index("text"),
+            text_delta=content,
+        )
+
+    def _reasoning_events(self, value: object) -> list[ModelDelta]:
+        reasoning = _optional_delta_text(value, "reasoning")
+        if not reasoning:
+            return []
+        if self._profile.reasoning_content_mode == "live_only":
+            return [ModelReasoningDelta(index=0, text_delta=reasoning)]
+        self._has_reasoning_content = True
+        index = self._content_part_index("reasoning")
+        return [
+            ModelReasoningDelta(index=index, text_delta=reasoning),
+            ModelContentDelta(
+                index=index,
+                text_delta=reasoning,
+                part_type="reasoning",
+            ),
+        ]
 
     def _refusal_event(self, value: object) -> ModelContentDelta | None:
         refusal = _optional_delta_text(value, "refusal")
         if not refusal:
             return None
-        return ModelContentDelta(index=0, text_delta=refusal, part_type="refusal")
+        return ModelContentDelta(
+            index=self._content_part_index("refusal"),
+            text_delta=refusal,
+            part_type="refusal",
+        )
+
+    def _content_part_index(self, part_type: _ContentPartType) -> int:
+        if self._profile.reasoning_content_mode == "live_only":
+            return 0
+        rank = _CONTENT_PART_RANK[part_type]
+        if rank < self._last_content_part_rank:
+            raise OpenAIChatCompletionsError(
+                f"chat completion stream emitted {part_type} after a later content part"
+            )
+        existing = self._content_part_indexes.get(part_type)
+        if existing is not None:
+            return existing
+        index = len(self._content_part_indexes)
+        self._content_part_indexes[part_type] = index
+        self._last_content_part_rank = rank
+        return index
 
     def _tool_call_events(self, value: object) -> list[ModelToolCallDelta]:
         if value is None:
@@ -215,13 +296,6 @@ class OpenAIChatStreamDecoder:
 def _validate_delta_role(role: object) -> None:
     if role is not None and role != "assistant":
         raise OpenAIChatCompletionsError("chat completion stream delta role must be 'assistant'")
-
-
-def _reasoning_event(value: object) -> ModelReasoningDelta | None:
-    reasoning = _optional_delta_text(value, "reasoning")
-    if not reasoning:
-        return None
-    return ModelReasoningDelta(index=0, text_delta=reasoning)
 
 
 def _optional_delta_text(value: object, label: str) -> str | None:

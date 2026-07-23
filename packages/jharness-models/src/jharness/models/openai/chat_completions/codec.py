@@ -88,6 +88,8 @@ class OpenAIChatCompletionsCodec:
         if request.options.stop:
             payload["stop"] = list(request.options.stop)
         if request.options.seed is not None:
+            if not self.profile.supports_seed:
+                raise OpenAIChatCompletionsError(f"{self.profile.name} does not support seed")
             payload["seed"] = request.options.seed
 
     def _add_tool_options(
@@ -137,7 +139,7 @@ class OpenAIChatCompletionsCodec:
         value: Mapping[str, Any],
     ) -> ModelResponse:
         choice, message = _decode_assistant_choice(value)
-        parts, tool_calls = _decode_assistant_payload(message)
+        parts, tool_calls = _decode_assistant_payload(message, self.profile)
         finish_reason = OPENAI_JSON.required_string(
             choice.get("finish_reason"),
             "chat completion finish_reason",
@@ -205,7 +207,12 @@ def _decode_assistant_choice(
 
 def _decode_assistant_payload(
     message: Mapping[str, Any],
+    profile: OpenAIChatCompletionsProfile,
 ) -> tuple[list[ContentPart], list[ToolCall]]:
+    reasoning_parts = _decode_message_reasoning(
+        message.get("reasoning_content"),
+        profile,
+    )
     parts = decode_message_content(message.get("content"))
     refusal_parts = decode_message_refusal(message.get("refusal"))
     if refusal_parts and any(part.type == "refusal" for part in parts):
@@ -214,11 +221,33 @@ def _decode_assistant_payload(
         )
     parts.extend(refusal_parts)
     tool_calls = decode_tool_calls(message.get("tool_calls"))
+    if (
+        tool_calls
+        and profile.reasoning_content_mode == "required_with_tools"
+        and not reasoning_parts
+    ):
+        raise OpenAIChatCompletionsError(
+            f"{profile.name} requires non-empty reasoning content for assistant tool calls"
+        )
+    parts[:0] = reasoning_parts
     if not parts and not tool_calls:
         raise OpenAIChatCompletionsError(
             "chat completion assistant message requires content, refusal, or tool_calls"
         )
     return parts, tool_calls
+
+
+def _decode_message_reasoning(
+    value: object,
+    profile: OpenAIChatCompletionsProfile,
+) -> list[ContentPart]:
+    if profile.reasoning_content_mode == "live_only" or value is None:
+        return []
+    if not isinstance(value, str):
+        raise OpenAIChatCompletionsError(
+            "chat completion message reasoning_content must be a string or null"
+        )
+    return [ContentPart(type="reasoning", text=value)] if value else []
 
 
 def _response_metadata(value: Mapping[str, Any], provider: str) -> JsonObject:
@@ -255,6 +284,8 @@ def decode_usage(value: object) -> ModelUsage | None:
         cache_read_tokens = OPENAI_JSON.optional_integer(
             prompt_details_mapping.get("cached_tokens")
         )
+    if cache_read_tokens is None:
+        cache_read_tokens = OPENAI_JSON.optional_integer(usage.get("prompt_cache_hit_tokens"))
     return ModelUsage(
         input_tokens=prompt_tokens,
         output_tokens=completion_tokens,

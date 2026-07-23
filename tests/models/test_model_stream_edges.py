@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from jharness.kernel import ModelContentDelta, ModelUsageDelta
+from jharness.kernel import ModelContentDelta, ModelReasoningDelta, ModelUsageDelta, ToolCall
 from jharness.models.anthropic import AnthropicError, AnthropicProfile
 from jharness.models.anthropic.messages_api.stream import AnthropicStreamDecoder
 from jharness.models.openai import OpenAIChatCompletionsError, OpenAIChatCompletionsProfile
@@ -134,6 +134,119 @@ def test_openai_stream_rejects_metadata_changes_and_post_finish_choices() -> Non
 
     empty_call = OpenAIChatStreamDecoder(OpenAIChatCompletionsProfile())
     assert empty_call.apply_chunk(openai_choice({"tool_calls": [{"unused": None}]})) == []
+
+
+def test_openai_stream_round_trips_reasoning_with_distinct_content_indexes() -> None:
+    decoder = OpenAIChatStreamDecoder(
+        OpenAIChatCompletionsProfile(reasoning_content_mode="round_trip")
+    )
+    deltas = decoder.apply_chunk(
+        openai_choice(
+            {
+                "role": "assistant",
+                "reasoning_content": "why",
+                "content": "answer",
+                "refusal": "no",
+            },
+            finish_reason="stop",
+        )
+    )
+
+    assert [
+        (type(delta), getattr(delta, "index", None), getattr(delta, "part_type", None))
+        for delta in deltas
+    ] == [
+        (ModelReasoningDelta, 0, None),
+        (ModelContentDelta, 0, "reasoning"),
+        (ModelContentDelta, 1, "text"),
+        (ModelContentDelta, 2, "refusal"),
+    ]
+    assert [(part.type, part.text) for part in decoder.completed_response().parts] == [
+        ("reasoning", "why"),
+        ("text", "answer"),
+        ("refusal", "no"),
+    ]
+
+    reasoning_only = OpenAIChatStreamDecoder(
+        OpenAIChatCompletionsProfile(reasoning_content_mode="round_trip")
+    )
+    reasoning_only.apply_chunk(openai_choice({"reasoning_content": "only"}, finish_reason="stop"))
+    assert [(part.type, part.text) for part in reasoning_only.completed_response().parts] == [
+        ("reasoning", "only")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("wire_field", "part_type"),
+    (("content", "text"), ("refusal", "refusal")),
+)
+def test_openai_stream_round_trip_uses_compact_indexes_without_reasoning(
+    wire_field: str,
+    part_type: str,
+) -> None:
+    decoder = OpenAIChatStreamDecoder(
+        OpenAIChatCompletionsProfile(reasoning_content_mode="round_trip")
+    )
+    deltas = decoder.apply_chunk(openai_choice({wire_field: "only"}, finish_reason="stop"))
+
+    content_delta = next(delta for delta in deltas if isinstance(delta, ModelContentDelta))
+    assert content_delta.index == 0
+    assert [(part.type, part.text) for part in decoder.completed_response().parts] == [
+        (part_type, "only")
+    ]
+
+
+def test_openai_stream_round_trip_rejects_reasoning_after_content() -> None:
+    decoder = OpenAIChatStreamDecoder(
+        OpenAIChatCompletionsProfile(reasoning_content_mode="round_trip")
+    )
+    decoder.apply_chunk(openai_choice({"content": "answer"}))
+
+    with pytest.raises(OpenAIChatCompletionsError, match="reasoning after a later content part"):
+        decoder.apply_chunk(openai_choice({"reasoning_content": "late"}))
+
+
+def test_openai_stream_requires_reasoning_for_round_trip_tool_calls() -> None:
+    profile = OpenAIChatCompletionsProfile(reasoning_content_mode="required_with_tools")
+    missing = OpenAIChatStreamDecoder(profile)
+    missing.apply_chunk(
+        openai_choice(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    }
+                ]
+            },
+            finish_reason="tool_calls",
+        )
+    )
+    with pytest.raises(OpenAIChatCompletionsError, match="requires non-empty reasoning"):
+        missing.completed_response()
+
+    complete = OpenAIChatStreamDecoder(profile)
+    complete.apply_chunk(openai_choice({"reasoning_content": "why"}))
+    complete.apply_chunk(
+        openai_choice(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": "{}"},
+                    }
+                ]
+            },
+            finish_reason="tool_calls",
+        )
+    )
+    response = complete.completed_response()
+    assert response.parts[0].type == "reasoning"
+    assert response.tool_calls == (ToolCall("call-1", "search", {}),)
 
 
 def anthropic_started(*, profile: AnthropicProfile | None = None) -> AnthropicStreamDecoder:

@@ -129,6 +129,20 @@ name. Its supported surface includes, when enabled by the selected profile:
 `parallel_tool_calls` request field. Streamed call fragments are accumulated by their
 provider call index into one kernel tool call.
 
+`supports_seed` controls whether a configured kernel seed may be sent. The
+`reasoning_content_mode` setting controls provider reasoning history:
+
+- `live_only` emits reasoning only through live `ModelReasoningDelta` values;
+- `round_trip` also preserves reasoning as a complete `ContentPart` and sends it in
+  later assistant history;
+- `required_with_tools` additionally rejects assistant tool calls that do not carry
+  non-empty reasoning content.
+
+`requires_assistant_content_for_tool_calls` keeps an empty assistant `content` value as
+a non-null string for endpoints that require it. In round-trip modes, streaming emits
+both the live reasoning delta and a reasoning content delta used by the adapter-owned
+final-response accumulator.
+
 The adapter does not implement the Responses API, the legacy text Completions API,
 provider-hosted tools, provider-managed conversation state, or provider file uploads.
 
@@ -166,7 +180,9 @@ Its supported surface includes, when profile-enabled:
 
 Message Batches, file upload, token counting, provider-hosted tools, agents, and
 provider-managed sessions are outside the adapter. Mid-conversation system messages
-are disabled unless a profile explicitly enables them.
+are disabled unless a profile explicitly enables them. The
+`supports_redacted_thinking` profile flag separately controls whether historical
+`redacted_thinking` blocks may be sent back to an endpoint.
 
 ## DeepSeek Profiles
 
@@ -196,11 +212,23 @@ thinking_model = AnthropicModel(
 )
 ```
 
-OpenAI-format thinking mode does not advertise tool use when the endpoint requires
-reasoning content to be returned in later history but that content is only a live
-kernel delta. The Anthropic-format profile can preserve thinking blocks as durable
-content and therefore supports tools in both modes. Endpoint-specific capability flags
-remain conservative; runtime execution concurrency is always bounded independently by
+The OpenAI-format profile supports tool calls and parallel tool-call output in both
+modes. In thinking mode it omits the unsupported `tool_choice` parameter, preserves
+complete and streamed `reasoning_content` as durable reasoning content, and sends that
+content back with assistant tool-call history. Such history requires non-empty
+reasoning content and keeps assistant `content` as a non-null string, including the
+empty string.
+
+DeepSeek does not advertise `seed`, does not accept client control through
+`parallel_tool_calls`, and reports cache hits through the top-level
+`prompt_cache_hit_tokens` usage field, which the adapter maps to
+`ModelUsage.cache_read_tokens`. The Anthropic-format profile supports tools in both
+modes but rejects replay of unsupported `redacted_thinking` blocks. These settings
+follow DeepSeek's
+[thinking/tool compatibility requirements](https://api-docs.deepseek.com/quick_start/agent_integrations/oh_my_pi/),
+[context-caching usage fields](https://api-docs.deepseek.com/guides/kv_cache/), and
+[Anthropic compatibility table](https://api-docs.deepseek.com/guides/anthropic_api/).
+Runtime execution concurrency remains bounded independently by
 `RunLimits.max_tool_concurrency`.
 
 ## Codec Boundary
